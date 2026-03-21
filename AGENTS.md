@@ -1,33 +1,174 @@
-## linehash — Stable Line-Anchored Editing
+## linehash — Hash-Anchored File Editing
 
-`linehash` is installed in this environment and must always be used for file-targeted reads and edits when a shell-based edit workflow is appropriate.
+`linehash` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. It's designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
 
-### Why to Prefer It
+### Why It's Useful
 
-- Uses content-hashed line anchors like `12:ab` instead of fragile exact-text matching
-- Rejects stale or ambiguous edits instead of guessing
-- Works well for agent-driven file editing and concurrent-change detection
+- **Stable anchors:** Uses `line:hash` format that survives nearby edits—line numbers shift but hashes stay valid
+- **Concurrent-safe:** Detects stale anchors when content changed; fails explicitly instead of guessing
+- **Audit trail:** Optional `--receipt` and `--audit-log` for tracking edit history
+- **No merge conflicts:** Each edit is independent; no patch files that conflict
+- **Works with any text:** Language-agnostic; no parsing required
 
-### Preferred Workflow
+### The Anchor Format
 
-1. Read with anchors:
+Anchors are `line_number:content_hash` pairs like `42:a3f2`:
+
+- **line_number**: 1-based line number (for human readability)
+- **content_hash**: First 4+ chars of SHA-256 of line content (for stability)
+
+Example output from `linehash read`:
+```
+  1:a1b2  fn main() {
+  2:c3d4      println!("hello");
+  3:e5f6  }
+```
+
+### Command Reference
+
+**Reading:**
+| Command | Purpose |
+|---------|---------|
+| `linehash read <file>` | Show file with line:hash anchors |
+| `linehash read <file> --anchor 42:a3f2` | Show context around specific anchor |
+| `linehash read <file> --context 10` | Set context lines (default: 5) |
+| `linehash index <file>` | Show just anchors, no content |
+
+**Editing:**
+| Command | Purpose |
+|---------|---------|
+| `linehash edit <file> <anchor> <content>` | Replace line at anchor |
+| `linehash edit <file> <start>..<end> <content>` | Replace line range |
+| `linehash insert <file> <anchor> <content>` | Insert after anchor |
+| `linehash insert <file> <anchor> <content> --before` | Insert before anchor |
+| `linehash delete <file> <anchor>` | Delete line at anchor |
+| `linehash delete <file> <start>..<end>` | Delete line range |
+
+**Searching:**
+| Command | Purpose |
+|---------|---------|
+| `linehash grep <file> <pattern>` | Search with anchor output |
+| `linehash grep <file> <pattern> --case-insensitive` | Case-insensitive search |
+| `linehash annotate <file> <query>` | Find and annotate matching lines |
+| `linehash annotate <file> <regex> --regex` | Regex search |
+| `linehash find-block <file> <anchor>` | Find enclosing block (brace/indent) |
+
+**Utilities:**
+| Command | Purpose |
+|---------|---------|
+| `linehash verify <file>` | Verify file integrity |
+| `linehash stats <file>` | File statistics |
+| `linehash patch <file> <patch-file>` | Apply patch by anchors |
+| `linehash swap <file> <anchor1> <anchor2>` | Swap two lines |
+| `linehash move <file> <anchor> <target-anchor>` | Move line to new position |
+| `linehash indent <file> <anchor> <levels>` | Adjust indentation |
+
+**Advanced:**
+| Command | Purpose |
+|---------|---------|
+| `linehash from-diff <diff-file>` | Convert diff to anchor edits |
+| `linehash merge-patches <file> <patch1> <patch2>` | Merge multiple patches |
+| `linehash watch <file>` | Watch file for changes |
+| `linehash explode <file>` | Split file into per-line files |
+| `linehash implode <file>` | Reassemble from per-line files |
+
+### Typical Agent Workflow
+
+1. **Read file with anchors:**
    ```bash
-   linehash read <file>
+   linehash read src/main.rs
    ```
-2. Apply targeted edits by anchor:
+
+2. **Find specific content:**
    ```bash
-   linehash edit <file> <line:hash> <new-content>
-   linehash edit <file> <start:hash>..<end:hash> <new-content>
-   linehash insert <file> <line:hash> <new-content>
-   linehash delete <file> <line:hash>
+   linehash grep src/main.rs "fn process" --json
    ```
-3. If an anchor is stale or ambiguous, re-run `linehash read <file>` and retry using the new anchors.
 
-### Rules
+3. **Apply targeted edit:**
+   ```bash
+   linehash edit src/main.rs 42:a3f2 "fn process_data(input: &str) -> Result<()> {"
+   ```
 
-- Prefer `linehash` over ad-hoc text replacement when editing specific file lines
-- Use `linehash read` to refresh anchors before editing files that may have changed
-- Treat stale-anchor failures as a signal to re-read, not to force the edit
+4. **Verify change:**
+   ```bash
+   linehash read src/main.rs --anchor 42:a3f2
+   ```
+
+5. **If anchor is stale, re-read and retry:**
+   ```bash
+   linehash read src/main.rs  # Get fresh anchors
+   linehash edit src/main.rs 42:new_hash "..."
+   ```
+
+### Range Edits
+
+Replace multiple lines with range syntax:
+
+```bash
+# Replace lines 10-15
+linehash edit src/main.rs 10:a1b2..15:c3d4 "new content\nspanning\nmultiple lines"
+
+# Delete lines 20-25
+linehash delete src/main.rs 20:e5f6..25:g7h8
+```
+
+### Safety Features
+
+**Stale anchor detection:**
+```
+Error: anchor 42:a3f2 is stale (line content changed)
+Hint: re-run `linehash read src/main.rs` to get fresh anchors
+```
+
+**Ambiguous anchor detection:**
+```
+Error: anchor 42:a3 matches multiple lines
+Hint: use more hash characters: 42:a3f2e1
+```
+
+**Dry-run mode:**
+```bash
+linehash edit src/main.rs 42:a3f2 "new content" --dry-run
+```
+
+**Audit logging:**
+```bash
+linehash edit src/main.rs 42:a3f2 "new content" --receipt --audit-log edits.jsonl
+```
+
+### JSON Output
+
+All commands support `--json` for machine-readable output:
+
+```bash
+linehash read src/main.rs --json
+linehash grep src/main.rs "fn " --json
+linehash edit src/main.rs 42:a3f2 "new" --json
+```
+
+### Common Pitfalls
+
+- **Stale anchor:** Content changed since last read → re-run `linehash read`
+- **Ambiguous anchor:** Hash too short → use more characters from original hash
+- **Line shifted:** Nearby edits changed line numbers → hash still works, just re-read
+- **File deleted:** Obviously fails → check file exists before editing
+- **Binary file:** Only works on text files → don't use on binaries
+
+### Rules for Agents
+
+- **Always prefer `linehash` over `sed`/`awk`** for targeted line edits
+- **Re-read before editing** if file may have changed (other agents, user edits)
+- **Treat stale-anchor failures as safety signals**, not errors to bypass
+- **Use `--dry-run` first** when editing critical files
+- **Use `--json` output** for parsing in scripts
+- **Never force an edit** when anchor is stale—always re-read and retry
+
+### When NOT to Use linehash
+
+- **Large insertions:** For adding many lines, use a heredoc or write the whole file
+- **Whole-file rewrites:** Just use `Write` tool directly
+- **Binary files:** linehash only works on text
+- **Complex refactors:** Use tree-sitter based tools for AST-aware changes
 
 ---
 
