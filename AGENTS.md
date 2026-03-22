@@ -321,6 +321,203 @@ linehash edit src/main.rs 42:a3f2 "new" --json
 
 ---
 
+## scope — Static Analysis Dependency & Architecture Engine
+
+`scope` is a local static-analysis workspace that answers "what depends on what?" by maintaining a SQLite-backed dependency/symbol graph. It provides dependency queries, impact analysis, architecture enforcement, capability auditing, and health reporting — all from a persistent local index.
+
+### Why It's Useful
+
+- **Dependency awareness:** Know what a file imports and what imports it before editing
+- **Impact analysis:** Estimate blast radius of body/signature/rename/delete changes
+- **Architecture enforcement:** Layer rules, capability auditing, entry-point reachability
+- **Symbol graph:** Track exports, calls, callers, and public surface across files
+- **Health reporting:** Aggregate metrics, gate checks, snapshot diffs, and risk hotspots
+- **MCP integration:** Same queries available as stdio MCP tools for external clients
+
+### Quick Start
+
+```bash
+# Index the repository
+scope index .
+
+# Query dependencies
+scope deps src/lib.rs
+scope deps src/lib.rs --reverse
+
+# Check health
+scope report
+scope doctor
+```
+
+### Command Reference
+
+**Indexing:**
+| Command | Purpose |
+|---------|---------|
+| `scope index [PATH]` | Scan and index all supported files into `.scope/index.db` |
+| `scope doctor [--fix]` | Validate index health and diagnostics |
+| `scope benchmark [--fixture ...] [--iterations N]` | Performance benchmark with report |
+
+**Dependency Queries:**
+| Command | Purpose |
+|---------|---------|
+| `scope deps <file>` | Forward dependencies of a file |
+| `scope deps <file> --reverse` | Reverse dependencies (what imports this) |
+| `scope deps <file> --transitive [--depth N]` | Transitive closure with optional depth limit |
+| `scope symbols <file> [--public-only] [--kind ...]` | Symbols defined in a file |
+| `scope calls <symbol> [--transitive]` | What a symbol calls |
+| `scope callers <symbol> [--transitive]` | What calls a symbol |
+
+**Impact & Traversal:**
+| Command | Purpose |
+|---------|---------|
+| `scope impact <target> --change-type <type>` | Estimate blast radius (body/signature/rename/delete/visibility/side-effect) |
+| `scope explain <target> [--to ...] [--depth N]` | Explain dependency path |
+| `scope why <from> <to> [--depth N]` | Find shortest path between two nodes |
+| `scope context --target <...> --change-type <...> [--budget N]` | Structured change-planning context |
+| `scope pack <target> --change-type <...> --budget <N>` | Lean plain-text context handoff |
+
+**Architecture & Audit:**
+| Command | Purpose |
+|---------|---------|
+| `scope arch check` | Check layer rule violations |
+| `scope audit --capability <name>` | Capability reach analysis (e.g., network access) |
+| `scope surface [<file>]` | Public surface of a file |
+| `scope surface_diff <before> <after>` | Diff public surface between two files |
+| `scope entry_list / entry_cone / entry_reaches / entry_unreachable` | Entry point analysis |
+
+**Graph Analysis:**
+| Command | Purpose |
+|---------|---------|
+| `scope unused` | Find unused exported symbols |
+| `scope cycles [--severity ...]` | Detect dependency cycles |
+| `scope tree <target> [--reverse] [--depth N]` | Dependency tree view |
+| `scope split <target> --clusters <N>` | Suggest file split clusters |
+| `scope mirror <target> --other <file>` | Similarity analysis between files |
+| `scope stability [--file ...] [--sort ...]` | File instability metrics |
+| `scope risk [--file ...] [--days N] [--top N]` | Risk hotspot analysis |
+| `scope cochange [--file ...] [--min-commits N]` | Co-change coupling from git history |
+
+**Reporting & Gating:**
+| Command | Purpose |
+|---------|---------|
+| `scope report [--compare <snapshot>]` | Full health report with metrics |
+| `scope gate [--compare <snapshot>] [--strict]` | CI gate check against thresholds |
+| `scope diff --branch <ref>` | Changed/affected files relative to branch |
+| `scope snapshot_save --name <name>` | Save current graph state |
+| `scope snapshot_list / snapshot_delete` | Manage snapshots |
+| `scope diff_snapshot` | Compare two snapshots |
+
+**Other:**
+| Command | Purpose |
+|---------|---------|
+| `scope query --expr "<pipe-expr>"` | Ad-hoc query language |
+| `scope simulate extract ...` | Simulate file extraction impact |
+| `scope rename_plan <target> --to <new_name>` | Plan symbol rename with edit steps |
+| `scope test_map_covers <file>` | Which tests cover a source file |
+| `scope serve [--port 7777]` | Local HTTP API + embedded UI |
+
+### MCP Tool Surface (scope-mcp)
+
+The same queries are exposed as stdio MCP tools. Tool names match CLI subcommands:
+
+`index`, `deps`, `symbols`, `calls`, `callers`, `impact`, `explain`, `why`, `context`, `pack`, `arch_check`, `audit`, `stability`, `risk`, `cochange`, `report`, `gate`, `query`, `surface`, `surface_diff`, `test_map_covers`, `rename_plan`, `unused`, `cycles`, `diff`, `tree`, `split`, `mirror`, `entry_list`, `entry_cone`, `entry_reaches`, `entry_unreachable`, `doctor`, `benchmark`, `snapshot_save`, `snapshot_list`, `snapshot_delete`, `diff_snapshot`, `simulate_extract`
+
+All MCP tools accept `repo_root` (optional, defaults to cwd) and return the same JSON envelope as CLI.
+
+### Typical Agent Workflow
+
+1. **Index once per session:**
+   ```bash
+   scope index .
+   ```
+
+2. **Before editing a file — check dependencies:**
+   ```bash
+   scope deps src/parser.rs
+   scope deps src/parser.rs --reverse
+   scope --compact symbols src/parser.rs --public-only
+   ```
+
+3. **Before refactoring — estimate blast radius:**
+   ```bash
+   scope impact src/parser.rs --change-type signature
+   scope --compact callers parser::parse
+   scope context --target parser::parse --change-type body --budget 400
+   ```
+
+4. **Before PR — health check:**
+   ```bash
+   scope report
+   scope gate --strict
+   scope unused
+   scope cycles
+   ```
+
+### Output Format
+
+All commands return a stable JSON envelope:
+
+```json
+{
+  "schema_version": 1,
+  "command": "deps",
+  "status": "ok",
+  "data": { ... },
+  "warnings": []
+}
+```
+
+- `status`: `ok`, `stub`, or `error`
+- Use `--compact` for minified JSON (reduces tokens in agent loops)
+
+### Architecture Config (`.scope/arch.toml`)
+
+```toml
+[[layer]]
+name = "services"
+pattern = "src/services/**"
+
+[[rule]]
+from = "models"
+may_not_import = ["services", "routes"]
+message = "models must not import services or routes"
+
+[[capability]]
+name = "network"
+pattern = "src/http/**"
+expected_callers = ["src/workers/**"]
+
+[[entry_point]]
+pattern = "src/cli/**"
+```
+
+### Supported Languages
+
+- **Full semantic extraction:** Rust (`.rs`), TypeScript (`.ts`, `.tsx`), JavaScript (`.js`)
+- **Scan-only (indexed but not deeply analyzed):** Python (`.py`), Ruby (`.rb`), Go (`.go`)
+
+### Common Pitfalls
+
+- **Stale index:** Run `scope index .` after significant code changes
+- **Missing `.scope/`:** The `.scope/` directory is gitignored by default; each clone needs a fresh `scope index`
+- **Heuristic resolution:** Results are static approximations; treat as evidence, not proof
+- **Dynamic imports:** Computed module paths and reflection are blind spots
+- **TypeScript paths:** `tsconfig` path mapping not yet fully supported
+
+### Rules for Agents
+
+- **Always `scope index .` before querying** if the index might be stale
+- Use `--compact` in automated loops to save tokens
+- Treat results as static evidence with explicit certainty levels (`exact` > `resolved` > `heuristic` > `dynamic`)
+- Use `scope deps --reverse` before deleting files to find dependents
+- Use `scope impact` before signature/rename changes to estimate blast radius
+- Use `scope report` / `scope gate` for pre-PR health validation
+- **Never treat scope output as proof a change is safe** — always verify with tests and builds
+
+
+---
+
 ## MCP Agent Mail — Multi-Agent Coordination
 
 A mail-like layer that lets coding agents coordinate asynchronously via MCP tools and resources. Provides identities, inbox/outbox, searchable threads, and advisory file reservations with human-auditable artifacts in Git.
@@ -570,6 +767,8 @@ git push                # Push to remote
 - Always `br sync --flush-only && git add .beads/` before ending session
 
 <!-- end-bv-agent-instructions -->
+
+---
 
 ## Landing the Plane (Session Completion)
 
