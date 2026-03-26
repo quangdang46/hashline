@@ -306,6 +306,7 @@ linehash edit src/main.rs 42:a3f2 "new" --json
 ### Rules for Agents
 
 - **Always prefer `linehash` over `sed`/`awk`** for targeted line edits
+- **Run `linehash doctor <file>` or `linehash stats <file>` first** on large or collision-heavy files
 - **Re-read before editing** if file may have changed (other agents, user edits)
 - **Treat stale-anchor failures as safety signals**, not errors to bypass
 - **Use `--dry-run` first** when editing critical files

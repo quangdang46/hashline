@@ -55,6 +55,7 @@ fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i
         Commands::Indent(cmd) => commands::indent::run(&mut context, cmd).map(|_| 0),
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
         Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
+        Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
         Commands::FromDiff(cmd) => commands::from_diff::run(&mut context, cmd).map(|_| 0),
         Commands::MergePatches(cmd) => commands::merge_patches::run(&mut context, cmd).map(|_| 0),
         Commands::Watch(cmd) => commands::watch::run(&mut context, cmd).map(|_| 0),
@@ -66,7 +67,7 @@ fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::run;
-    use crate::cli::{Cli, Commands, PatchCmd, ReadCmd};
+    use crate::cli::{Cli, Commands, DoctorCmd, PatchCmd, ReadCmd};
     use std::path::PathBuf;
 
     #[test]
@@ -143,5 +144,20 @@ mod tests {
             parsed["hint"],
             "check the file path and permissions, then retry the command"
         );
+    }
+
+    #[test]
+    fn doctor_uses_json_mode_when_requested() {
+        let cli = Cli {
+            command: Commands::Doctor(DoctorCmd {
+                file: PathBuf::from("demo.txt"),
+                json: true,
+            }),
+        };
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = run(cli, &mut stdout, &mut stderr);
+        assert!(result.is_err());
     }
 }

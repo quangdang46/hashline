@@ -49,6 +49,10 @@ pub struct FileStats {
     pub estimated_read_tokens: usize,
     pub hash_length_advice: u8,
     pub suggested_context_n: usize,
+    pub recommended_read_mode: &'static str,
+    pub recommended_anchor_mode: &'static str,
+    pub recommended_workflow: &'static str,
+    pub warnings: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +61,7 @@ pub struct Document {
     pub newline: NewlineStyle,
     pub trailing_newline: bool,
     pub lines: Vec<LineRecord>,
+    pub content_len: usize,
     pub file_meta: Option<FileMeta>,
 }
 
@@ -73,9 +78,7 @@ impl Document {
             path: path_string.clone(),
         })?;
 
-        let newline = detect_newline_style(&content, path)?;
-        let trailing_newline = content.ends_with('\n');
-        let lines = build_lines(&content, newline);
+        let (newline, trailing_newline, lines, content_len) = parse_document_content(&content, path)?;
         let metadata = fs::metadata(path)?;
         let file_meta = Some(FileMeta::from_metadata(&metadata)?);
 
@@ -84,20 +87,20 @@ impl Document {
             newline,
             trailing_newline,
             lines,
+            content_len,
             file_meta,
         })
     }
 
     pub fn from_str(path: &Path, content: &str) -> Result<Document, LinehashError> {
-        let newline = detect_newline_style(content, path)?;
-        let trailing_newline = content.ends_with('\n');
-        let lines = build_lines(content, newline);
+        let (newline, trailing_newline, lines, content_len) = parse_document_content(content, path)?;
 
         Ok(Document {
             path: path.to_path_buf(),
             newline,
             trailing_newline,
             lines,
+            content_len,
             file_meta: None,
         })
     }
@@ -113,10 +116,9 @@ impl Document {
         }
 
         let separator = self.newline.separator().as_bytes();
-        let content_len: usize = self.lines.iter().map(|line| line.content.len()).sum();
         let separator_count =
             self.lines.len().saturating_sub(1) + usize::from(self.trailing_newline);
-        let mut rendered = Vec::with_capacity(content_len + separator.len() * separator_count);
+        let mut rendered = Vec::with_capacity(self.content_len + separator.len() * separator_count);
 
         for (index, line) in self.lines.iter().enumerate() {
             if index > 0 {
@@ -139,14 +141,26 @@ impl Document {
         collision_pairs.sort_unstable();
         let (unique_hashes, collision_count) = summarize_bucket_counts(&bucket_counts);
 
+        let estimated_read_tokens = estimate_read_tokens(self);
+        let hash_length_advice = recommend_hash_length(self);
+        let suggested_context_n = suggest_context_n(self);
+        let recommended_read_mode = recommend_read_mode(self, estimated_read_tokens);
+        let recommended_anchor_mode = recommend_anchor_mode(self, collision_count, hash_length_advice);
+        let recommended_workflow = recommend_workflow(self, estimated_read_tokens, collision_count);
+        let warnings = collect_warnings(self, estimated_read_tokens, collision_count, hash_length_advice);
+
         FileStats {
             line_count: self.len(),
             unique_hashes,
             collision_count,
             collision_pairs,
-            estimated_read_tokens: estimate_read_tokens(self),
-            hash_length_advice: recommend_hash_length(self),
-            suggested_context_n: suggest_context_n(self),
+            estimated_read_tokens,
+            hash_length_advice,
+            suggested_context_n,
+            recommended_read_mode,
+            recommended_anchor_mode,
+            recommended_workflow,
+            warnings,
         }
     }
 
@@ -176,63 +190,36 @@ pub fn format_short_hash(short_hash: ShortHash) -> String {
     hash::format_short_hash(short_hash)
 }
 
-fn build_lines(content: &str, newline: NewlineStyle) -> Vec<LineRecord> {
+fn parse_document_content(
+    content: &str,
+    path: &Path,
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
     if content.is_empty() {
-        return Vec::new();
+        return Ok((NewlineStyle::Lf, false, Vec::new(), 0));
     }
 
-    let line_count = match newline {
-        NewlineStyle::Lf => content
-            .as_bytes()
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count(),
-        NewlineStyle::Crlf => content
-            .as_bytes()
-            .windows(2)
-            .filter(|window| *window == b"\r\n")
-            .count(),
-    };
-    let mut lines = Vec::with_capacity(line_count);
-
-    match newline {
-        NewlineStyle::Lf => {
-            for line in content.split_terminator('\n') {
-                lines.push(build_line_record(line));
-            }
-        }
-        NewlineStyle::Crlf => {
-            for line in content.split_terminator("\r\n") {
-                lines.push(build_line_record(line));
-            }
-        }
-    }
-
-    lines
-}
-
-fn build_line_record(content: &str) -> LineRecord {
-    let full_hash = hash::full_hash(content);
-    LineRecord {
-        content: content.to_owned(),
-        full_hash,
-        short_hash: hash::short_from_full(full_hash),
-    }
-}
-
-fn detect_newline_style(content: &str, path: &Path) -> Result<NewlineStyle, LinehashError> {
     let bytes = content.as_bytes();
     let mut saw_lf = false;
     let mut saw_crlf = false;
     let mut saw_bare_cr = false;
+    let mut newline = NewlineStyle::Lf;
+    let trailing_newline = content.ends_with('\n');
+    let mut lines = Vec::new();
+    let mut start = 0;
     let mut index = 0;
+    let mut content_len = 0;
 
     while index < bytes.len() {
         match bytes[index] {
             b'\r' => {
                 if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
                     saw_crlf = true;
+                    newline = NewlineStyle::Crlf;
+                    let line = &content[start..index];
+                    content_len += line.len();
+                    lines.push(build_line_record(line));
                     index += 2;
+                    start = index;
                 } else {
                     saw_bare_cr = true;
                     index += 1;
@@ -240,7 +227,11 @@ fn detect_newline_style(content: &str, path: &Path) -> Result<NewlineStyle, Line
             }
             b'\n' => {
                 saw_lf = true;
+                let line = &content[start..index];
+                content_len += line.len();
+                lines.push(build_line_record(line));
                 index += 1;
+                start = index;
             }
             _ => {
                 index += 1;
@@ -254,10 +245,21 @@ fn detect_newline_style(content: &str, path: &Path) -> Result<NewlineStyle, Line
         });
     }
 
-    if saw_crlf {
-        Ok(NewlineStyle::Crlf)
-    } else {
-        Ok(NewlineStyle::Lf)
+    if !trailing_newline && start < content.len() {
+        let line = &content[start..];
+        content_len += line.len();
+        lines.push(build_line_record(line));
+    }
+
+    Ok((newline, trailing_newline, lines, content_len))
+}
+
+fn build_line_record(content: &str) -> LineRecord {
+    let full_hash = hash::full_hash(content);
+    LineRecord {
+        content: content.to_owned(),
+        full_hash,
+        short_hash: hash::short_from_full(full_hash),
     }
 }
 
@@ -325,9 +327,8 @@ fn collect_collision_pairs(index: &ShortHashIndex) -> Vec<(usize, usize)> {
 }
 
 fn estimate_read_tokens(doc: &Document) -> usize {
-    let content_chars: usize = doc.lines.iter().map(|line| line.content.len()).sum();
     let anchor_overhead = doc.lines.len() * 8;
-    (content_chars + anchor_overhead) / 4
+    (doc.content_len + anchor_overhead) / 4
 }
 
 fn recommend_hash_length(doc: &Document) -> u8 {
@@ -370,6 +371,64 @@ fn suggest_context_n(doc: &Document) -> usize {
     gaps.sort_unstable();
     let median_gap = gaps[gaps.len() / 2];
     (median_gap / 2).clamp(3, 20)
+}
+
+fn recommend_read_mode(doc: &Document, estimated_read_tokens: usize) -> &'static str {
+    if doc.is_empty() {
+        "read"
+    } else if estimated_read_tokens <= 2_000 && doc.len() <= 400 {
+        "read"
+    } else if estimated_read_tokens <= 8_000 {
+        "read --anchor <line:hash> --context N"
+    } else {
+        "index or read --anchor <line:hash> --context N"
+    }
+}
+
+fn recommend_anchor_mode(doc: &Document, collision_count: usize, hash_length_advice: u8) -> &'static str {
+    if doc.is_empty() {
+        "qualified"
+    } else if collision_count > 0 || doc.len() >= 200 || hash_length_advice > 2 {
+        "qualified"
+    } else {
+        "bare-or-qualified"
+    }
+}
+
+fn recommend_workflow(doc: &Document, estimated_read_tokens: usize, collision_count: usize) -> &'static str {
+    if doc.is_empty() {
+        "read-empty-file"
+    } else if collision_count > 0 {
+        "stats -> annotate/grep -> read --anchor --context -> edit/patch -> verify"
+    } else if estimated_read_tokens > 8_000 {
+        "index -> annotate/grep -> read --anchor --context -> edit/patch -> verify"
+    } else {
+        "read -> annotate/grep -> verify -> edit/patch -> verify"
+    }
+}
+
+fn collect_warnings(
+    doc: &Document,
+    estimated_read_tokens: usize,
+    collision_count: usize,
+    hash_length_advice: u8,
+) -> Vec<&'static str> {
+    let mut warnings = Vec::new();
+
+    if collision_count > 0 {
+        warnings.push("short-hash collisions detected; prefer qualified anchors like 12:ab");
+    }
+    if hash_length_advice > 2 {
+        warnings.push("2-char hashes may be cramped for this file; use stats and qualified anchors to avoid ambiguity");
+    }
+    if estimated_read_tokens > 8_000 {
+        warnings.push("full read output will be expensive; orient with index/stats, then narrow with --anchor and --context");
+    }
+    if doc.len() > 2_000 {
+        warnings.push("large file: prefer patch/find-block workflows over many tiny edits");
+    }
+
+    warnings
 }
 
 fn is_structure_marker(content: &str) -> bool {
@@ -581,6 +640,10 @@ mod tests {
                 estimated_read_tokens: 0,
                 hash_length_advice: 2,
                 suggested_context_n: 5,
+                recommended_read_mode: "read",
+                recommended_anchor_mode: "qualified",
+                recommended_workflow: "read-empty-file",
+                warnings: vec![],
             }
         );
     }

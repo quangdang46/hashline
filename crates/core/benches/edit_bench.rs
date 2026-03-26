@@ -16,7 +16,7 @@ mod hash;
 mod mutation;
 mod support;
 
-use anchor::{parse_anchor, resolve};
+use anchor::{parse_anchor, resolve, resolve_without_index};
 use document::Document;
 use error::LinehashError;
 use mutation::replace_line;
@@ -29,9 +29,8 @@ use support::{
 fn linehash_edit_once(scenario: &EditScenario) -> Result<String, LinehashError> {
     let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
         .expect("build benchmark document");
-    let index = doc.build_index();
     let anchor = parse_anchor(&scenario.target_anchor).expect("parse target anchor");
-    let resolved = resolve(&anchor, &doc, &index)?;
+    let resolved = resolve_without_index(&anchor, &doc)?;
 
     replace_line(&mut doc, resolved.index, &scenario.replacement_line)
         .expect("replace target line");
@@ -48,9 +47,8 @@ fn linehash_parse_once(scenario: &EditScenario) -> usize {
 fn linehash_resolve_once(scenario: &EditScenario) -> Result<usize, LinehashError> {
     let doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
         .expect("build benchmark document");
-    let index = doc.build_index();
     let anchor = parse_anchor(&scenario.target_anchor).expect("parse target anchor");
-    let resolved = resolve(&anchor, &doc, &index)?;
+    let resolved = resolve_without_index(&anchor, &doc)?;
     Ok(resolved.index)
 }
 

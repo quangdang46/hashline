@@ -260,6 +260,43 @@ fn annotate_expect_one_with_multiple_matches_reports_candidates() {
 }
 
 #[test]
+fn stats_json_includes_workflow_guidance_fields() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let parsed = parse_json(&["stats", &fixture_arg, "--json"]);
+
+    assert!(parsed["recommended_read_mode"].is_string());
+    assert!(parsed["recommended_anchor_mode"].is_string());
+    assert!(parsed["recommended_workflow"].is_string());
+    assert!(parsed["warnings"].is_array());
+}
+
+#[test]
+fn doctor_pretty_recommends_next_commands() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_linehash(&["doctor", &fixture_arg]);
+
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("Recommended read mode:"));
+    assert!(stdout.contains("Recommended workflow:"));
+    assert!(stdout.contains("Next commands:"));
+    assert!(stdout.contains("linehash annotate"));
+}
+
+#[test]
+fn doctor_json_is_machine_readable() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let parsed = parse_json(&["doctor", &fixture_arg, "--json"]);
+
+    assert_eq!(parsed["file"], fixture_arg);
+    assert!(parsed["recommended_read_mode"].is_string());
+    assert!(parsed["next_commands"].is_array());
+}
+
+#[test]
 fn annotate_no_match_reports_helpful_message() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();

@@ -75,6 +75,23 @@ fn snapshot_stats_json_output() {
 }
 
 #[test]
+fn snapshot_doctor_json_output() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let mut parsed = parse_json(&["doctor", &fixture_arg, "--json"]);
+    parsed["file"] = Value::String("<fixture>".into());
+    if let Some(commands) = parsed["next_commands"].as_array_mut() {
+        for command in commands {
+            if let Some(value) = command.as_str() {
+                *command = Value::String(value.replace(&fixture_arg, "<fixture>"));
+            }
+        }
+    }
+
+    assert_json_snapshot!("doctor_json_simple_lf", parsed);
+}
+
+#[test]
 fn snapshot_verify_json_output() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();

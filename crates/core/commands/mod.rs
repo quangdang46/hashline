@@ -1,6 +1,7 @@
 pub mod annotate;
 pub mod common;
 pub mod delete;
+pub mod doctor;
 pub mod edit;
 pub mod explode;
 pub mod find_block;

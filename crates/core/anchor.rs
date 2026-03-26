@@ -79,7 +79,24 @@ pub fn resolve(
 ) -> Result<ResolvedLine, LinehashError> {
     match anchor {
         Anchor::Hash { short } => resolve_unqualified(*short, doc, index),
-        Anchor::LineHash { line, short } => resolve_qualified(*line, *short, doc, index),
+        Anchor::LineHash { line, short } => resolve_qualified(*line, *short, doc, Some(index)),
+    }
+}
+
+pub fn resolve_without_index(anchor: &Anchor, doc: &Document) -> Result<ResolvedLine, LinehashError> {
+    match anchor {
+        Anchor::Hash { short } => {
+            let index = doc.build_index();
+            resolve_unqualified(*short, doc, &index)
+        }
+        Anchor::LineHash { line, short } => match resolve_qualified(*line, *short, doc, None) {
+            Ok(resolved) => Ok(resolved),
+            Err(LinehashError::StaleAnchor { .. }) => {
+                let index = doc.build_index();
+                resolve_qualified(*line, *short, doc, Some(&index))
+            }
+            Err(error) => Err(error),
+        },
     }
 }
 
@@ -149,7 +166,7 @@ fn resolve_qualified(
     line: usize,
     short: ShortHash,
     doc: &Document,
-    index: &ShortHashIndex,
+    index: Option<&ShortHashIndex>,
 ) -> Result<ResolvedLine, LinehashError> {
     let path = doc.path.display().to_string();
     let rendered_short = format_short_hash(short);
@@ -174,13 +191,17 @@ fn resolve_qualified(
         });
     }
 
-    let relocated_suffix = if !index[short as usize].is_empty() {
-        let lines = index[short as usize]
-            .iter()
-            .map(|idx| (idx + 1).to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("; hash still exists at line(s) {lines}")
+    let relocated_suffix = if let Some(index) = index {
+        if !index[short as usize].is_empty() {
+            let lines = index[short as usize]
+                .iter()
+                .map(|idx| (idx + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("; hash still exists at line(s) {lines}")
+        } else {
+            String::new()
+        }
     } else {
         String::new()
     };

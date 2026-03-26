@@ -50,6 +50,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Indent(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
         Commands::Stats(cmd) => flag_mode(cmd.json),
+        Commands::Doctor(cmd) => flag_mode(cmd.json),
         Commands::FromDiff(cmd) => flag_mode(cmd.json),
         Commands::MergePatches(cmd) => flag_mode(cmd.json),
         Commands::Watch(cmd) => flag_mode(cmd.json),
@@ -71,8 +72,8 @@ fn flag_mode(json: bool) -> OutputMode {
 mod tests {
     use super::{OutputMode, output_mode_for};
     use crate::cli::{
-        Commands, DeleteCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd, ReadCmd,
-        WatchCmd,
+        Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
+        ReadCmd, WatchCmd,
     };
     use std::path::PathBuf;
 
@@ -184,6 +185,16 @@ mod tests {
             audit_log: None,
             expect_mtime: None,
             expect_inode: None,
+            json: true,
+        });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Json);
+    }
+
+    #[test]
+    fn supports_json_mode_for_doctor() {
+        let command = Commands::Doctor(DoctorCmd {
+            file: PathBuf::from("demo.txt"),
             json: true,
         });
 

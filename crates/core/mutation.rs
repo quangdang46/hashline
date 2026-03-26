@@ -16,8 +16,10 @@ pub fn replace_line(doc: &mut Document, index: usize, content: &str) -> Result<(
     validate_single_line_content(content)?;
     ensure_index(doc, index)?;
 
+    let old_len = doc.lines[index].content.len();
     doc.lines[index].content = content.to_owned();
     refresh_line_metadata(&mut doc.lines[index]);
+    doc.content_len = doc.content_len + doc.lines[index].content.len() - old_len;
     Ok(())
 }
 
@@ -30,8 +32,10 @@ pub fn replace_range_with_line(
     validate_single_line_content(content)?;
     ensure_range(doc, start, end)?;
 
+    let removed_len: usize = doc.lines[start..=end].iter().map(|line| line.content.len()).sum();
     doc.lines.splice(start..=end, [new_line_record(content)]);
     refresh_line_metadata(&mut doc.lines[start]);
+    doc.content_len = doc.content_len + doc.lines[start].content.len() - removed_len;
     Ok(())
 }
 
@@ -41,13 +45,16 @@ pub fn insert_line(doc: &mut Document, index: usize, content: &str) -> Result<()
 
     doc.lines.insert(index, new_line_record(content));
     refresh_line_metadata(&mut doc.lines[index]);
+    doc.content_len += doc.lines[index].content.len();
     Ok(())
 }
 
 pub fn delete_line(doc: &mut Document, index: usize) -> Result<(), LinehashError> {
     ensure_index(doc, index)?;
 
+    let removed_len = doc.lines[index].content.len();
     doc.lines.remove(index);
+    doc.content_len -= removed_len;
     Ok(())
 }
 

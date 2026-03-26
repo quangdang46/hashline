@@ -208,6 +208,17 @@ pub fn print_stats(writer: &mut impl Write, stats: &FileStats) -> io::Result<()>
         stats.hash_length_advice
     )?;
     writeln!(writer, "Suggested --context: {}", stats.suggested_context_n)?;
+    writeln!(writer, "Recommended read mode: {}", stats.recommended_read_mode)?;
+    writeln!(writer, "Recommended anchor mode: {}", stats.recommended_anchor_mode)?;
+    writeln!(writer, "Recommended workflow: {}", stats.recommended_workflow)?;
+    if stats.warnings.is_empty() {
+        writeln!(writer, "Warnings: none")?;
+    } else {
+        writeln!(writer, "Warnings:")?;
+        for warning in &stats.warnings {
+            writeln!(writer, "- {warning}")?;
+        }
+    }
     writeln!(writer, "Note: v1 anchors still use fixed 2-char hashes.")
 }
 
@@ -469,6 +480,10 @@ mod tests {
             estimated_read_tokens: 12,
             hash_length_advice: 2,
             suggested_context_n: 5,
+            recommended_read_mode: "read",
+            recommended_anchor_mode: "bare-or-qualified",
+            recommended_workflow: "read -> annotate/grep -> verify -> edit/patch -> verify",
+            warnings: vec![],
         };
         let mut out = Vec::new();
         print_stats(&mut out, &stats).unwrap();
@@ -476,6 +491,8 @@ mod tests {
         assert!(rendered.contains("Lines: 3"));
         assert!(rendered.contains("Unique hashes (2-char): 3"));
         assert!(rendered.contains("Hash length advice: 2-char recommended"));
+        assert!(rendered.contains("Recommended read mode: read"));
+        assert!(rendered.contains("Warnings: none"));
     }
 
     #[test]
@@ -518,6 +535,10 @@ mod tests {
             estimated_read_tokens: 2,
             hash_length_advice: 2,
             suggested_context_n: 5,
+            recommended_read_mode: "read",
+            recommended_anchor_mode: "bare-or-qualified",
+            recommended_workflow: "read -> annotate/grep -> verify -> edit/patch -> verify",
+            warnings: vec![],
         };
         let mut out = Vec::new();
         print_stats_json(&mut out, &stats).unwrap();

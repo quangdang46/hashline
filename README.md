@@ -210,8 +210,54 @@ Example:
 - Use `swap`, `move`, `indent`, and `find-block` instead of simulating structural edits with multiple fragile single-line operations.
 - Use `patch`, `from-diff`, and `merge-patches` for multi-step or reviewable change sets.
 - Use `stats` when a file is large, collisions are likely, or you want guidance on whether short hashes and small context windows are still ergonomic.
+- Use `doctor` when you want a read-only recommendation for how to approach a file before reading or editing it.
 - Use `explode` / `implode` only when you explicitly want a filesystem-native round-trip workflow.
 - Use qualified anchors like `12:ab` whenever possible; they are safer than bare `ab` when collisions or stale reads matter.
+
+## Workflow playbooks
+
+### Targeted edit
+
+1. `linehash read <file>`
+2. Copy the qualified anchor as `line:hash`
+3. `linehash edit <file> <line:hash> <new_content>`
+4. `linehash verify <file> <line:hash>` or re-read the local neighborhood
+
+### Search → anchor → edit
+
+1. `linehash annotate <file> <text>` when you know exact content
+2. `linehash grep <file> <pattern>` when you know a regex or broader pattern
+3. `linehash read <file> --anchor <line:hash> --context N`
+4. `linehash edit` / `linehash patch`
+
+### Large-file workflow
+
+1. `linehash stats <file>` to inspect token cost, collisions, and suggested context
+2. `linehash doctor <file>` to get a read-only workflow recommendation
+3. `linehash index <file>` if you only need orientation
+4. `linehash read <file> --anchor <line:hash> --context N` instead of repeatedly dumping the whole file
+
+### Stale-anchor recovery
+
+1. Treat stale-anchor failures as the safety system working correctly
+2. Re-run `linehash read <file>` or `linehash read <file> --json`
+3. If the error reports relocated lines, rebuild a fresh qualified anchor from that neighborhood
+4. Retry the mutation with the refreshed anchor
+
+### Multi-op patch workflow
+
+1. Use `annotate` / `grep` / `find-block` to collect target anchors
+2. Build a patch JSON file
+3. Run `linehash patch <file> <patch.json> --dry-run`
+4. Apply the patch once the dry-run output looks correct
+5. Use `merge-patches` when combining independently prepared change sets
+
+### Structural edit workflow
+
+- Use `find-block` before editing a function/class-sized region
+- Use `move` or `swap` for reordering instead of rewriting text by hand
+- Use `indent` after movement or when shifting a whole block
+- Prefer `patch` over many tiny single-line edits when the change is coordinated
 
 ## Output Modes
 
@@ -248,6 +294,7 @@ linehash watch src/auth.js --json
 - `verify` checks whether anchors still resolve and returns a non-zero exit code if any do not.
 - `grep` searches by regex and returns anchor-addressed matches.
 - `annotate` maps exact substrings or regex matches back to current anchors.
+- `doctor` recommends a read-only workflow for a file using current size/collision heuristics.
 - `patch` applies a JSON patch transaction atomically.
 - `swap` exchanges two lines in one snapshot-safe operation.
 - `move` repositions one line before or after another anchor.
@@ -297,3 +344,4 @@ Hint: re-read the file metadata and retry with fresh --expect-mtime/--expect-ino
 - [ ] `linehash undo` — revert last edit
 - [ ] Multi-line insert block support
 - [ ] Integration test suite against real codebases
+- [x] Workflow benchmark harness with raw result artifacts and markdown reports
