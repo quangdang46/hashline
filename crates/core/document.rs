@@ -383,9 +383,7 @@ fn suggest_context_n(doc: &Document) -> usize {
 }
 
 fn recommend_read_mode(doc: &Document, estimated_read_tokens: usize) -> &'static str {
-    if doc.is_empty() {
-        "read"
-    } else if estimated_read_tokens <= 2_000 && doc.len() <= 400 {
+    if doc.is_empty() || (estimated_read_tokens <= 2_000 && doc.len() <= 400) {
         "read"
     } else if estimated_read_tokens <= 8_000 {
         "read --anchor <line:hash> --context N"
@@ -399,9 +397,7 @@ fn recommend_anchor_mode(
     collision_count: usize,
     hash_length_advice: u8,
 ) -> &'static str {
-    if doc.is_empty() {
-        "qualified"
-    } else if collision_count > 0 || doc.len() >= 200 || hash_length_advice > 2 {
+    if doc.is_empty() || collision_count > 0 || doc.len() >= 200 || hash_length_advice > 2 {
         "qualified"
     } else {
         "bare-or-qualified"

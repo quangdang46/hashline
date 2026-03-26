@@ -30,7 +30,7 @@ pub fn run<W: Write, E: Write>(
     let next_commands = build_next_commands(&cmd.file.display().to_string(), &stats);
 
     if cmd.json {
-        let warnings = stats.warnings.iter().copied().collect::<Vec<_>>();
+        let warnings = stats.warnings.to_vec();
         let payload = DoctorPayload {
             file: cmd.file.display().to_string(),
             line_count: stats.line_count,
