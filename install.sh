@@ -201,22 +201,27 @@ archive_name_for_platform() {
     printf '%s-%s-%s.%s' "$BINARY_NAME" "$VERSION" "$suffix" "$ext"
 }
 
+# === Version ===
+FULL_TAG=""
 resolve_version() {
     [ -n "$VERSION" ] && return 0
+    FULL_TAG=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+        "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" 2>/dev/null \
+        | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') || true
+    if ! [[ "$FULL_TAG" =~ v[0-9] ]]; then
+        FULL_TAG=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+            "https://github.com/${OWNER}/${REPO}/releases/latest" 2>/dev/null \
+            | sed -E 's|.*/tag/||') || true
+    fi
+    [[ "$FULL_TAG" =~ v[0-9] ]] || die "Could not resolve version"
 
-    VERSION=$(curl -fsSL \
-        --connect-timeout 10 --max-time 30 \
-        -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/${OWNER}/${REPO}/releases/latest" \
-        2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') || true
-
-    if [ -z "$VERSION" ]; then
-        VERSION=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-            "https://github.com/${OWNER}/${REPO}/releases/latest" \
-            2>/dev/null | sed -E 's|.*/tag/||') || true
+    if [[ "$FULL_TAG" =~ (v[0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+       VERSION="${BASH_REMATCH[1]}"
+    else
+       VERSION="$FULL_TAG"
     fi
 
-    [[ "$VERSION" =~ ^v[0-9] ]] || die "Could not resolve version"
+    log_info "Latest: $FULL_TAG ($VERSION)"
 }
 
 download_file() {
@@ -337,10 +342,9 @@ find_extracted_binary() {
 print_summary() {
     echo ""
     echo "✓ ${BINARY_NAME} installed → $DEST/$BINARY_NAME"
-    echo "  Version: $($DEST/$BINARY_NAME --version 2>/dev/null || echo 'unknown')"
+    echo "  Version: $VERSION"
     echo ""
-    echo "  Quick start:"
-    echo "    $BINARY_NAME --help"
+    echo "  Usage: $BINARY_NAME --help"
 }
 
 main() {
