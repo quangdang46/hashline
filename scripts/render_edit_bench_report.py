@@ -46,8 +46,10 @@ SECTIONS = [
         [
             "edit_resolve_anchor_10k_exact_match",
             "edit_resolve_anchor_100k_exact_match",
+            "edit_resolve_anchor_100k_prebuilt_exact_match",
             "edit_mutate_render_linehash_10k_single_line",
             "edit_mutate_render_linehash_100k_single_line",
+            "edit_render_document_100k_exact_match",
             "edit_replace_naive_line_10k_exact_match",
         ],
     ),
@@ -72,8 +74,10 @@ NOTES = {
     "edit_naive_str_replace_single_edit_10k_line_shift_drift": "line inserted above target: naive still finds matching text",
     "edit_resolve_anchor_10k_exact_match": "anchor resolution only on 10k exact-match fixture",
     "edit_resolve_anchor_100k_exact_match": "anchor resolution only on 100k exact-match fixture",
+    "edit_resolve_anchor_100k_prebuilt_exact_match": "anchor resolution on a prebuilt 100k document to isolate lookup cost from parse cost",
     "edit_mutate_render_linehash_10k_single_line": "linehash mutation plus render on 10k exact-match fixture",
     "edit_mutate_render_linehash_100k_single_line": "linehash mutation plus render on 100k exact-match fixture",
+    "edit_render_document_100k_exact_match": "render-only pass on a prebuilt 100k exact-match fixture",
     "edit_replace_naive_line_10k_exact_match": "naive exact-line replace only on 10k exact-match fixture",
 }
 
@@ -139,7 +143,7 @@ def build_report() -> str:
     lines.append("- Exact-match benchmarks show the raw throughput gap between linehash end-to-end edits and naive exact-line replacement at 1k, 10k, and 100k lines.")
     lines.append("- Long-line exact-match benchmarks show how wider line content changes the tradeoff for both strategies.")
     lines.append("- Robustness scenarios intentionally separate stale surrounding context, stale target content, duplicate target text, and line-shift drift so the report does not collapse correctness and speed into one misleading number.")
-    lines.append("- Phase-breakdown benchmarks help explain whether large-file cost on the linehash side is concentrated in resolution or in mutation+render work.")
+    lines.append("- Phase-breakdown benchmarks help explain whether large-file cost on the linehash side is concentrated in parse, lookup, or mutation+render work.")
     lines.append("")
 
     lines.append("## Update instructions")

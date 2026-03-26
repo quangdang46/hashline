@@ -70,6 +70,16 @@ fn linehash_mutate_render_with_receipt_once(scenario: &EditScenario) -> (usize, 
     (before_len, after)
 }
 
+fn linehash_resolve_prebuilt_exact_match(doc: &Document, anchor: &str) -> Result<usize, LinehashError> {
+    let parsed = parse_anchor(anchor).expect("parse target anchor");
+    let resolved = resolve_without_index(&parsed, doc)?;
+    Ok(resolved.index)
+}
+
+fn linehash_render_prebuilt(doc: &Document) -> usize {
+    doc.render().len()
+}
+
 fn naive_str_replace_line_once(scenario: &EditScenario) -> bool {
     let content = scenario.drifted_content.clone();
     if !content.contains(&scenario.naive_old_line) {
@@ -439,6 +449,27 @@ fn bench_edit_mutate_render_linehash_100k_single_line_with_receipt(c: &mut Crite
     );
 }
 
+fn bench_edit_resolve_anchor_100k_prebuilt_exact_match(c: &mut Criterion) {
+    let scenario = generate_exact_match_edit_scenario(100_000);
+    let doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
+        .expect("build benchmark document");
+    let anchor = scenario.target_anchor.clone();
+
+    c.bench_function("edit_resolve_anchor_100k_prebuilt_exact_match", |b| {
+        b.iter(|| black_box(linehash_resolve_prebuilt_exact_match(black_box(&doc), black_box(&anchor)).expect("anchor resolves")))
+    });
+}
+
+fn bench_edit_render_document_100k_exact_match(c: &mut Criterion) {
+    let scenario = generate_exact_match_edit_scenario(100_000);
+    let doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
+        .expect("build benchmark document");
+
+    c.bench_function("edit_render_document_100k_exact_match", |b| {
+        b.iter(|| black_box(linehash_render_prebuilt(black_box(&doc))))
+    });
+}
+
 fn bench_edit_replace_naive_line_10k_exact_match(c: &mut Criterion) {
     let scenario = generate_exact_match_edit_scenario(10_000);
     assert_exact_match_scenario(&scenario, 10_000);
@@ -469,9 +500,11 @@ criterion_group!(
     bench_edit_parse_document_10k_exact_match,
     bench_edit_resolve_anchor_10k_exact_match,
     bench_edit_resolve_anchor_100k_exact_match,
+    bench_edit_resolve_anchor_100k_prebuilt_exact_match,
     bench_edit_parse_document_100k_exact_match,
     bench_edit_mutate_render_linehash_10k_single_line,
     bench_edit_mutate_render_linehash_100k_single_line,
+    bench_edit_render_document_100k_exact_match,
     bench_edit_mutate_render_linehash_10k_single_line_with_receipt,
     bench_edit_mutate_render_linehash_100k_single_line_with_receipt,
     bench_edit_replace_naive_line_10k_exact_match
