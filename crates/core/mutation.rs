@@ -32,7 +32,10 @@ pub fn replace_range_with_line(
     validate_single_line_content(content)?;
     ensure_range(doc, start, end)?;
 
-    let removed_len: usize = doc.lines[start..=end].iter().map(|line| line.content.len()).sum();
+    let removed_len: usize = doc.lines[start..=end]
+        .iter()
+        .map(|line| line.content.len())
+        .sum();
     doc.lines.splice(start..=end, [new_line_record(content)]);
     refresh_line_metadata(&mut doc.lines[start]);
     doc.content_len = doc.content_len + doc.lines[start].content.len() - removed_len;

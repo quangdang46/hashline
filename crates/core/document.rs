@@ -78,7 +78,8 @@ impl Document {
             path: path_string.clone(),
         })?;
 
-        let (newline, trailing_newline, lines, content_len) = parse_document_content(&content, path)?;
+        let (newline, trailing_newline, lines, content_len) =
+            parse_document_content(&content, path)?;
         let metadata = fs::metadata(path)?;
         let file_meta = Some(FileMeta::from_metadata(&metadata)?);
 
@@ -93,7 +94,8 @@ impl Document {
     }
 
     pub fn from_str(path: &Path, content: &str) -> Result<Document, LinehashError> {
-        let (newline, trailing_newline, lines, content_len) = parse_document_content(content, path)?;
+        let (newline, trailing_newline, lines, content_len) =
+            parse_document_content(content, path)?;
 
         Ok(Document {
             path: path.to_path_buf(),
@@ -145,9 +147,15 @@ impl Document {
         let hash_length_advice = recommend_hash_length(self);
         let suggested_context_n = suggest_context_n(self);
         let recommended_read_mode = recommend_read_mode(self, estimated_read_tokens);
-        let recommended_anchor_mode = recommend_anchor_mode(self, collision_count, hash_length_advice);
+        let recommended_anchor_mode =
+            recommend_anchor_mode(self, collision_count, hash_length_advice);
         let recommended_workflow = recommend_workflow(self, estimated_read_tokens, collision_count);
-        let warnings = collect_warnings(self, estimated_read_tokens, collision_count, hash_length_advice);
+        let warnings = collect_warnings(
+            self,
+            estimated_read_tokens,
+            collision_count,
+            hash_length_advice,
+        );
 
         FileStats {
             line_count: self.len(),
@@ -204,7 +212,8 @@ fn parse_document_content(
     let mut saw_bare_cr = false;
     let mut newline = NewlineStyle::Lf;
     let trailing_newline = content.ends_with('\n');
-    let mut lines = Vec::new();
+    let estimated_line_count = bytes.iter().filter(|byte| **byte == b'\n').count();
+    let mut lines = Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
     let mut start = 0;
     let mut index = 0;
     let mut content_len = 0;
@@ -385,7 +394,11 @@ fn recommend_read_mode(doc: &Document, estimated_read_tokens: usize) -> &'static
     }
 }
 
-fn recommend_anchor_mode(doc: &Document, collision_count: usize, hash_length_advice: u8) -> &'static str {
+fn recommend_anchor_mode(
+    doc: &Document,
+    collision_count: usize,
+    hash_length_advice: u8,
+) -> &'static str {
     if doc.is_empty() {
         "qualified"
     } else if collision_count > 0 || doc.len() >= 200 || hash_length_advice > 2 {
@@ -395,7 +408,11 @@ fn recommend_anchor_mode(doc: &Document, collision_count: usize, hash_length_adv
     }
 }
 
-fn recommend_workflow(doc: &Document, estimated_read_tokens: usize, collision_count: usize) -> &'static str {
+fn recommend_workflow(
+    doc: &Document,
+    estimated_read_tokens: usize,
+    collision_count: usize,
+) -> &'static str {
     if doc.is_empty() {
         "read-empty-file"
     } else if collision_count > 0 {

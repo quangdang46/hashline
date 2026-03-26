@@ -208,9 +208,21 @@ pub fn print_stats(writer: &mut impl Write, stats: &FileStats) -> io::Result<()>
         stats.hash_length_advice
     )?;
     writeln!(writer, "Suggested --context: {}", stats.suggested_context_n)?;
-    writeln!(writer, "Recommended read mode: {}", stats.recommended_read_mode)?;
-    writeln!(writer, "Recommended anchor mode: {}", stats.recommended_anchor_mode)?;
-    writeln!(writer, "Recommended workflow: {}", stats.recommended_workflow)?;
+    writeln!(
+        writer,
+        "Recommended read mode: {}",
+        stats.recommended_read_mode
+    )?;
+    writeln!(
+        writer,
+        "Recommended anchor mode: {}",
+        stats.recommended_anchor_mode
+    )?;
+    writeln!(
+        writer,
+        "Recommended workflow: {}",
+        stats.recommended_workflow
+    )?;
     if stats.warnings.is_empty() {
         writeln!(writer, "Warnings: none")?;
     } else {

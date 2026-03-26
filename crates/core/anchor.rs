@@ -83,7 +83,10 @@ pub fn resolve(
     }
 }
 
-pub fn resolve_without_index(anchor: &Anchor, doc: &Document) -> Result<ResolvedLine, LinehashError> {
+pub fn resolve_without_index(
+    anchor: &Anchor,
+    doc: &Document,
+) -> Result<ResolvedLine, LinehashError> {
     match anchor {
         Anchor::Hash { short } => {
             let index = doc.build_index();

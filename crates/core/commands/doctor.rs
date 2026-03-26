@@ -48,7 +48,10 @@ pub fn run<W: Write, E: Write>(
         output::write_success_line(ctx, &format!("Lines: {}", stats.line_count))?;
         output::write_success_line(
             ctx,
-            &format!("Estimated full read cost: ~{} tokens", stats.estimated_read_tokens),
+            &format!(
+                "Estimated full read cost: ~{} tokens",
+                stats.estimated_read_tokens
+            ),
         )?;
         output::write_success_line(
             ctx,

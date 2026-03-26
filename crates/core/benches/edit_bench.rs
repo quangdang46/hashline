@@ -26,7 +26,7 @@ use support::{
     generate_target_whitespace_drift_edit_scenario, generate_whitespace_drift_edit_scenario,
 };
 
-fn linehash_edit_once(scenario: &EditScenario) -> Result<String, LinehashError> {
+fn linehash_edit_once(scenario: &EditScenario) -> Result<usize, LinehashError> {
     let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
         .expect("build benchmark document");
     let anchor = parse_anchor(&scenario.target_anchor).expect("parse target anchor");
@@ -35,7 +35,7 @@ fn linehash_edit_once(scenario: &EditScenario) -> Result<String, LinehashError> 
     replace_line(&mut doc, resolved.index, &scenario.replacement_line)
         .expect("replace target line");
 
-    Ok(String::from_utf8(doc.render()).expect("render benchmark document"))
+    Ok(doc.render().len())
 }
 
 fn linehash_parse_once(scenario: &EditScenario) -> usize {
@@ -52,25 +52,28 @@ fn linehash_resolve_once(scenario: &EditScenario) -> Result<usize, LinehashError
     Ok(resolved.index)
 }
 
-fn linehash_mutate_render_once(scenario: &EditScenario) -> String {
+fn linehash_mutate_render_once(scenario: &EditScenario) -> usize {
     let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
         .expect("build benchmark document");
     let target_index = scenario.target_line_number - 1;
     replace_line(&mut doc, target_index, &scenario.replacement_line).expect("replace target line");
-    String::from_utf8(doc.render()).expect("render benchmark document")
+    doc.render().len()
 }
 
-fn linehash_mutate_render_with_receipt_once(scenario: &EditScenario) -> (usize, String) {
+fn linehash_mutate_render_with_receipt_once(scenario: &EditScenario) -> (usize, usize) {
     let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
         .expect("build benchmark document");
     let before_len = doc.render().len();
     let target_index = scenario.target_line_number - 1;
     replace_line(&mut doc, target_index, &scenario.replacement_line).expect("replace target line");
-    let after = String::from_utf8(doc.render()).expect("render benchmark document");
-    (before_len, after)
+    let after_len = doc.render().len();
+    (before_len, after_len)
 }
 
-fn linehash_resolve_prebuilt_exact_match(doc: &Document, anchor: &str) -> Result<usize, LinehashError> {
+fn linehash_resolve_prebuilt_exact_match(
+    doc: &Document,
+    anchor: &str,
+) -> Result<usize, LinehashError> {
     let parsed = parse_anchor(anchor).expect("parse target anchor");
     let resolved = resolve_without_index(&parsed, doc)?;
     Ok(resolved.index)
@@ -103,10 +106,15 @@ fn naive_str_replace_block_once(scenario: &EditScenario) -> bool {
 fn assert_exact_match_scenario(scenario: &EditScenario, expected_lines: usize) {
     assert_eq!(scenario.drifted_content.lines().count(), expected_lines);
 
-    let rendered = linehash_edit_once(scenario).expect("linehash exact-match edit succeeds");
-    let edited_lines = rendered.lines().collect::<Vec<_>>();
+    linehash_edit_once(scenario).expect("linehash exact-match edit succeeds");
+    let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
+        .expect("build benchmark document");
+    let anchor = parse_anchor(&scenario.target_anchor).expect("parse target anchor");
+    let resolved = resolve_without_index(&anchor, &doc).expect("anchor resolves");
+    replace_line(&mut doc, resolved.index, &scenario.replacement_line)
+        .expect("replace target line");
     assert_eq!(
-        edited_lines[scenario.target_line_number - 1],
+        doc.lines[scenario.target_line_number - 1].content,
         scenario.expected_target_line
     );
     assert!(
@@ -118,10 +126,15 @@ fn assert_exact_match_scenario(scenario: &EditScenario, expected_lines: usize) {
 fn assert_surrounding_drift_scenario(scenario: &EditScenario) {
     assert_eq!(scenario.drifted_content.lines().count(), 10_000);
 
-    let rendered = linehash_edit_once(scenario).expect("linehash drift edit succeeds");
-    let edited_lines = rendered.lines().collect::<Vec<_>>();
+    linehash_edit_once(scenario).expect("linehash drift edit succeeds");
+    let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
+        .expect("build benchmark document");
+    let anchor = parse_anchor(&scenario.target_anchor).expect("parse target anchor");
+    let resolved = resolve_without_index(&anchor, &doc).expect("anchor resolves");
+    replace_line(&mut doc, resolved.index, &scenario.replacement_line)
+        .expect("replace target line");
     assert_eq!(
-        edited_lines[scenario.target_line_number - 1],
+        doc.lines[scenario.target_line_number - 1].content,
         scenario.expected_target_line
     );
 
@@ -164,9 +177,17 @@ fn assert_duplicate_target_scenario(scenario: &EditScenario) {
         "fixture should contain at least two identical target lines"
     );
 
-    let rendered = linehash_edit_once(scenario).expect("linehash duplicate-target edit succeeds");
-    let linehash_lines = rendered.lines().collect::<Vec<_>>();
-    assert_eq!(linehash_lines[target_index], scenario.expected_target_line);
+    linehash_edit_once(scenario).expect("linehash duplicate-target edit succeeds");
+    let mut doc = Document::from_str(Path::new("bench.rs"), &scenario.drifted_content)
+        .expect("build benchmark document");
+    let anchor = parse_anchor(&scenario.target_anchor).expect("parse target anchor");
+    let resolved = resolve_without_index(&anchor, &doc).expect("anchor resolves");
+    replace_line(&mut doc, resolved.index, &scenario.replacement_line)
+        .expect("replace target line");
+    assert_eq!(
+        doc.lines[target_index].content,
+        scenario.expected_target_line
+    );
 
     let naive_replaced = scenario.drifted_content.clone().replacen(
         &scenario.naive_old_line,
@@ -456,7 +477,12 @@ fn bench_edit_resolve_anchor_100k_prebuilt_exact_match(c: &mut Criterion) {
     let anchor = scenario.target_anchor.clone();
 
     c.bench_function("edit_resolve_anchor_100k_prebuilt_exact_match", |b| {
-        b.iter(|| black_box(linehash_resolve_prebuilt_exact_match(black_box(&doc), black_box(&anchor)).expect("anchor resolves")))
+        b.iter(|| {
+            black_box(
+                linehash_resolve_prebuilt_exact_match(black_box(&doc), black_box(&anchor))
+                    .expect("anchor resolves"),
+            )
+        })
     });
 }
 
