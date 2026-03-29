@@ -15,6 +15,8 @@ use std::io;
 use std::io::Write;
 
 use clap::Parser;
+use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Commands};
 use crate::context::{CommandContext, output_mode_for};
@@ -22,11 +24,17 @@ use crate::error::LinehashError;
 
 fn main() {
     let cli = Cli::parse();
+    init_tracing();
+    debug!(command = command_name(&cli.command), "parsed CLI arguments");
+
     if let Commands::Mcp(cmd) = &cli.command {
+        info!("starting MCP server");
         if let Err(error) = mcp::run(cmd.clone()) {
+            error!(%error, "mcp command failed");
             eprintln!("mcp error: {error}");
             std::process::exit(1);
         }
+        info!("mcp server exited cleanly");
         return;
     }
 
@@ -34,14 +42,18 @@ fn main() {
         let cwd = match std::env::current_dir() {
             Ok(cwd) => cwd,
             Err(error) => {
+                error!(%error, "failed to determine current directory for install-mcp");
                 eprintln!("install-mcp error: failed to determine current directory: {error}");
                 std::process::exit(1);
             }
         };
+        info!(cwd = %cwd.display(), "running install-mcp");
         if let Err(error) = install::run_install_mcp(&cwd, &mut io::stdout(), &mut io::stderr()) {
+            error!(%error, cwd = %cwd.display(), "install-mcp failed");
             eprintln!("install-mcp error: {error}");
             std::process::exit(1);
         }
+        info!("install-mcp completed");
         return;
     }
 
@@ -50,8 +62,12 @@ fn main() {
     let mut stderr = io::stderr();
 
     let exit_code = match run(cli, &mut stdout, &mut stderr) {
-        Ok(code) => code,
+        Ok(code) => {
+            info!(exit_code = code, "command completed");
+            code
+        }
         Err(error) => {
+            error!(%error, "command failed");
             let mut context = CommandContext::new(&mut stdout, &mut stderr, output_mode);
             let _ = output::write_error(&mut context, &error);
             1
@@ -59,6 +75,60 @@ fn main() {
     };
 
     std::process::exit(exit_code);
+}
+
+fn init_tracing() {
+    let env_name = "LINEHASH_LOG";
+    let configured = match std::env::var(env_name) {
+        Ok(value) if !value.trim().is_empty() => value,
+        Ok(_) | Err(std::env::VarError::NotPresent) => return,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!("warning: {env_name} is not valid unicode; tracing is disabled");
+            return;
+        }
+    };
+
+    let filter = match EnvFilter::try_new(configured) {
+        Ok(filter) => filter,
+        Err(error) => {
+            eprintln!("warning: invalid {env_name} filter: {error}");
+            return;
+        }
+    };
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(io::stderr)
+        .with_ansi(false)
+        .compact()
+        .try_init();
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Read(_) => "read",
+        Commands::Index(_) => "index",
+        Commands::Edit(_) => "edit",
+        Commands::Insert(_) => "insert",
+        Commands::Delete(_) => "delete",
+        Commands::Verify(_) => "verify",
+        Commands::Grep(_) => "grep",
+        Commands::Annotate(_) => "annotate",
+        Commands::Patch(_) => "patch",
+        Commands::Swap(_) => "swap",
+        Commands::Move(_) => "move",
+        Commands::Indent(_) => "indent",
+        Commands::FindBlock(_) => "find-block",
+        Commands::Stats(_) => "stats",
+        Commands::Doctor(_) => "doctor",
+        Commands::FromDiff(_) => "from-diff",
+        Commands::MergePatches(_) => "merge-patches",
+        Commands::Watch(_) => "watch",
+        Commands::Explode(_) => "explode",
+        Commands::Implode(_) => "implode",
+        Commands::InstallMcp(_) => "install-mcp",
+        Commands::Mcp(_) => "mcp",
+    }
 }
 
 fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i32, LinehashError> {
@@ -71,6 +141,11 @@ pub(crate) fn run_command<W: Write, E: Write>(
     stderr: &mut E,
 ) -> Result<i32, LinehashError> {
     let output_mode = output_mode_for(&command);
+    debug!(
+        command = command_name(&command),
+        ?output_mode,
+        "dispatching command"
+    );
     let mut context = CommandContext::new(stdout, stderr, output_mode);
 
     match command {

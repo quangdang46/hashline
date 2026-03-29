@@ -20,6 +20,8 @@ notify = "6"
 walkdir = "2"
 memchr = "2"
 memmap2 = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [profile.release]
 opt-level = 3

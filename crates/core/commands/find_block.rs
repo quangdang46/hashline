@@ -138,12 +138,13 @@ fn detect_language(doc: &Document, anchor_index: usize) -> Result<BlockLanguage,
 fn find_brace_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, LinehashError> {
     let mut stack: Vec<usize> = Vec::new();
     let mut blocks = Vec::new();
+    let mut state = BraceScanState::default();
 
     for (line_index, line) in doc.lines.iter().enumerate() {
-        for ch in line.content.chars() {
-            match ch {
-                '{' => stack.push(line_index),
-                '}' => {
+        for brace in code_braces(line.content.as_str(), &mut state) {
+            match brace {
+                BraceToken::Open => stack.push(line_index),
+                BraceToken::Close => {
                     let Some(start_index) = stack.pop() else {
                         return Err(LinehashError::UnbalancedBlock {
                             line_no: anchor_index + 1,
@@ -156,7 +157,6 @@ fn find_brace_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, L
                         end_line: line_index + 1,
                     });
                 }
-                _ => {}
             }
         }
     }
@@ -174,6 +174,224 @@ fn find_brace_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, L
         .ok_or(LinehashError::UnbalancedBlock {
             line_no: anchor_index + 1,
         })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BraceToken {
+    Open,
+    Close,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct BraceScanState {
+    block_comment_depth: usize,
+    string: Option<StringState>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StringState {
+    DoubleQuoted,
+    SingleQuoted,
+    Backtick,
+    RawString { hashes: usize },
+}
+
+fn code_braces(line: &str, state: &mut BraceScanState) -> Vec<BraceToken> {
+    let bytes = line.as_bytes();
+    let mut braces = Vec::new();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if state.block_comment_depth > 0 {
+            if starts_with(bytes, index, b"/*") {
+                state.block_comment_depth += 1;
+                index += 2;
+                continue;
+            }
+            if starts_with(bytes, index, b"*/") {
+                state.block_comment_depth -= 1;
+                index += 2;
+                continue;
+            }
+            index += 1;
+            continue;
+        }
+
+        if let Some(string) = state.string.as_mut() {
+            match string {
+                StringState::DoubleQuoted => {
+                    index = scan_quoted(bytes, index, b'"');
+                    if index <= bytes.len() && bytes.get(index.saturating_sub(1)) == Some(&b'"') {
+                        state.string = None;
+                    }
+                    continue;
+                }
+                StringState::SingleQuoted => {
+                    index = scan_quoted(bytes, index, b'\'');
+                    if index <= bytes.len() && bytes.get(index.saturating_sub(1)) == Some(&b'\'') {
+                        state.string = None;
+                    }
+                    continue;
+                }
+                StringState::Backtick => {
+                    index = scan_backtick(bytes, index);
+                    if index <= bytes.len() && bytes.get(index.saturating_sub(1)) == Some(&b'`') {
+                        state.string = None;
+                    }
+                    continue;
+                }
+                StringState::RawString { hashes } => {
+                    index = scan_raw_string(bytes, index, *hashes);
+                    if raw_string_closed(bytes, index, *hashes) {
+                        state.string = None;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        if starts_with(bytes, index, b"//") {
+            break;
+        }
+        if starts_with(bytes, index, b"/*") {
+            state.block_comment_depth = 1;
+            index += 2;
+            continue;
+        }
+        if let Some(hashes) = raw_string_hashes(bytes, index) {
+            state.string = Some(StringState::RawString { hashes });
+            index += hashes + 2;
+            continue;
+        }
+
+        match bytes[index] {
+            b'"' => {
+                state.string = Some(StringState::DoubleQuoted);
+                index += 1;
+            }
+            b'\'' if is_probable_single_quoted_literal(bytes, index) => {
+                state.string = Some(StringState::SingleQuoted);
+                index += 1;
+            }
+            b'`' => {
+                state.string = Some(StringState::Backtick);
+                index += 1;
+            }
+            b'{' => {
+                braces.push(BraceToken::Open);
+                index += 1;
+            }
+            b'}' => {
+                braces.push(BraceToken::Close);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+
+    braces
+}
+
+fn starts_with(bytes: &[u8], index: usize, needle: &[u8]) -> bool {
+    bytes
+        .get(index..index + needle.len())
+        .is_some_and(|slice| slice == needle)
+}
+
+fn scan_quoted(bytes: &[u8], mut index: usize, quote: u8) -> usize {
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        index += 1;
+        if bytes[index - 1] == quote {
+            break;
+        }
+    }
+    index
+}
+
+fn scan_backtick(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        index += 1;
+        if bytes[index - 1] == b'`' {
+            break;
+        }
+    }
+    index
+}
+
+fn raw_string_hashes(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes.get(index) != Some(&b'r') {
+        return None;
+    }
+    let mut cursor = index + 1;
+    while bytes.get(cursor) == Some(&b'#') {
+        cursor += 1;
+    }
+    if bytes.get(cursor) == Some(&b'"') {
+        Some(cursor - index - 1)
+    } else {
+        None
+    }
+}
+
+fn scan_raw_string(bytes: &[u8], mut index: usize, hashes: usize) -> usize {
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + 1;
+        let mut matched = 0;
+        while matched < hashes && bytes.get(cursor) == Some(&b'#') {
+            matched += 1;
+            cursor += 1;
+        }
+        if matched == hashes {
+            return cursor;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn raw_string_closed(bytes: &[u8], index: usize, hashes: usize) -> bool {
+    if index == 0 || index > bytes.len() {
+        return false;
+    }
+    let quote_index = index - hashes - 1;
+    bytes.get(quote_index) == Some(&b'"')
+        && bytes
+            .get(quote_index + 1..index)
+            .is_some_and(|slice| slice.iter().all(|&byte| byte == b'#'))
+}
+
+fn is_probable_single_quoted_literal(bytes: &[u8], index: usize) -> bool {
+    let Some(next) = bytes.get(index + 1) else {
+        return false;
+    };
+    if next.is_ascii_alphabetic() || *next == b'_' {
+        return false;
+    }
+
+    let mut cursor = index + 1;
+    while cursor < bytes.len() && cursor <= index + 6 {
+        if bytes[cursor] == b'\\' {
+            cursor += 2;
+            continue;
+        }
+        if bytes[cursor] == b'\'' {
+            return true;
+        }
+        cursor += 1;
+    }
+    false
 }
 
 fn find_indent_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, LinehashError> {
@@ -257,4 +475,39 @@ fn is_brace_extension(path: &Path) -> bool {
         path.extension().and_then(|ext| ext.to_str()),
         Some("rs" | "js" | "ts" | "jsx" | "tsx" | "java" | "c" | "cc" | "cpp" | "h" | "hpp" | "go")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BraceScanState, BraceToken, code_braces, find_brace_block};
+    use crate::document::Document;
+    use std::path::Path;
+
+    #[test]
+    fn code_braces_ignores_rust_strings_and_comments() {
+        let mut state = BraceScanState::default();
+        assert_eq!(
+            code_braces("let s = \"{\";", &mut state),
+            Vec::<BraceToken>::new()
+        );
+        assert_eq!(code_braces("// }", &mut state), Vec::<BraceToken>::new());
+        assert_eq!(
+            code_braces("struct ParsedStatus {", &mut state),
+            vec![BraceToken::Open]
+        );
+        assert_eq!(code_braces("}", &mut state), vec![BraceToken::Close]);
+    }
+
+    #[test]
+    fn find_brace_block_tolerates_non_code_braces_before_anchor() {
+        let doc = Document::from_str(
+            Path::new("demo.rs"),
+            "fn noisy() {\n    let _ = \"{not a block\";\n}\n\nstruct ParsedStatus {\n    value: u32,\n}\n",
+        )
+        .unwrap();
+
+        let block = find_brace_block(&doc, 4).unwrap();
+        assert_eq!(block.start_line, 5);
+        assert_eq!(block.end_line, 7);
+    }
 }
