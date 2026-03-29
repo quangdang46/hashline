@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use memchr::{memchr, memchr2};
+use memmap2::Mmap;
 use serde::Serialize;
 
 use crate::error::LinehashError;
@@ -31,6 +33,9 @@ pub struct FileMeta {
     pub mtime_secs: i64,
     pub mtime_nanos: u32,
     pub inode: u64,
+    pub size: u64,
+    pub change_secs: i64,
+    pub change_nanos: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,20 +72,34 @@ pub struct Document {
 
 impl Document {
     pub fn load(path: &Path) -> Result<Document, LinehashError> {
-        let bytes = fs::read(path)?;
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
         let path_string = path.display().to_string();
 
-        if bytes.iter().take(8_000).any(|byte| *byte == 0) {
+        if metadata.len() == 0 {
+            return Ok(Document {
+                path: path.to_path_buf(),
+                newline: NewlineStyle::Lf,
+                trailing_newline: false,
+                lines: Vec::new(),
+                content_len: 0,
+                file_meta: Some(FileMeta::from_metadata(&metadata)?),
+            });
+        }
+
+        let mmap = unsafe { Mmap::map(&file) }?;
+        let bytes = &mmap[..];
+
+        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
             return Err(LinehashError::BinaryFile { path: path_string });
         }
 
-        let content = String::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+        let content = std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
             path: path_string.clone(),
         })?;
 
         let (newline, trailing_newline, lines, content_len) =
-            parse_document_content(&content, path)?;
-        let metadata = fs::metadata(path)?;
+            parse_document_content(content, path)?;
         let file_meta = Some(FileMeta::from_metadata(&metadata)?);
 
         Ok(Document {
@@ -185,13 +204,22 @@ impl FileMeta {
     fn from_metadata(metadata: &fs::Metadata) -> Result<Self, LinehashError> {
         let modified = metadata.modified()?;
         let duration = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let (change_secs, change_nanos) = change_time_from_metadata(metadata);
 
         Ok(Self {
             mtime_secs: duration.as_secs() as i64,
             mtime_nanos: duration.subsec_nanos(),
             inode: inode_from_metadata(metadata),
+            size: metadata.len(),
+            change_secs,
+            change_nanos,
         })
     }
+}
+
+pub fn read_file_meta(path: &Path) -> Result<FileMeta, LinehashError> {
+    let metadata = fs::metadata(path)?;
+    FileMeta::from_metadata(&metadata)
 }
 
 pub fn format_short_hash(short_hash: ShortHash) -> String {
@@ -212,13 +240,14 @@ fn parse_document_content(
     let mut saw_bare_cr = false;
     let mut newline = NewlineStyle::Lf;
     let trailing_newline = content.ends_with('\n');
-    let estimated_line_count = bytes.iter().filter(|byte| **byte == b'\n').count();
+    let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
     let mut lines = Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
     let mut start = 0;
-    let mut index = 0;
+    let mut search_from = 0;
     let mut content_len = 0;
 
-    while index < bytes.len() {
+    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
+        let index = search_from + relative;
         match bytes[index] {
             b'\r' => {
                 if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
@@ -227,11 +256,11 @@ fn parse_document_content(
                     let line = &content[start..index];
                     content_len += line.len();
                     lines.push(build_line_record(line));
-                    index += 2;
-                    start = index;
+                    search_from = index + 2;
+                    start = search_from;
                 } else {
                     saw_bare_cr = true;
-                    index += 1;
+                    search_from = index + 1;
                 }
             }
             b'\n' => {
@@ -239,12 +268,10 @@ fn parse_document_content(
                 let line = &content[start..index];
                 content_len += line.len();
                 lines.push(build_line_record(line));
-                index += 1;
-                start = index;
+                search_from = index + 1;
+                start = search_from;
             }
-            _ => {
-                index += 1;
-            }
+            _ => unreachable!("memchr2 only returns requested bytes"),
         }
     }
 
@@ -462,6 +489,18 @@ fn inode_from_metadata(_metadata: &fs::Metadata) -> u64 {
     0
 }
 
+#[cfg(unix)]
+fn change_time_from_metadata(metadata: &fs::Metadata) -> (i64, u32) {
+    use std::os::unix::fs::MetadataExt;
+
+    (metadata.ctime(), metadata.ctime_nsec() as u32)
+}
+
+#[cfg(not(unix))]
+fn change_time_from_metadata(_metadata: &fs::Metadata) -> (i64, u32) {
+    (0, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Document, FileStats, NewlineStyle, format_short_hash};
@@ -631,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_build_index_collision_has_multiple_entries() {
-        let (first, second) = find_collision_pair();
+        let (first, second) = find_collision_pair().expect("collision pair should exist");
         let doc =
             Document::from_str(Path::new("demo.txt"), &format!("{first}\n{second}\n")).unwrap();
         let index = doc.build_index();
@@ -673,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_collision_count_and_pairs_correct() {
-        let (first, second) = find_collision_pair();
+        let (first, second) = find_collision_pair().expect("collision pair should exist");
         let document = Document::from_str(
             Path::new("demo.txt"),
             &format!("{first}\n{second}\nunique\n"),
@@ -758,7 +797,7 @@ mod tests {
         (dir, path)
     }
 
-    fn find_collision_pair() -> (String, String) {
+    fn find_collision_pair() -> Option<(String, String)> {
         for i in 0..10_000 {
             let left = format!("line-{i}");
             for j in (i + 1)..10_000 {
@@ -766,10 +805,10 @@ mod tests {
                 let doc = Document::from_str(Path::new("demo.txt"), &format!("{left}\n{right}\n"))
                     .unwrap();
                 if doc.lines[0].short_hash == doc.lines[1].short_hash {
-                    return (left, right);
+                    return Some((left, right));
                 }
             }
         }
-        panic!("failed to find a collision doc");
+        None
     }
 }

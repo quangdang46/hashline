@@ -124,6 +124,25 @@ The installer downloads the matching GitHub release asset for your platform, ver
 cargo install --path crates/core
 ```
 
+## MCP server
+
+`linehash` now ships with a stdio MCP server that exposes the existing read/search/edit workflow as MCP tools:
+
+```bash
+linehash mcp
+```
+
+On startup, `linehash mcp` detects the most likely local MCP host config, upserts a `linehash` server entry automatically, and prints the install/update status to `stderr`.
+
+Current auto-install targets:
+- `codex` via `~/.codex/config.toml`
+- `claude-code` via `~/.claude.json`
+- `cursor` via `~/.cursor/mcp.json`
+- `windsurf` via `~/.codeium/windsurf/mcp_config.json`
+- `vscode` via `.vscode/mcp.json`
+
+Set `LINEHASH_MCP_HOST=codex` or a comma-separated host list to override detection.
+
 ## Usage
 
 Common workflows for Claude Code, AI code editing, and patch-safe file automation:

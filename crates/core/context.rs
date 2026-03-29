@@ -54,9 +54,11 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::FromDiff(cmd) => flag_mode(cmd.json),
         Commands::MergePatches(cmd) => flag_mode(cmd.json),
         Commands::Watch(cmd) => flag_mode(cmd.json),
-        Commands::Swap(_) | Commands::Move(_) | Commands::Explode(_) | Commands::Implode(_) => {
-            OutputMode::Pretty
-        }
+        Commands::Swap(_)
+        | Commands::Move(_)
+        | Commands::Explode(_)
+        | Commands::Implode(_)
+        | Commands::Mcp(_) => OutputMode::Pretty,
     }
 }
 

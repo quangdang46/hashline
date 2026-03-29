@@ -5,6 +5,8 @@ mod context;
 mod document;
 mod error;
 mod hash;
+mod install;
+mod mcp;
 mod mutation;
 mod output;
 mod receipt;
@@ -20,6 +22,14 @@ use crate::error::LinehashError;
 
 fn main() {
     let cli = Cli::parse();
+    if let Commands::Mcp(cmd) = &cli.command {
+        if let Err(error) = mcp::run(cmd.clone()) {
+            eprintln!("mcp error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let output_mode = output_mode_for(&cli.command);
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
@@ -37,10 +47,18 @@ fn main() {
 }
 
 fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i32, LinehashError> {
-    let output_mode = output_mode_for(&cli.command);
+    run_command(cli.command, stdout, stderr)
+}
+
+pub(crate) fn run_command<W: Write, E: Write>(
+    command: Commands,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, LinehashError> {
+    let output_mode = output_mode_for(&command);
     let mut context = CommandContext::new(stdout, stderr, output_mode);
 
-    match cli.command {
+    match command {
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
         Commands::Index(cmd) => commands::index::run(&mut context, cmd).map(|_| 0),
         Commands::Edit(cmd) => commands::edit::run(&mut context, cmd).map(|_| 0),
@@ -61,6 +79,7 @@ fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i
         Commands::Watch(cmd) => commands::watch::run(&mut context, cmd).map(|_| 0),
         Commands::Explode(cmd) => commands::explode::run(&mut context, cmd).map(|_| 0),
         Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
+        Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
     }
 }
 

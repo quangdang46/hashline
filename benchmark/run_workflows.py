@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -15,6 +16,29 @@ RESULTS_DIR = ROOT / "bench-results"
 NOW = datetime.now()
 RESULT_PATH = RESULTS_DIR / f"workflow-results-{NOW.strftime('%Y-%m-%d-%H-%M-%S')}.jsonl"
 REPEATS = 3
+PROFILE = os.environ.get("LINEHASH_BENCH_PROFILE", "fast")
+
+
+def binary_path() -> Path:
+    if PROFILE == "release":
+        profile_dir = "release"
+    elif PROFILE == "dev":
+        profile_dir = "debug"
+    else:
+        profile_dir = PROFILE
+    return ROOT / "target" / profile_dir / "linehash"
+
+
+def ensure_binary() -> Path:
+    target = binary_path()
+    if target.exists():
+        return target
+
+    build_cmd = ["cargo", "build", "-q", "-p", "linehash"]
+    if PROFILE not in {"dev", "debug"}:
+        build_cmd.extend(["--profile", PROFILE])
+    subprocess.run(build_cmd, cwd=ROOT, check=True)
+    return target
 
 
 @dataclass(frozen=True)
@@ -32,15 +56,23 @@ class Scenario:
 
 
 def run_linehash(args: list[str]) -> tuple[str, str, int, float]:
+    binary = ensure_binary()
     start = time.perf_counter()
     proc = subprocess.run(
-        ["cargo", "run", "-q", "-p", "linehash", "--", *args],
+        [str(binary), *args],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
     duration_ms = (time.perf_counter() - start) * 1000.0
     return proc.stdout, proc.stderr, proc.returncode, duration_ms
+
+
+def decode_json_output(raw: str) -> dict:
+    try:
+        return json.JSONDecoder().decode(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"linehash read returned invalid JSON: {error}") from error
 
 
 def build_base_content(line_count: int = 10_000) -> list[str]:
@@ -170,7 +202,7 @@ def linehash_workflow(path: Path, scenario: Scenario) -> dict:
         read_json, read_err, read_code, read_ms = run_linehash(["read", str(snapshot_path), "--json"])
         if read_code != 0:
             raise RuntimeError(f"linehash read failed: {read_err}")
-        parsed = json.loads(read_json)
+        parsed = decode_json_output(read_json)
         anchor = f"{scenario.target_line}:{parsed['lines'][scenario.target_line - 1]['hash']}"
 
     command_count = 1

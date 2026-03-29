@@ -1,0 +1,1186 @@
+use std::collections::HashMap;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+
+use regex::RegexBuilder;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::anchor::{parse_anchor, resolve};
+use crate::cli::{
+    AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
+    GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MergePatchesCmd, MoveCmd,
+    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCmd,
+};
+use crate::document::{
+    Document, FileMeta, FileStats, ShortHashIndex, format_short_hash, read_file_meta,
+};
+use crate::error::LinehashError;
+use crate::run_command;
+
+const SERVER_INSTRUCTIONS: &str = "\
+linehash MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\
+\n\
+Preferred workflow:\n\
+1. linehash_read or linehash_index to inspect anchors.\n\
+2. linehash_annotate or linehash_grep to locate targets.\n\
+3. linehash_verify before risky grouped edits.\n\
+4. linehash_edit / insert / delete / patch for mutations.\n\
+\n\
+Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing.";
+
+#[derive(Default)]
+struct SessionState {
+    docs: HashMap<PathBuf, CacheEntry>,
+}
+
+struct CacheEntry {
+    meta: FileMeta,
+    doc: Document,
+    index: Option<ShortHashIndex>,
+    stats: Option<FileStats>,
+}
+
+impl SessionState {
+    fn get(&mut self, path: &Path) -> Result<&mut CacheEntry, JsonRpcError> {
+        let meta = read_file_meta(path).map_err(command_error)?;
+        let key = path.to_path_buf();
+        let needs_refresh = self.docs.get(&key).is_none_or(|entry| entry.meta != meta);
+
+        if needs_refresh {
+            let doc = Document::load(path).map_err(command_error)?;
+            self.docs.insert(
+                key.clone(),
+                CacheEntry {
+                    meta,
+                    doc,
+                    index: None,
+                    stats: None,
+                },
+            );
+        }
+
+        self.docs
+            .get_mut(&key)
+            .ok_or_else(|| tool_error(-32603, "session cache lookup failed", None))
+    }
+
+    fn invalidate(&mut self, path: &Path) {
+        self.docs.remove(path);
+    }
+}
+
+impl CacheEntry {
+    fn index(&mut self) -> &ShortHashIndex {
+        self.index.get_or_insert_with(|| self.doc.build_index())
+    }
+
+    fn stats(&mut self) -> &FileStats {
+        self.stats.get_or_insert_with(|| self.doc.compute_stats())
+    }
+}
+
+pub fn run(_cmd: McpCmd) -> io::Result<()> {
+    if let Ok(cwd) = std::env::current_dir() {
+        match crate::install::auto_install(&cwd) {
+            Ok(outcomes) => {
+                for outcome in outcomes {
+                    let status = match outcome.status {
+                        crate::install::InstallStatus::Installed => "Installed",
+                        crate::install::InstallStatus::Updated => "Updated",
+                        crate::install::InstallStatus::Unchanged => {
+                            "MCP config already up to date for"
+                        }
+                    };
+                    if outcome.status == crate::install::InstallStatus::Unchanged {
+                        eprintln!("{status} {} at {}", outcome.host, outcome.path.display());
+                    } else {
+                        eprintln!(
+                            "{status} {} MCP config at {}",
+                            outcome.host,
+                            outcome.path.display()
+                        );
+                    }
+                    if let Some(note) = outcome.note {
+                        eprintln!("  {note}");
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("Warning: MCP auto-install skipped: {error}");
+            }
+        }
+    }
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    let mut session = SessionState::default();
+
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let request: JsonRpcRequest = match serde_json::from_str(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                write_error(
+                    &mut stdout,
+                    None,
+                    -32700,
+                    &format!("parse error: {error}"),
+                    None,
+                )?;
+                continue;
+            }
+        };
+
+        if request.id.is_none() {
+            continue;
+        }
+
+        let response = handle_request(&request, &mut session);
+        serde_json::to_writer(&mut stdout, &response)?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct JsonRpcRequest {
+    #[serde(rename = "jsonrpc")]
+    _jsonrpc: String,
+    id: Option<Value>,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+#[derive(Serialize)]
+struct JsonRpcResponse {
+    jsonrpc: &'static str,
+    id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JsonRpcError>,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonRpcError {
+    code: i32,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct ToolCallParams {
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+}
+
+fn handle_request(request: &JsonRpcRequest, session: &mut SessionState) -> JsonRpcResponse {
+    match request.method.as_str() {
+        "initialize" => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: request.id.clone(),
+            result: Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": {
+                    "name": "linehash",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "instructions": SERVER_INSTRUCTIONS,
+            })),
+            error: None,
+        },
+        "tools/list" => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: request.id.clone(),
+            result: Some(json!({ "tools": tool_definitions() })),
+            error: None,
+        },
+        "tools/call" => handle_tool_call(request, session),
+        "ping" => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: request.id.clone(),
+            result: Some(json!({})),
+            error: None,
+        },
+        other => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: request.id.clone(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32601,
+                message: format!("method not found: {other}"),
+                data: None,
+            }),
+        },
+    }
+}
+
+fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionState) -> JsonRpcResponse {
+    let params: ToolCallParams = match serde_json::from_value(request.params.clone()) {
+        Ok(params) => params,
+        Err(error) => {
+            return JsonRpcResponse {
+                jsonrpc: "2.0",
+                id: request.id.clone(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("invalid tool call params: {error}"),
+                    data: None,
+                }),
+            };
+        }
+    };
+
+    match dispatch_tool(&params.name, &params.arguments, session) {
+        Ok(payload) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: request.id.clone(),
+            result: Some(json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&payload)
+                            .expect("tool payload should serialize")
+                    }
+                ],
+                "structuredContent": payload,
+            })),
+            error: None,
+        },
+        Err(error) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: request.id.clone(),
+            result: None,
+            error: Some(error),
+        },
+    }
+}
+
+fn dispatch_tool(
+    tool: &str,
+    arguments: &Value,
+    session: &mut SessionState,
+) -> Result<Value, JsonRpcError> {
+    match tool {
+        "linehash_read" => tool_read(arguments, session),
+        "linehash_index" => tool_index(arguments, session),
+        "linehash_edit" => {
+            let mut cmd: EditCmd = parse_args(arguments)?;
+            cmd.json = true;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Edit(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_insert" => {
+            let mut cmd: InsertCmd = parse_args(arguments)?;
+            cmd.json = true;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Insert(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_delete" => {
+            let mut cmd: DeleteCmd = parse_args(arguments)?;
+            cmd.json = true;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Delete(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_verify" => tool_verify(arguments, session),
+        "linehash_grep" => tool_grep(arguments, session),
+        "linehash_annotate" => tool_annotate(arguments, session),
+        "linehash_patch" => {
+            let mut cmd: PatchCmd = parse_args(arguments)?;
+            cmd.json = true;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Patch(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_swap" => {
+            let cmd: SwapCmd = parse_args(arguments)?;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Swap(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_move" => {
+            let cmd: MoveCmd = parse_args(arguments)?;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Move(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_indent" => {
+            let mut cmd: IndentCmd = parse_args(arguments)?;
+            cmd.json = true;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Indent(cmd));
+            if result.is_ok() {
+                session.invalidate(&path);
+            }
+            result
+        }
+        "linehash_find_block" => {
+            let mut cmd: FindBlockCmd = parse_args(arguments)?;
+            cmd.json = true;
+            invoke_command(Commands::FindBlock(cmd))
+        }
+        "linehash_stats" => tool_stats(arguments, session),
+        "linehash_doctor" => tool_doctor(arguments, session),
+        "linehash_from_diff" => {
+            let mut cmd: FromDiffCmd = parse_args(arguments)?;
+            cmd.json = true;
+            invoke_command(Commands::FromDiff(cmd))
+        }
+        "linehash_merge_patches" => {
+            let mut cmd: MergePatchesCmd = parse_args(arguments)?;
+            cmd.json = true;
+            invoke_command(Commands::MergePatches(cmd))
+        }
+        "linehash_watch" => {
+            let mut cmd: WatchCmd = parse_args(arguments)?;
+            if cmd.continuous {
+                return Err(tool_error(
+                    -32602,
+                    "continuous watch is not supported over MCP; omit `continuous` or set `once=true`",
+                    None,
+                ));
+            }
+            cmd.once = true;
+            cmd.json = true;
+            let path = cmd.file.clone();
+            let result = invoke_command(Commands::Watch(cmd));
+            session.invalidate(&path);
+            result
+        }
+        "linehash_explode" => {
+            let cmd: ExplodeCmd = parse_args(arguments)?;
+            invoke_command(Commands::Explode(cmd))
+        }
+        "linehash_implode" => {
+            let cmd: ImplodeCmd = parse_args(arguments)?;
+            let out = cmd.out.clone();
+            let result = invoke_command(Commands::Implode(cmd));
+            if result.is_ok() {
+                session.invalidate(&out);
+            }
+            result
+        }
+        _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
+    }
+}
+
+fn tool_read(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: ReadCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    Ok(success_payload("read", 0, read_payload(&entry.doc), true))
+}
+
+fn tool_index(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: IndexCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    Ok(success_payload("index", 0, index_payload(&entry.doc), true))
+}
+
+fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: GrepCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    let regex = RegexBuilder::new(&cmd.pattern)
+        .case_insensitive(cmd.case_insensitive)
+        .build()
+        .map_err(|error| {
+            command_error(LinehashError::InvalidPattern {
+                pattern: cmd.pattern.clone(),
+                message: error.to_string(),
+            })
+        })?;
+
+    let indexes = entry
+        .doc
+        .lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let is_match = regex.is_match(&line.content);
+            let include = if cmd.invert { !is_match } else { is_match };
+            include.then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    Ok(success_payload(
+        "grep",
+        0,
+        lines_payload(&entry.doc, &indexes),
+        true,
+    ))
+}
+
+fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: AnnotateCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    let matched = if cmd.regex {
+        let regex = RegexBuilder::new(&cmd.query).build().map_err(|error| {
+            command_error(LinehashError::InvalidPattern {
+                pattern: cmd.query.clone(),
+                message: error.to_string(),
+            })
+        })?;
+
+        entry
+            .doc
+            .lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| regex.is_match(&line.content).then_some(index))
+            .collect::<Vec<_>>()
+    } else {
+        entry
+            .doc
+            .lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| line.content.contains(&cmd.query).then_some(index))
+            .collect::<Vec<_>>()
+    };
+
+    Ok(success_payload(
+        "annotate",
+        i32::from(cmd.expect_one && matched.len() > 1),
+        lines_payload(&entry.doc, &matched),
+        true,
+    ))
+}
+
+fn tool_verify(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: VerifyCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    let index = entry.index().clone();
+    let mut results = Vec::with_capacity(cmd.anchors.len());
+    let mut has_failures = false;
+
+    for anchor_str in cmd.anchors {
+        match parse_anchor(&anchor_str) {
+            Ok(anchor) => match resolve(&anchor, &entry.doc, &index) {
+                Ok(resolved) => results.push(json!({
+                    "anchor": anchor_str,
+                    "status": "ok",
+                    "line_no": resolved.line_no,
+                    "content": entry.doc.lines[resolved.index].content,
+                    "error": Value::Null,
+                })),
+                Err(error) => {
+                    has_failures = true;
+                    results.push(json!({
+                        "anchor": anchor_str,
+                        "status": verify_status_for_error(&error),
+                        "line_no": verify_line_no_for_error(&error),
+                        "content": Value::Null,
+                        "error": error.to_string(),
+                    }));
+                }
+            },
+            Err(error) => {
+                has_failures = true;
+                results.push(json!({
+                    "anchor": anchor_str,
+                    "status": verify_status_for_error(&error),
+                    "line_no": Value::Null,
+                    "content": Value::Null,
+                    "error": error.to_string(),
+                }));
+            }
+        }
+    }
+
+    Ok(success_payload(
+        "verify",
+        i32::from(has_failures),
+        Value::Array(results),
+        true,
+    ))
+}
+
+fn tool_stats(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: StatsCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    let stats = serde_json::to_value(entry.stats()).map_err(|error| {
+        tool_error(-32603, &format!("failed to serialize stats: {error}"), None)
+    })?;
+    Ok(success_payload("stats", 0, stats, true))
+}
+
+fn tool_doctor(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: DoctorCmd = parse_args(arguments)?;
+    let entry = session.get(&cmd.file)?;
+    let stats = entry.stats().clone();
+    Ok(success_payload(
+        "doctor",
+        0,
+        json!({
+            "file": cmd.file.display().to_string(),
+            "line_count": stats.line_count,
+            "estimated_read_tokens": stats.estimated_read_tokens,
+            "recommended_read_mode": stats.recommended_read_mode,
+            "recommended_anchor_mode": stats.recommended_anchor_mode,
+            "recommended_workflow": stats.recommended_workflow,
+            "suggested_context": stats.suggested_context_n,
+            "warnings": stats.warnings,
+            "next_commands": doctor_next_commands(&cmd.file.display().to_string(), &stats),
+        }),
+        true,
+    ))
+}
+
+fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError> {
+    serde_json::from_value(arguments.clone()).map_err(|error| {
+        tool_error(
+            -32602,
+            &format!("invalid arguments: {error}"),
+            Some(json!({ "arguments": arguments })),
+        )
+    })
+}
+
+fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
+    let command_name = match &command {
+        Commands::Read(_) => "read",
+        Commands::Index(_) => "index",
+        Commands::Edit(_) => "edit",
+        Commands::Insert(_) => "insert",
+        Commands::Delete(_) => "delete",
+        Commands::Verify(_) => "verify",
+        Commands::Grep(_) => "grep",
+        Commands::Annotate(_) => "annotate",
+        Commands::Patch(_) => "patch",
+        Commands::Swap(_) => "swap",
+        Commands::Move(_) => "move",
+        Commands::Indent(_) => "indent",
+        Commands::FindBlock(_) => "find_block",
+        Commands::Stats(_) => "stats",
+        Commands::Doctor(_) => "doctor",
+        Commands::FromDiff(_) => "from_diff",
+        Commands::MergePatches(_) => "merge_patches",
+        Commands::Watch(_) => "watch",
+        Commands::Explode(_) => "explode",
+        Commands::Implode(_) => "implode",
+        Commands::Mcp(_) => "mcp",
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let exit_code = run_command(command, &mut stdout, &mut stderr).map_err(command_error)?;
+    let stdout_text = String::from_utf8(stdout)
+        .map_err(|error| tool_error(-32603, &format!("stdout was not utf-8: {error}"), None))?;
+    let stderr_text = String::from_utf8(stderr)
+        .map_err(|error| tool_error(-32603, &format!("stderr was not utf-8: {error}"), None))?;
+
+    let mut payload = json!({
+        "command": command_name,
+        "exit_code": exit_code,
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+    });
+
+    if let Ok(data) = serde_json::from_str::<Value>(payload["stdout"].as_str().unwrap_or("")) {
+        payload["data"] = data;
+    }
+
+    Ok(payload)
+}
+
+fn success_payload(command: &str, exit_code: i32, data: Value, cache_used: bool) -> Value {
+    json!({
+        "command": command,
+        "exit_code": exit_code,
+        "stdout": "",
+        "stderr": "",
+        "data": data,
+        "cache": { "used": cache_used },
+    })
+}
+
+fn read_payload(doc: &Document) -> Value {
+    json!({
+        "file": doc.path.display().to_string(),
+        "newline": match doc.newline {
+            crate::document::NewlineStyle::Lf => "lf",
+            crate::document::NewlineStyle::Crlf => "crlf",
+        },
+        "trailing_newline": doc.trailing_newline,
+        "mtime": doc.file_meta.as_ref().map(|meta| meta.mtime_secs).unwrap_or(0),
+        "mtime_nanos": doc.file_meta.as_ref().map(|meta| meta.mtime_nanos).unwrap_or(0),
+        "inode": doc.file_meta.as_ref().map(|meta| meta.inode).unwrap_or(0),
+        "lines": doc.lines.iter().enumerate().map(|(index, line)| {
+            json!({
+                "n": index + 1,
+                "hash": format_short_hash(line.short_hash),
+                "content": line.content,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn index_payload(doc: &Document) -> Value {
+    json!({
+        "file": doc.path.display().to_string(),
+        "lines": doc.lines.iter().enumerate().map(|(index, line)| {
+            json!({
+                "n": index + 1,
+                "hash": format_short_hash(line.short_hash),
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn lines_payload(doc: &Document, indexes: &[usize]) -> Value {
+    Value::Array(
+        indexes
+            .iter()
+            .map(|index| {
+                let line = &doc.lines[*index];
+                json!({
+                    "n": index + 1,
+                    "hash": format_short_hash(line.short_hash),
+                    "content": line.content,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn verify_status_for_error(error: &LinehashError) -> &'static str {
+    match error {
+        LinehashError::HashNotFound { .. } => "not_found",
+        LinehashError::AmbiguousHash { .. } => "ambiguous",
+        LinehashError::StaleAnchor { .. } => "stale",
+        LinehashError::InvalidAnchor { .. } => "parse_error",
+        _ => "error",
+    }
+}
+
+fn verify_line_no_for_error(error: &LinehashError) -> Option<usize> {
+    match error {
+        LinehashError::StaleAnchor { line, .. } => Some(*line),
+        _ => None,
+    }
+}
+
+fn doctor_next_commands(file: &str, stats: &FileStats) -> Vec<String> {
+    let mut commands = Vec::new();
+
+    if stats.recommended_read_mode == "read" {
+        commands.push(format!("linehash read {file}"));
+    } else {
+        commands.push(format!("linehash index {file}"));
+        commands.push(format!(
+            "linehash read {file} --anchor <line:hash> --context {}",
+            stats.suggested_context_n
+        ));
+    }
+
+    commands.push(format!("linehash annotate {file} <text>"));
+    commands.push(format!("linehash grep {file} <pattern>"));
+
+    if stats.collision_count > 0 || stats.line_count > 2_000 {
+        commands.push(format!("linehash find-block {file} <line:hash>"));
+        commands.push(format!("linehash patch {file} <patch.json> --dry-run"));
+    } else {
+        commands.push(format!("linehash verify {file} <line:hash>"));
+        commands.push(format!("linehash edit {file} <line:hash> <new_content>"));
+    }
+
+    commands
+}
+
+fn command_error(error: LinehashError) -> JsonRpcError {
+    let mut data = serde_json::Map::new();
+    if let Some(hint) = error.hint() {
+        data.insert("hint".into(), json!(hint));
+    }
+    if let Some(command) = error.command() {
+        data.insert("command".into(), json!(command));
+    }
+
+    tool_error(
+        -32001,
+        &error.to_string(),
+        (!data.is_empty()).then_some(Value::Object(data)),
+    )
+}
+
+fn write_error(
+    stdout: &mut impl Write,
+    id: Option<Value>,
+    code: i32,
+    message: &str,
+    data: Option<Value>,
+) -> io::Result<()> {
+    let response = JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: message.to_owned(),
+            data,
+        }),
+    };
+    serde_json::to_writer(&mut *stdout, &response)?;
+    stdout.write_all(b"\n")
+}
+
+fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError {
+    JsonRpcError {
+        code,
+        message: message.to_owned(),
+        data,
+    }
+}
+
+fn tool_definitions() -> Vec<Value> {
+    vec![
+        tool(
+            "linehash_read",
+            "Read a file with current line:hash anchors.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Path to the file."),
+                    "anchor": array_schema("Optional anchors to focus context output."),
+                    "context": integer_schema("Context lines around anchors. Defaults to 5.")
+                },
+                "required": ["file"]
+            }),
+        ),
+        tool(
+            "linehash_index",
+            "List anchors for every line without content.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Path to the file.")
+                },
+                "required": ["file"]
+            }),
+        ),
+        tool(
+            "linehash_grep",
+            "Search file content and return matching lines with anchors.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Path to the file."),
+                    "pattern": string_schema("Literal or regex pattern."),
+                    "invert": bool_schema("Invert the match."),
+                    "case_insensitive": bool_schema("Case-insensitive search.")
+                },
+                "required": ["file", "pattern"]
+            }),
+        ),
+        tool(
+            "linehash_annotate",
+            "Map text or regex matches back to current anchors.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Path to the file."),
+                    "query": string_schema("Text or regex query."),
+                    "regex": bool_schema("Treat query as regex."),
+                    "expect_one": bool_schema("Require exactly one match.")
+                },
+                "required": ["file", "query"]
+            }),
+        ),
+        tool(
+            "linehash_verify",
+            "Verify that one or more anchors still resolve.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Path to the file."),
+                    "anchors": array_schema("Anchors to verify.")
+                },
+                "required": ["file", "anchors"]
+            }),
+        ),
+        tool(
+            "linehash_edit",
+            "Replace a single line or range at the specified anchor.",
+            mutation_schema("anchor"),
+        ),
+        tool(
+            "linehash_insert",
+            "Insert content before or after an anchor.",
+            json!({
+                "type": "object",
+                "properties": mutation_properties("anchor", true),
+                "required": ["file", "anchor", "content"]
+            }),
+        ),
+        tool(
+            "linehash_delete",
+            "Delete a line or range at the specified anchor.",
+            json!({
+                "type": "object",
+                "properties": base_mutation_properties().into_iter().chain([
+                    ("anchor".to_string(), string_schema("Anchor or range to delete."))
+                ]).collect::<serde_json::Map<String, Value>>(),
+                "required": ["file", "anchor"]
+            }),
+        ),
+        tool(
+            "linehash_patch",
+            "Apply a JSON patch transaction atomically.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "patch": string_schema("Path to JSON patch file or '-' for stdin."),
+                    "dry_run": bool_schema("Preview without writing."),
+                    "receipt": bool_schema("Emit receipt JSON."),
+                    "audit_log": string_schema("Optional audit log path."),
+                    "expect_mtime": integer_schema("Optional expected mtime seconds."),
+                    "expect_inode": integer_schema("Optional expected inode.")
+                },
+                "required": ["file", "patch"]
+            }),
+        ),
+        tool(
+            "linehash_swap",
+            "Swap the positions of two anchored lines.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "anchor_a": string_schema("First anchor."),
+                    "anchor_b": string_schema("Second anchor."),
+                    "dry_run": bool_schema("Preview without writing."),
+                    "receipt": bool_schema("Emit receipt JSON."),
+                    "audit_log": string_schema("Optional audit log path."),
+                    "expect_mtime": integer_schema("Optional expected mtime seconds."),
+                    "expect_inode": integer_schema("Optional expected inode.")
+                },
+                "required": ["file", "anchor_a", "anchor_b"]
+            }),
+        ),
+        tool(
+            "linehash_move",
+            "Move one anchored line before or after another anchor.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "anchor": string_schema("Source anchor."),
+                    "direction": {
+                        "type": "string",
+                        "enum": ["before", "after"],
+                        "description": "Placement relative to the target anchor."
+                    },
+                    "target": string_schema("Target anchor."),
+                    "dry_run": bool_schema("Preview without writing."),
+                    "receipt": bool_schema("Emit receipt JSON."),
+                    "audit_log": string_schema("Optional audit log path."),
+                    "expect_mtime": integer_schema("Optional expected mtime seconds."),
+                    "expect_inode": integer_schema("Optional expected inode.")
+                },
+                "required": ["file", "anchor", "direction", "target"]
+            }),
+        ),
+        tool(
+            "linehash_indent",
+            "Adjust indentation for a resolved range.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "range": string_schema("Qualified anchor range."),
+                    "amount": string_schema("Indent delta like '+4' or '-2'."),
+                    "dry_run": bool_schema("Preview without writing."),
+                    "receipt": bool_schema("Emit receipt JSON."),
+                    "audit_log": string_schema("Optional audit log path."),
+                    "expect_mtime": integer_schema("Optional expected mtime seconds."),
+                    "expect_inode": integer_schema("Optional expected inode.")
+                },
+                "required": ["file", "range", "amount"]
+            }),
+        ),
+        tool(
+            "linehash_find_block",
+            "Find a likely structural block around an anchor.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "anchor": string_schema("Anchor inside the target block.")
+                },
+                "required": ["file", "anchor"]
+            }),
+        ),
+        tool(
+            "linehash_stats",
+            "Compute collision and workflow guidance for a file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path.")
+                },
+                "required": ["file"]
+            }),
+        ),
+        tool(
+            "linehash_doctor",
+            "Recommend the safest linehash workflow for a file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path.")
+                },
+                "required": ["file"]
+            }),
+        ),
+        tool(
+            "linehash_from_diff",
+            "Convert a unified diff into anchor-aware operations.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "diff": string_schema("Path to unified diff file.")
+                },
+                "required": ["file", "diff"]
+            }),
+        ),
+        tool(
+            "linehash_merge_patches",
+            "Merge two patch files against the same base file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "patch_a": string_schema("First patch file."),
+                    "patch_b": string_schema("Second patch file."),
+                    "base": string_schema("Base file path.")
+                },
+                "required": ["patch_a", "patch_b", "base"]
+            }),
+        ),
+        tool(
+            "linehash_watch",
+            "Watch once for the next hash diff event on a file. Continuous mode is intentionally disabled over MCP.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "once": bool_schema("Ignored; MCP always performs a single event wait."),
+                    "continuous": bool_schema("Must be false or omitted.")
+                },
+                "required": ["file"]
+            }),
+        ),
+        tool(
+            "linehash_explode",
+            "Explode a file into per-line text files plus metadata.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Source file."),
+                    "out": string_schema("Output directory."),
+                    "force": bool_schema("Overwrite output directory if it exists.")
+                },
+                "required": ["file", "out"]
+            }),
+        ),
+        tool(
+            "linehash_implode",
+            "Reassemble an exploded directory back into a file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "dir": string_schema("Exploded directory."),
+                    "out": string_schema("Output file."),
+                    "dry_run": bool_schema("Preview without writing.")
+                },
+                "required": ["dir", "out"]
+            }),
+        ),
+    ]
+}
+
+fn tool(name: &str, description: &str, input_schema: Value) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema,
+    })
+}
+
+fn string_schema(description: &str) -> Value {
+    json!({
+        "type": "string",
+        "description": description,
+    })
+}
+
+fn integer_schema(description: &str) -> Value {
+    json!({
+        "type": "integer",
+        "description": description,
+    })
+}
+
+fn bool_schema(description: &str) -> Value {
+    json!({
+        "type": "boolean",
+        "description": description,
+    })
+}
+
+fn array_schema(description: &str) -> Value {
+    json!({
+        "type": "array",
+        "description": description,
+        "items": {
+            "type": "string"
+        }
+    })
+}
+
+fn base_mutation_properties() -> serde_json::Map<String, Value> {
+    [
+        ("file".to_string(), string_schema("Target file path.")),
+        (
+            "dry_run".to_string(),
+            bool_schema("Preview without writing."),
+        ),
+        ("receipt".to_string(), bool_schema("Emit receipt JSON.")),
+        (
+            "audit_log".to_string(),
+            string_schema("Optional audit log path."),
+        ),
+        (
+            "expect_mtime".to_string(),
+            integer_schema("Optional expected mtime seconds."),
+        ),
+        (
+            "expect_inode".to_string(),
+            integer_schema("Optional expected inode."),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn mutation_properties(anchor_key: &str, include_before: bool) -> serde_json::Map<String, Value> {
+    let mut properties = base_mutation_properties();
+    properties.insert(
+        anchor_key.to_string(),
+        string_schema("Anchor or range identifying the target."),
+    );
+    properties.insert(
+        "content".to_string(),
+        string_schema("Replacement or inserted line content."),
+    );
+    if include_before {
+        properties.insert(
+            "before".to_string(),
+            bool_schema("Insert before the anchor instead of after."),
+        );
+    }
+    properties
+}
+
+fn mutation_schema(anchor_key: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": mutation_properties(anchor_key, false),
+        "required": ["file", anchor_key, "content"]
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionState, dispatch_tool};
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    #[test]
+    fn read_tool_returns_structured_json() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+
+        let result = dispatch_tool(
+            "linehash_read",
+            &json!({
+                "file": path,
+            }),
+            &mut SessionState::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result["command"], "read");
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["data"]["lines"][0]["content"], "alpha");
+    }
+
+    #[test]
+    fn watch_tool_rejects_continuous_mode() {
+        let error = dispatch_tool(
+            "linehash_watch",
+            &json!({
+                "file": "demo.txt",
+                "continuous": true,
+            }),
+            &mut SessionState::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("continuous watch"));
+    }
+
+    #[test]
+    fn read_tool_cache_refreshes_after_file_change() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let mut session = SessionState::default();
+
+        let first = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        assert_eq!(first["data"]["lines"][0]["content"], "alpha");
+
+        std::fs::write(&path, "beta\n").unwrap();
+
+        let second =
+            dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        assert_eq!(second["data"]["lines"][0]["content"], "beta");
+    }
+}
