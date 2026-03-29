@@ -1,12 +1,12 @@
 use std::io::Write;
 
-use crate::anchor::{parse_anchor, resolve};
+use crate::anchor::{parse_anchor, parse_range, resolve, resolve_range};
 use crate::cli::DeleteCmd;
 use crate::commands::common::{atomic_write, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
-use crate::mutation::delete_line;
+use crate::mutation::{delete_line, delete_range};
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -18,15 +18,27 @@ pub fn run<W: Write, E: Write>(
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
-    let index = doc.build_index();
-    let anchor = parse_anchor(&cmd.anchor)?;
-    let resolved = resolve(&anchor, &doc, &index)?;
-    let deleted = doc.lines[resolved.index].content.clone();
-    delete_line(&mut doc, resolved.index)?;
 
-    let summary = DeleteSummary {
-        line_no: resolved.line_no,
-        deleted,
+    let summary = match cmd.anchor.contains("..") {
+        true => {
+            let range = parse_range(&cmd.anchor)?;
+            let index = doc.build_index();
+            let (start, end) = resolve_range(&range, &doc, &index)?;
+            let deleted = doc.lines[start.index..=end.index]
+                .iter()
+                .map(|line| line.content.clone())
+                .collect::<Vec<_>>();
+            delete_range(&mut doc, start.index, end.index)?;
+            DeleteSummary::range(start.line_no, end.line_no, deleted)
+        }
+        false => {
+            let index = doc.build_index();
+            let anchor = parse_anchor(&cmd.anchor)?;
+            let resolved = resolve(&anchor, &doc, &index)?;
+            let deleted = doc.lines[resolved.index].content.clone();
+            delete_line(&mut doc, resolved.index)?;
+            DeleteSummary::single(resolved.line_no, deleted)
+        }
     };
 
     if cmd.dry_run {
@@ -37,13 +49,14 @@ pub fn run<W: Write, E: Write>(
     atomic_write(&cmd.file, &after_bytes)?;
 
     if needs_receipt {
+        let before_bytes = before_bytes.as_deref().ok_or_else(|| {
+            std::io::Error::other("before bytes should exist when receipt is needed")
+        })?;
         let receipt = receipt::build_receipt(
             "delete",
             &cmd.file,
             summary.line_changes(),
-            before_bytes
-                .as_deref()
-                .expect("before bytes should exist when receipt is needed"),
+            before_bytes,
             &after_bytes,
         );
 
@@ -73,30 +86,96 @@ fn write_dry_run<W: Write, E: Write>(
 ) -> Result<(), LinehashError> {
     match ctx.output_mode() {
         OutputMode::Json => output::print_read_json(ctx.stdout(), doc).map_err(LinehashError::from),
-        OutputMode::Pretty => {
-            output::write_success_line(ctx, &format!("Would delete line {}:", summary.line_no))?;
-            output::write_success_line(ctx, &format!("  - {:?}", summary.deleted))?;
-            output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
-        }
+        OutputMode::Pretty => match &summary.kind {
+            DeleteSummaryKind::Single { line_no, deleted } => {
+                output::write_success_line(ctx, &format!("Would delete line {line_no}:"))?;
+                output::write_success_line(ctx, &format!("  - {deleted:?}"))?;
+                output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+            }
+            DeleteSummaryKind::Range {
+                start_line,
+                end_line,
+                deleted,
+            } => {
+                output::write_success_line(
+                    ctx,
+                    &format!("Would delete lines {start_line}-{end_line}:"),
+                )?;
+                for line in deleted {
+                    output::write_success_line(ctx, &format!("  - {line:?}"))?;
+                }
+                output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+            }
+        },
     }
 }
 
 struct DeleteSummary {
-    line_no: usize,
-    deleted: String,
+    kind: DeleteSummaryKind,
+}
+
+enum DeleteSummaryKind {
+    Single {
+        line_no: usize,
+        deleted: String,
+    },
+    Range {
+        start_line: usize,
+        end_line: usize,
+        deleted: Vec<String>,
+    },
 }
 
 impl DeleteSummary {
+    fn single(line_no: usize, deleted: String) -> Self {
+        Self {
+            kind: DeleteSummaryKind::Single { line_no, deleted },
+        }
+    }
+
+    fn range(start_line: usize, end_line: usize, deleted: Vec<String>) -> Self {
+        Self {
+            kind: DeleteSummaryKind::Range {
+                start_line,
+                end_line,
+                deleted,
+            },
+        }
+    }
+
     fn success_message(&self) -> String {
-        format!("Deleted line {}.", self.line_no)
+        match &self.kind {
+            DeleteSummaryKind::Single { line_no, .. } => format!("Deleted line {line_no}."),
+            DeleteSummaryKind::Range {
+                start_line,
+                end_line,
+                ..
+            } => format!("Deleted lines {start_line}-{end_line}."),
+        }
     }
 
     fn line_changes(&self) -> Vec<LineChange> {
-        vec![LineChange {
-            line_no: self.line_no,
-            kind: ChangeKind::Deleted,
-            before: Some(self.deleted.clone()),
-            after: None,
-        }]
+        match &self.kind {
+            DeleteSummaryKind::Single { line_no, deleted } => vec![LineChange {
+                line_no: *line_no,
+                kind: ChangeKind::Deleted,
+                before: Some(deleted.clone()),
+                after: None,
+            }],
+            DeleteSummaryKind::Range {
+                start_line,
+                deleted,
+                ..
+            } => deleted
+                .iter()
+                .enumerate()
+                .map(|(offset, removed)| LineChange {
+                    line_no: *start_line + offset,
+                    kind: ChangeKind::Deleted,
+                    before: Some(removed.clone()),
+                    after: None,
+                })
+                .collect(),
+        }
     }
 }

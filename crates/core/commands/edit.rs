@@ -6,7 +6,7 @@ use crate::commands::common::{atomic_write, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
-use crate::mutation::{replace_line, replace_range_with_line};
+use crate::mutation::{replace_line, replace_range, split_content_lines};
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -28,12 +28,13 @@ pub fn run<W: Write, E: Write>(
                 .iter()
                 .map(|line| line.content.clone())
                 .collect::<Vec<_>>();
-            replace_range_with_line(&mut doc, start.index, end.index, &cmd.content)?;
+            let after = split_content_lines(&cmd.content);
+            replace_range(&mut doc, start.index, end.index, &cmd.content)?;
             EditSummary::Range {
                 start_line: start.line_no,
                 end_line: end.line_no,
                 before,
-                after: cmd.content,
+                after,
             }
         }
         false => {
@@ -57,13 +58,14 @@ pub fn run<W: Write, E: Write>(
     atomic_write(&cmd.file, &after_bytes)?;
 
     if needs_receipt {
+        let before_bytes = before_bytes.as_deref().ok_or_else(|| {
+            std::io::Error::other("before bytes should exist when receipt is needed")
+        })?;
         let receipt = receipt::build_receipt(
             "edit",
             &cmd.file,
             summary.line_changes(),
-            before_bytes
-                .as_deref()
-                .expect("before bytes should exist when receipt is needed"),
+            before_bytes,
             &after_bytes,
         );
 
@@ -117,7 +119,9 @@ fn write_dry_run<W: Write, E: Write>(
                     for line in before {
                         output::write_success_line(ctx, &format!("  - {line:?}"))?;
                     }
-                    output::write_success_line(ctx, &format!("  + {after:?}"))?;
+                    for line in after {
+                        output::write_success_line(ctx, &format!("  + {line:?}"))?;
+                    }
                 }
             }
             output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
@@ -135,7 +139,7 @@ enum EditSummary {
         start_line: usize,
         end_line: usize,
         before: Vec<String>,
-        after: String,
+        after: Vec<String>,
     },
 }
 
@@ -169,16 +173,19 @@ impl EditSummary {
                 after,
                 ..
             } => {
-                let mut changes = Vec::with_capacity(before.len());
-                if let Some(first) = before.first() {
+                let shared = before.len().min(after.len());
+                let mut changes = Vec::with_capacity(before.len().max(after.len()));
+
+                for index in 0..shared {
                     changes.push(LineChange {
-                        line_no: *start_line,
+                        line_no: *start_line + index,
                         kind: ChangeKind::Modified,
-                        before: Some(first.clone()),
-                        after: Some(after.clone()),
+                        before: Some(before[index].clone()),
+                        after: Some(after[index].clone()),
                     });
                 }
-                for (offset, removed) in before.iter().enumerate().skip(1) {
+
+                for (offset, removed) in before.iter().enumerate().skip(shared) {
                     changes.push(LineChange {
                         line_no: *start_line + offset,
                         kind: ChangeKind::Deleted,
@@ -186,6 +193,16 @@ impl EditSummary {
                         after: None,
                     });
                 }
+
+                for (offset, inserted) in after.iter().enumerate().skip(shared) {
+                    changes.push(LineChange {
+                        line_no: *start_line + offset,
+                        kind: ChangeKind::Inserted,
+                        before: None,
+                        after: Some(inserted.clone()),
+                    });
+                }
+
                 changes
             }
         }

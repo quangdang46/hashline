@@ -338,6 +338,15 @@ fn edit_range_replaces_lines_with_single_line() {
 }
 
 #[test]
+fn edit_range_replaces_lines_with_multiple_lines() {
+    let content = "alpha\nbeta\ngamma\ndelta\n";
+    let start = anchor_for_line(content, 2);
+    let end = anchor_for_line(content, 3);
+    let edited = do_edit(content, &format!("{start}..{end}"), "left\nmiddle\nright");
+    assert_eq!(edited, "alpha\nleft\nmiddle\nright\ndelta\n");
+}
+
+#[test]
 fn edit_dry_run_reports_change_without_writing_file() {
     let file = tmpfile("alpha\nbeta\n");
     let file_arg = file.to_string_lossy().into_owned();
@@ -629,6 +638,42 @@ fn delete_json_dry_run_returns_proposed_document() {
     assert_eq!(parsed["lines"].as_array().unwrap().len(), 2);
     assert_eq!(parsed["lines"][1]["content"], "gamma");
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nbeta\ngamma\n");
+}
+
+#[test]
+fn delete_range_removes_resolved_lines() {
+    let file = tmpfile("alpha\nbeta\ngamma\ndelta\n");
+    let file_arg = file.to_string_lossy().into_owned();
+    let start = anchor_from_file(&file_arg, 2);
+    let end = anchor_from_file(&file_arg, 3);
+    let range = format!("{start}..{end}");
+    let (stdout, stderr, code) = run_linehash(&["delete", &file_arg, &range]);
+
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty());
+    assert_eq!(stdout, "Deleted lines 2-3.\n");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\ndelta\n");
+}
+
+#[test]
+fn delete_range_dry_run_reports_change_without_writing_file() {
+    let file = tmpfile("alpha\nbeta\ngamma\ndelta\n");
+    let file_arg = file.to_string_lossy().into_owned();
+    let start = anchor_from_file(&file_arg, 2);
+    let end = anchor_from_file(&file_arg, 3);
+    let range = format!("{start}..{end}");
+    let (stdout, stderr, code) = run_linehash(&["delete", &file_arg, &range, "--dry-run"]);
+
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("Would delete lines 2-3:"));
+    assert!(stdout.contains(r#"  - "beta""#));
+    assert!(stdout.contains(r#"  - "gamma""#));
+    assert!(stdout.contains("No file was written."));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "alpha\nbeta\ngamma\ndelta\n"
+    );
 }
 
 #[test]
@@ -1068,6 +1113,40 @@ fn edit_receipt_prints_json_and_updates_file() {
     assert_eq!(parsed["changes"][0]["after"], "gamma");
     assert_ne!(parsed["file_hash_before"], parsed["file_hash_after"]);
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\ngamma\n");
+}
+
+#[test]
+fn edit_range_receipt_reports_modified_and_inserted_lines() {
+    let file = tmpfile("alpha\nbeta\ngamma\ndelta\n");
+    let file_arg = file.to_string_lossy().into_owned();
+    let start = anchor_from_file(&file_arg, 2);
+    let end = anchor_from_file(&file_arg, 3);
+    let range = format!("{start}..{end}");
+    let parsed = parse_json(&[
+        "edit",
+        &file_arg,
+        &range,
+        "left\nmiddle\nright",
+        "--receipt",
+    ]);
+
+    assert_eq!(parsed["op"], "edit");
+    assert_eq!(parsed["changes"][0]["line_no"], 2);
+    assert_eq!(parsed["changes"][0]["kind"], "Modified");
+    assert_eq!(parsed["changes"][0]["before"], "beta");
+    assert_eq!(parsed["changes"][0]["after"], "left");
+    assert_eq!(parsed["changes"][1]["line_no"], 3);
+    assert_eq!(parsed["changes"][1]["kind"], "Modified");
+    assert_eq!(parsed["changes"][1]["before"], "gamma");
+    assert_eq!(parsed["changes"][1]["after"], "middle");
+    assert_eq!(parsed["changes"][2]["line_no"], 4);
+    assert_eq!(parsed["changes"][2]["kind"], "Inserted");
+    assert_eq!(parsed["changes"][2]["before"], serde_json::Value::Null);
+    assert_eq!(parsed["changes"][2]["after"], "right");
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "alpha\nleft\nmiddle\nright\ndelta\n"
+    );
 }
 
 #[test]
@@ -1674,19 +1753,5 @@ fn anchor_from_file(file_arg: &str, line_no: usize) -> String {
 }
 
 fn find_collision_pair() -> (String, String) {
-    use std::collections::HashMap;
-    use xxhash_rust::xxh32::xxh32;
-
-    let mut seen: HashMap<String, String> = HashMap::new();
-    for i in 0..10_000 {
-        let candidate = format!("line-{i}");
-        let hash = format!("{:02x}", xxh32(candidate.as_bytes(), 0) & 0xff);
-        if let Some(existing) = seen.insert(hash, candidate.clone()) {
-            if existing != candidate {
-                return (existing, candidate);
-            }
-        }
-    }
-
-    panic!("failed to find a short-hash collision in search space");
+    ("line-1612".to_owned(), "line-2126".to_owned())
 }

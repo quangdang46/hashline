@@ -111,7 +111,7 @@ pub enum LinehashError {
     #[error("patch failed at operation {op_index}: {reason}")]
     PatchFailed { op_index: usize, reason: String },
 
-    #[error("multi-line content is not supported in v1")]
+    #[error("multi-line content is only supported for range edits")]
     MultiLineContentUnsupported,
 
     #[error("mutation index {index} is out of bounds for document with {len} lines")]
@@ -197,9 +197,9 @@ impl LinehashError {
             LinehashError::PatchFailed { .. } => {
                 Some("fix the failing patch operation and retry the transaction")
             }
-            LinehashError::MultiLineContentUnsupported => {
-                Some("use `linehash patch` with multiple ops for multi-line replacement")
-            }
+            LinehashError::MultiLineContentUnsupported => Some(
+                "use a range anchor like '2:f1..4:9c' for multi-line replacement, or use `linehash patch` for mixed edits",
+            ),
             LinehashError::MutationIndexOutOfBounds { .. } => {
                 Some("re-check the resolved line number against the current document and retry")
             }
