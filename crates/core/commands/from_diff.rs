@@ -101,7 +101,7 @@ fn parse_diff(diff: &str) -> Result<ParsedDiff, LinehashError> {
     while index < lines.len() {
         let line = lines[index];
         if let Some(rest) = line.strip_prefix("+++ ") {
-            parsed.target = Some(rest.trim().to_string());
+            parsed.target = Some(parse_diff_header_path(rest));
             index += 1;
             continue;
         }
@@ -115,6 +115,15 @@ fn parse_diff(diff: &str) -> Result<ParsedDiff, LinehashError> {
     }
 
     Ok(parsed)
+}
+
+fn parse_diff_header_path(header: &str) -> String {
+    header
+        .split_once('\t')
+        .map(|(path, _)| path)
+        .unwrap_or(header)
+        .trim()
+        .to_string()
 }
 
 fn parse_hunk(lines: &[&str], index: &mut usize) -> Result<Option<Hunk>, LinehashError> {
@@ -540,6 +549,19 @@ mod tests {
         let doc = Document::from_str(Path::new("/tmp/work/demo.txt"), "alpha\n").unwrap();
         let patch = compile_patch(
             "+++ b/demo.txt\n@@ -1,1 +1,1 @@\n-alpha\n+beta\n",
+            Path::new("/tmp/work/demo.txt"),
+            &doc,
+        )
+        .unwrap();
+
+        assert_eq!(patch.ops.len(), 1);
+    }
+
+    #[test]
+    fn timestamped_unified_diff_target_matches_file_argument() {
+        let doc = Document::from_str(Path::new("/tmp/work/demo.txt"), "alpha\n").unwrap();
+        let patch = compile_patch(
+            "+++ /tmp/work/demo.txt\t2026-03-29 21:43:38.307403626 +0700\n@@ -1,1 +1,1 @@\n-alpha\n+beta\n",
             Path::new("/tmp/work/demo.txt"),
             &doc,
         )
