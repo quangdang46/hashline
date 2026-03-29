@@ -13,10 +13,13 @@ mod receipt;
 
 use std::io;
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use clap::Parser;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriter;
 
 use crate::cli::{Cli, Commands};
 use crate::context::{CommandContext, output_mode_for};
@@ -26,6 +29,7 @@ fn main() {
     let cli = Cli::parse();
     init_tracing();
     debug!(command = command_name(&cli.command), "parsed CLI arguments");
+    info!(command = command_name(&cli.command), "command started");
 
     if let Commands::Mcp(cmd) = &cli.command {
         info!("starting MCP server");
@@ -78,30 +82,125 @@ fn main() {
 }
 
 fn init_tracing() {
-    let env_name = "LINEHASH_LOG";
-    let configured = match std::env::var(env_name) {
-        Ok(value) if !value.trim().is_empty() => value,
-        Ok(_) | Err(std::env::VarError::NotPresent) => return,
-        Err(std::env::VarError::NotUnicode(_)) => {
-            eprintln!("warning: {env_name} is not valid unicode; tracing is disabled");
+    let filter = match tracing_filter() {
+        Ok(filter) => filter,
+        Err(error) => {
+            eprintln!("warning: invalid LINEHASH_LOG filter: {error}");
             return;
         }
     };
 
-    let filter = match EnvFilter::try_new(configured) {
-        Ok(filter) => filter,
+    let log_path = match resolve_log_path() {
+        Ok(path) => path,
         Err(error) => {
-            eprintln!("warning: invalid {env_name} filter: {error}");
+            eprintln!("warning: tracing log path unavailable: {error}");
+            return;
+        }
+    };
+
+    let writer = match SharedFileWriter::new(&log_path) {
+        Ok(writer) => writer,
+        Err(error) => {
+            eprintln!(
+                "warning: failed to open linehash log file {}: {error}",
+                log_path.display()
+            );
             return;
         }
     };
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(io::stderr)
+        .with_writer(writer)
         .with_ansi(false)
         .compact()
         .try_init();
+}
+
+fn tracing_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError> {
+    match std::env::var("LINEHASH_LOG") {
+        Ok(value) if !value.trim().is_empty() => EnvFilter::try_new(value),
+        Ok(_) | Err(std::env::VarError::NotPresent) => EnvFilter::try_new("info"),
+        Err(std::env::VarError::NotUnicode(_)) => EnvFilter::try_new("info"),
+    }
+}
+
+fn resolve_log_path() -> Result<PathBuf, String> {
+    match std::env::var("LINEHASH_LOG_PATH") {
+        Ok(value) if !value.trim().is_empty() => Ok(PathBuf::from(value)),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(default_log_path(linehash_home_dir()?)),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("LINEHASH_LOG_PATH is not valid unicode".into())
+        }
+    }
+}
+
+fn linehash_home_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("USERPROFILE")
+            .map(PathBuf::from)
+            .map_err(|_| "USERPROFILE not set".into())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .map_err(|_| "HOME not set".into())
+    }
+}
+
+fn default_log_path(home: PathBuf) -> PathBuf {
+    home.join(".linehash").join("linehash.log")
+}
+
+#[derive(Clone)]
+struct SharedFileWriter {
+    file: Arc<Mutex<std::fs::File>>,
+}
+
+impl SharedFileWriter {
+    fn new(path: &Path) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            file: Arc::new(Mutex::new(file)),
+        })
+    }
+}
+
+struct SharedFileGuard<'a> {
+    guard: MutexGuard<'a, std::fs::File>,
+}
+
+impl Write for SharedFileGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.guard.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.guard.flush()
+    }
+}
+
+impl<'a> MakeWriter<'a> for SharedFileWriter {
+    type Writer = SharedFileGuard<'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedFileGuard {
+            guard: self
+                .file
+                .lock()
+                .expect("linehash tracing file lock poisoned"),
+        }
+    }
 }
 
 fn command_name(command: &Commands) -> &'static str {
@@ -176,7 +275,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{default_log_path, run, tracing_filter};
     use crate::cli::{Cli, Commands, DoctorCmd, PatchCmd, ReadCmd};
     use std::path::PathBuf;
 
@@ -269,5 +368,18 @@ mod tests {
         let mut stderr = Vec::new();
         let result = run(cli, &mut stdout, &mut stderr);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_log_path_is_under_linehash_home_dir() {
+        let path = default_log_path(PathBuf::from("/tmp/test-home"));
+        assert_eq!(path, PathBuf::from("/tmp/test-home/.linehash/linehash.log"));
+    }
+
+    #[test]
+    fn tracing_filter_defaults_to_info() {
+        let filter = tracing_filter().unwrap();
+        let rendered = filter.to_string();
+        assert!(rendered.contains("info"));
     }
 }
