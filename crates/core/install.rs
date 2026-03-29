@@ -78,8 +78,8 @@ pub fn run_install_mcp<W: Write, E: Write>(
 
 fn install_hosts(hosts: &[&'static str], cwd: &Path) -> Result<Vec<InstallOutcome>, String> {
     let mut outcomes = Vec::new();
-    for host in hosts {
-        outcomes.push(install_host(*host, cwd)?);
+    for &host in hosts {
+        outcomes.push(install_host(host, cwd)?);
     }
     Ok(outcomes)
 }
