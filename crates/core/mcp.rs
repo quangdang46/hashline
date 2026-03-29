@@ -82,37 +82,6 @@ impl CacheEntry {
 }
 
 pub fn run(_cmd: McpCmd) -> io::Result<()> {
-    if let Ok(cwd) = std::env::current_dir() {
-        match crate::install::auto_install(&cwd) {
-            Ok(outcomes) => {
-                for outcome in outcomes {
-                    let status = match outcome.status {
-                        crate::install::InstallStatus::Installed => "Installed",
-                        crate::install::InstallStatus::Updated => "Updated",
-                        crate::install::InstallStatus::Unchanged => {
-                            "MCP config already up to date for"
-                        }
-                    };
-                    if outcome.status == crate::install::InstallStatus::Unchanged {
-                        eprintln!("{status} {} at {}", outcome.host, outcome.path.display());
-                    } else {
-                        eprintln!(
-                            "{status} {} MCP config at {}",
-                            outcome.host,
-                            outcome.path.display()
-                        );
-                    }
-                    if let Some(note) = outcome.note {
-                        eprintln!("  {note}");
-                    }
-                }
-            }
-            Err(error) => {
-                eprintln!("Warning: MCP auto-install skipped: {error}");
-            }
-        }
-    }
-
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -592,6 +561,7 @@ fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
         Commands::Watch(_) => "watch",
         Commands::Explode(_) => "explode",
         Commands::Implode(_) => "implode",
+        Commands::InstallMcp(_) => "install_mcp",
         Commands::Mcp(_) => "mcp",
     };
 

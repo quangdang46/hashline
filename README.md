@@ -116,7 +116,7 @@ curl -fsSL "https://raw.githubusercontent.com/quangdang46/linehash/main/install.
 ```
 
 
-The installer downloads the matching GitHub release asset for your platform, verifies checksums when available, and can optionally add the install directory to your shell PATH.
+The installer downloads the matching GitHub release asset for your platform, verifies checksums when available, can optionally add the install directory to your shell PATH, then auto-detects supported MCP providers and installs the `linehash` MCP entry for each detected host.
 
 ### From source
 
@@ -132,16 +132,20 @@ cargo install --path crates/core
 linehash mcp
 ```
 
-On startup, `linehash mcp` detects the most likely local MCP host config, upserts a `linehash` server entry automatically, and prints the install/update status to `stderr`.
+Use `linehash install-mcp` to auto-detect local MCP host configs, upsert a `linehash` server entry for every detected provider, and log the install results.
 
 Current auto-install targets:
-- `codex` via `~/.codex/config.toml`
 - `claude-code` via `~/.claude.json`
+- `codex` via `~/.codex/config.toml`
 - `cursor` via `~/.cursor/mcp.json`
 - `windsurf` via `~/.codeium/windsurf/mcp_config.json`
 - `vscode` via `.vscode/mcp.json`
+- `gemini` via `~/.gemini/settings.json`
+- `opencode` via `~/.opencode.json`
+- `amp` via `~/.config/amp/settings.json`
+- `droid` via `~/.factory/mcp.json`
 
-Set `LINEHASH_MCP_HOST=codex` or a comma-separated host list to override detection.
+Auto-detect is the default. Set `LINEHASH_MCP_HOST=codex` or a comma-separated host list only when you want to override detection and target a specific subset.
 
 ## Usage
 

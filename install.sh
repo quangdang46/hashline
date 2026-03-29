@@ -339,6 +339,17 @@ find_extracted_binary() {
     printf '%s\n' "$candidate"
 }
 
+run_mcp_auto_install() {
+    log_info "Auto-installing MCP provider configs..."
+    if "$DEST/$BINARY_NAME" install-mcp; then
+        return 0
+    fi
+
+    log_warn "MCP auto-install failed"
+    log_warn "Run manually: $DEST/$BINARY_NAME install-mcp"
+    return 1
+}
+
 print_summary() {
     echo ""
     echo "✓ ${BINARY_NAME} installed → $DEST/$BINARY_NAME"
@@ -385,6 +396,7 @@ main() {
         "$DEST/$BINARY_NAME" --version >/dev/null
     fi
 
+    run_mcp_auto_install || true
     print_summary
 }
 

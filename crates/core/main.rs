@@ -30,6 +30,21 @@ fn main() {
         return;
     }
 
+    if let Commands::InstallMcp(_) = &cli.command {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                eprintln!("install-mcp error: failed to determine current directory: {error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(error) = install::run_install_mcp(&cwd, &mut io::stdout(), &mut io::stderr()) {
+            eprintln!("install-mcp error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let output_mode = output_mode_for(&cli.command);
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
@@ -79,6 +94,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::Watch(cmd) => commands::watch::run(&mut context, cmd).map(|_| 0),
         Commands::Explode(cmd) => commands::explode::run(&mut context, cmd).map(|_| 0),
         Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
+        Commands::InstallMcp(_) => unreachable!("install-mcp is handled before command dispatch"),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
     }
 }

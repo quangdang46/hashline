@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -35,10 +36,50 @@ struct HostInfo {
 }
 
 pub fn auto_install(cwd: &Path) -> Result<Vec<InstallOutcome>, String> {
-    let hosts = detect_hosts(cwd)?;
+    install_hosts(&detect_hosts(cwd)?, cwd)
+}
+
+pub fn run_install_mcp<W: Write, E: Write>(
+    cwd: &Path,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), String> {
+    let outcomes = auto_install(cwd)?;
+    if outcomes.is_empty() {
+        writeln!(
+            stderr,
+            "No supported MCP providers detected. Skipped auto-install."
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    writeln!(stdout, "linehash MCP auto-install results:").map_err(|error| error.to_string())?;
+    for outcome in outcomes {
+        let status = match outcome.status {
+            InstallStatus::Installed => "installed",
+            InstallStatus::Updated => "updated",
+            InstallStatus::Unchanged => "unchanged",
+        };
+        writeln!(
+            stdout,
+            "- {}: {} ({})",
+            outcome.host,
+            status,
+            outcome.path.display()
+        )
+        .map_err(|error| error.to_string())?;
+        if let Some(note) = outcome.note {
+            writeln!(stdout, "  {}", note).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn install_hosts(hosts: &[&'static str], cwd: &Path) -> Result<Vec<InstallOutcome>, String> {
     let mut outcomes = Vec::new();
     for host in hosts {
-        outcomes.push(install_host(host, cwd)?);
+        outcomes.push(install_host(*host, cwd)?);
     }
     Ok(outcomes)
 }
@@ -87,11 +128,7 @@ fn detect_hosts(cwd: &Path) -> Result<Vec<&'static str>, String> {
         detected.push("droid");
     }
 
-    if detected.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    Ok(vec![detected[0]])
+    Ok(detected)
 }
 
 fn resolve_host_name(host: &str) -> Result<&'static str, String> {

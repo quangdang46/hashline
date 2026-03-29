@@ -58,6 +58,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         | Commands::Move(_)
         | Commands::Explode(_)
         | Commands::Implode(_)
+        | Commands::InstallMcp(_)
         | Commands::Mcp(_) => OutputMode::Pretty,
     }
 }
