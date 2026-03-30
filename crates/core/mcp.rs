@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -23,12 +23,13 @@ const SERVER_INSTRUCTIONS: &str = "\
 linehash MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\
 \n\
 Preferred workflow:\n\
-1. linehash_read or linehash_index to inspect anchors.\n\
-2. linehash_annotate or linehash_grep to locate targets.\n\
-3. linehash_verify before risky grouped edits.\n\
-4. linehash_edit / insert / delete / patch for mutations.\n\
+1. For large or noisy files, do not start with a full-file linehash_read. Use linehash_index, linehash_annotate, or linehash_grep first.\n\
+2. Once you know the target, call linehash_read with anchor plus small context for file-local snippet inspection.\n\
+3. Use linehash_find_block when one tight snippet is not enough structural context.\n\
+4. Call linehash_verify before risky grouped edits or when anchors may be stale.\n\
+5. Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch for mutations once anchors are known.\n\
 \n\
-Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing.";
+Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
 #[derive(Default)]
 struct SessionState {
@@ -371,7 +372,13 @@ fn dispatch_tool(
 fn tool_read(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: ReadCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    Ok(success_payload("read", 0, read_payload(&entry.doc), true))
+    let indexes = snippet_indexes(&entry.doc, &cmd.anchor, cmd.context)?;
+    Ok(success_payload(
+        "read",
+        0,
+        read_payload(&entry.doc, indexes.as_deref()),
+        true,
+    ))
 }
 
 fn tool_index(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
@@ -598,7 +605,10 @@ fn success_payload(command: &str, exit_code: i32, data: Value, cache_used: bool)
     })
 }
 
-fn read_payload(doc: &Document) -> Value {
+fn read_payload(doc: &Document, indexes: Option<&[usize]>) -> Value {
+    let line_indexes = indexes
+        .map(|indexes| indexes.to_vec())
+        .unwrap_or_else(|| (0..doc.lines.len()).collect::<Vec<_>>());
     json!({
         "file": doc.path.display().to_string(),
         "newline": match doc.newline {
@@ -609,7 +619,8 @@ fn read_payload(doc: &Document) -> Value {
         "mtime": doc.file_meta.as_ref().map(|meta| meta.mtime_secs).unwrap_or(0),
         "mtime_nanos": doc.file_meta.as_ref().map(|meta| meta.mtime_nanos).unwrap_or(0),
         "inode": doc.file_meta.as_ref().map(|meta| meta.inode).unwrap_or(0),
-        "lines": doc.lines.iter().enumerate().map(|(index, line)| {
+        "lines": line_indexes.into_iter().map(|index| {
+            let line = &doc.lines[index];
             json!({
                 "n": index + 1,
                 "hash": format_short_hash(line.short_hash),
@@ -617,6 +628,31 @@ fn read_payload(doc: &Document) -> Value {
             })
         }).collect::<Vec<_>>(),
     })
+}
+
+fn snippet_indexes(
+    doc: &Document,
+    anchors: &[String],
+    context: usize,
+) -> Result<Option<Vec<usize>>, JsonRpcError> {
+    if anchors.is_empty() {
+        return Ok(None);
+    }
+
+    let index = doc.build_index();
+    let mut selected = BTreeSet::new();
+
+    for anchor in anchors {
+        let parsed = parse_anchor(anchor).map_err(command_error)?;
+        let resolved = resolve(&parsed, doc, &index).map_err(command_error)?;
+        let start = resolved.index.saturating_sub(context);
+        let end = (resolved.index + context).min(doc.lines.len().saturating_sub(1));
+        for line_index in start..=end {
+            selected.insert(line_index);
+        }
+    }
+
+    Ok(Some(selected.into_iter().collect()))
 }
 
 fn index_payload(doc: &Document) -> Value {
@@ -740,20 +776,20 @@ fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
             "linehash_read",
-            "Read a file with current line:hash anchors.",
+            "Read a file with current line:hash anchors. For large or noisy files, prefer linehash_index, linehash_grep, or linehash_annotate first; then pass anchor with a small context for snippet-only inspection instead of a full-file read.",
             json!({
                 "type": "object",
                 "properties": {
                     "file": string_schema("Path to the file."),
-                    "anchor": array_schema("Optional anchors to focus context output."),
-                    "context": integer_schema("Context lines around anchors. Defaults to 5.")
+                    "anchor": array_schema("Optional anchors to focus snippet output. Use this for local inspection on large or noisy files."),
+                    "context": integer_schema("Context lines around anchors. Defaults to 5; keep this tight for large or noisy files.")
                 },
                 "required": ["file"]
             }),
         ),
         tool(
             "linehash_index",
-            "List anchors for every line without content.",
+            "List anchors for every line without content. Prefer this as the first inspection step for large or noisy files when a full read would be too verbose.",
             json!({
                 "type": "object",
                 "properties": {
@@ -764,7 +800,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "linehash_grep",
-            "Search file content and return matching lines with anchors.",
+            "Search file content and return matching lines with anchors. Prefer this before linehash_read when you know a pattern and need to localize the target without dumping the whole file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -778,7 +814,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "linehash_annotate",
-            "Map text or regex matches back to current anchors.",
+            "Map text or regex matches back to current anchors. Prefer this before linehash_read when you know the target text and want a precise anchor for snippet inspection or mutation.",
             json!({
                 "type": "object",
                 "properties": {
@@ -792,7 +828,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "linehash_verify",
-            "Verify that one or more anchors still resolve.",
+            "Verify that one or more anchors still resolve. Use this before grouped edits or when another agent may have changed the file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -804,12 +840,12 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "linehash_edit",
-            "Replace a single line or range at the specified anchor.",
+            "Replace a single line or range at the specified anchor. Use this once anchors are known instead of describing a diff or doing more exploratory reads.",
             mutation_schema("anchor"),
         ),
         tool(
             "linehash_insert",
-            "Insert content before or after an anchor.",
+            "Insert content before or after an anchor. Use this once the insertion anchor is known instead of planning the change in prose.",
             json!({
                 "type": "object",
                 "properties": mutation_properties("anchor", true),
@@ -818,7 +854,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "linehash_delete",
-            "Delete a line or range at the specified anchor.",
+            "Delete a line or range at the specified anchor. Use this once the target anchor is known instead of leaving deletion as a suggested diff.",
             json!({
                 "type": "object",
                 "properties": base_mutation_properties().into_iter().chain([
@@ -829,7 +865,7 @@ fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "linehash_patch",
-            "Apply a JSON patch transaction atomically.",
+            "Apply a JSON patch transaction atomically. Prefer this when several related mutations should happen together after you have collected anchors.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1097,7 +1133,7 @@ fn mutation_schema(anchor_key: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionState, dispatch_tool};
+    use super::{SERVER_INSTRUCTIONS, SessionState, dispatch_tool, tool_definitions};
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -1119,6 +1155,79 @@ mod tests {
         assert_eq!(result["command"], "read");
         assert_eq!(result["exit_code"], 0);
         assert_eq!(result["data"]["lines"][0]["content"], "alpha");
+    }
+
+    #[test]
+    fn read_tool_honors_anchor_and_context_for_snippets() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\nepsilon\n").unwrap();
+        let mut session = SessionState::default();
+
+        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let anchor = format!(
+            "{}:{}",
+            read["data"]["lines"][2]["n"].as_u64().unwrap(),
+            read["data"]["lines"][2]["hash"].as_str().unwrap()
+        );
+
+        let snippet = dispatch_tool(
+            "linehash_read",
+            &json!({
+                "file": path,
+                "anchor": [anchor],
+                "context": 1,
+            }),
+            &mut session,
+        )
+        .unwrap();
+
+        let lines = snippet["data"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["content"], "beta");
+        assert_eq!(lines[1]["content"], "gamma");
+        assert_eq!(lines[2]["content"], "delta");
+    }
+
+    #[test]
+    fn tool_definitions_push_models_toward_targeted_mutations() {
+        let tools = tool_definitions();
+        let read = tools
+            .iter()
+            .find(|tool| tool["name"] == "linehash_read")
+            .unwrap();
+        let edit = tools
+            .iter()
+            .find(|tool| tool["name"] == "linehash_edit")
+            .unwrap();
+        let delete = tools
+            .iter()
+            .find(|tool| tool["name"] == "linehash_delete")
+            .unwrap();
+
+        assert!(
+            read["description"]
+                .as_str()
+                .unwrap()
+                .contains("prefer linehash_index")
+        );
+        assert!(
+            edit["description"]
+                .as_str()
+                .unwrap()
+                .contains("once anchors are known")
+        );
+        assert!(
+            delete["description"]
+                .as_str()
+                .unwrap()
+                .contains("instead of leaving deletion as a suggested diff")
+        );
+        assert!(SERVER_INSTRUCTIONS.contains("do not start with a full-file linehash_read"));
+        assert!(
+            SERVER_INSTRUCTIONS
+                .contains("Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch")
+        );
     }
 
     #[test]
