@@ -320,9 +320,14 @@ fn server_entry() -> Value {
 fn command_and_args() -> (String, Vec<String>) {
     let command = std::env::current_exe()
         .ok()
+        .map(resolve_command_path)
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| "linehash".to_owned());
     (command, vec!["mcp".to_owned()])
+}
+
+fn resolve_command_path(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn upsert_json_server(
@@ -366,8 +371,9 @@ fn home_dir() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallStatus, SERVER_NAME, upsert_json_server};
+    use super::{InstallStatus, SERVER_NAME, resolve_command_path, upsert_json_server};
     use serde_json::json;
+    use tempfile::TempDir;
 
     #[test]
     fn inserts_json_server_when_missing() {
@@ -398,5 +404,19 @@ mod tests {
 
         assert!(config.get("amp.mcpServers").is_some());
         assert!(config.get("amp").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonicalizes_symlinked_command_path() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("linehash-real");
+        let link = dir.path().join("linehash-link");
+        std::fs::write(&target, "binary").unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(resolve_command_path(link), target);
     }
 }

@@ -1153,4 +1153,74 @@ mod tests {
             dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
         assert_eq!(second["data"]["lines"][0]["content"], "beta");
     }
+
+    #[test]
+    fn edit_tool_accepts_multiline_content_for_range_anchor() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let mut session = SessionState::default();
+
+        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let start = format!(
+            "{}:{}",
+            read["data"]["lines"][1]["n"].as_u64().unwrap(),
+            read["data"]["lines"][1]["hash"].as_str().unwrap()
+        );
+        let end = format!(
+            "{}:{}",
+            read["data"]["lines"][2]["n"].as_u64().unwrap(),
+            read["data"]["lines"][2]["hash"].as_str().unwrap()
+        );
+
+        let result = dispatch_tool(
+            "linehash_edit",
+            &json!({
+                "file": path,
+                "anchor": format!("{start}..{end}"),
+                "content": "left\nmiddle\nright",
+            }),
+            &mut session,
+        )
+        .unwrap();
+
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "alpha\nleft\nmiddle\nright\ndelta\n"
+        );
+    }
+
+    #[test]
+    fn delete_tool_accepts_range_anchor() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let mut session = SessionState::default();
+
+        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let start = format!(
+            "{}:{}",
+            read["data"]["lines"][1]["n"].as_u64().unwrap(),
+            read["data"]["lines"][1]["hash"].as_str().unwrap()
+        );
+        let end = format!(
+            "{}:{}",
+            read["data"]["lines"][2]["n"].as_u64().unwrap(),
+            read["data"]["lines"][2]["hash"].as_str().unwrap()
+        );
+
+        let result = dispatch_tool(
+            "linehash_delete",
+            &json!({
+                "file": path,
+                "anchor": format!("{start}..{end}"),
+            }),
+            &mut session,
+        )
+        .unwrap();
+
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\ndelta\n");
+    }
 }
