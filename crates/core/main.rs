@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use clap::Parser;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
@@ -71,7 +71,11 @@ fn main() {
             code
         }
         Err(error) => {
-            error!(%error, "command failed");
+            if error.log_as_error() {
+                error!(%error, "command failed");
+            } else {
+                warn!(%error, "command rejected");
+            }
             let mut context = CommandContext::new(&mut stdout, &mut stderr, output_mode);
             let _ = output::write_error(&mut context, &error);
             1

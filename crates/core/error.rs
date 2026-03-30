@@ -249,6 +249,15 @@ impl LinehashError {
             | LinehashError::InvalidMutationRange { .. } => None,
         }
     }
+
+    pub fn log_as_error(&self) -> bool {
+        matches!(
+            self,
+            LinehashError::NotImplemented { .. }
+                | LinehashError::MutationIndexOutOfBounds { .. }
+                | LinehashError::InvalidMutationRange { .. }
+        )
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +391,32 @@ mod tests {
             )
         );
         assert!(error.to_string().contains("hash still exists at line(s) 9"));
+    }
+
+    #[test]
+    fn recoverable_validation_errors_do_not_log_as_error() {
+        let error = LinehashError::StaleAnchor {
+            anchor: "2:aa".into(),
+            line: 2,
+            expected: "aa".into(),
+            actual: "bb".into(),
+            path: "demo.txt".into(),
+            relocated_suffix: "".into(),
+        };
+
+        assert!(!error.log_as_error());
+    }
+
+    #[test]
+    fn invariant_failures_log_as_error() {
+        assert!(
+            LinehashError::InvalidMutationRange {
+                start: 3,
+                end: 1,
+                len: 2,
+            }
+            .log_as_error()
+        );
     }
 
     #[test]
