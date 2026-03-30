@@ -418,6 +418,7 @@ mod tests {
         std::fs::write(&target, "binary").unwrap();
         symlink(&target, &link).unwrap();
 
-        assert_eq!(resolve_command_path(link), target);
+        let expected = std::fs::canonicalize(&target).unwrap();
+        assert_eq!(resolve_command_path(link), expected);
     }
 }
