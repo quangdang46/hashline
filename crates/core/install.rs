@@ -371,9 +371,8 @@ fn home_dir() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallStatus, SERVER_NAME, resolve_command_path, upsert_json_server};
+    use super::{InstallStatus, SERVER_NAME, upsert_json_server};
     use serde_json::json;
-    use tempfile::TempDir;
 
     #[test]
     fn inserts_json_server_when_missing() {
@@ -409,7 +408,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn canonicalizes_symlinked_command_path() {
+        use super::resolve_command_path;
         use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let target = dir.path().join("linehash-real");
