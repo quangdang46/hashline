@@ -1332,4 +1332,40 @@ mod tests {
         assert_eq!(result["exit_code"], 0);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\ndelta\n");
     }
+
+    #[test]
+    fn edit_tool_reports_range_hint_for_dash_separated_qualified_range() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let mut session = SessionState::default();
+
+        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let start = format!(
+            "{}:{}",
+            read["data"]["lines"][1]["n"].as_u64().unwrap(),
+            read["data"]["lines"][1]["hash"].as_str().unwrap()
+        );
+        let end = format!(
+            "{}:{}",
+            read["data"]["lines"][2]["n"].as_u64().unwrap(),
+            read["data"]["lines"][2]["hash"].as_str().unwrap()
+        );
+        let dashed_range = format!("{start}-{end}");
+
+        let error = dispatch_tool(
+            "linehash_edit",
+            &json!({
+                "file": path,
+                "anchor": dashed_range,
+                "content": "left\nmiddle\nright",
+            }),
+            &mut session,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, -32001);
+        assert!(error.message.contains("invalid range anchor"));
+        assert_eq!(error.data.unwrap()["hint"], "use a range like '2:f1..4:9c'");
+    }
 }

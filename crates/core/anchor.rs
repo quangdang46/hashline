@@ -72,6 +72,17 @@ pub fn parse_range(s: &str) -> Result<RangeAnchor, LinehashError> {
     Ok(RangeAnchor { start, end })
 }
 
+pub fn looks_like_range_anchor(s: &str) -> bool {
+    let normalized = normalize_anchor_input(s);
+    if normalized.contains("..") {
+        return true;
+    }
+
+    normalized
+        .split_once('-')
+        .is_some_and(|(left, right)| parse_anchor(left).is_ok() && parse_anchor(right).is_ok())
+}
+
 pub fn resolve(
     anchor: &Anchor,
     doc: &Document,
@@ -260,7 +271,8 @@ fn display_anchor(anchor: &Anchor) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Anchor, ResolvedLine, parse_anchor, parse_range, resolve, resolve_all, resolve_range,
+        Anchor, ResolvedLine, looks_like_range_anchor, parse_anchor, parse_range, resolve,
+        resolve_all, resolve_range,
     };
     use crate::document::Document;
     use crate::error::LinehashError;
@@ -316,6 +328,14 @@ mod tests {
                 short: 0x9c
             }
         );
+    }
+
+    #[test]
+    fn test_range_detection_accepts_dash_separator_for_hint_routing() {
+        assert!(looks_like_range_anchor("2:f1-4:9c"));
+        assert!(looks_like_range_anchor("2:f1..4:9c"));
+        assert!(!looks_like_range_anchor("2:f1"));
+        assert!(!looks_like_range_anchor("-1:aa"));
     }
 
     #[test]
