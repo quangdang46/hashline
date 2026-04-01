@@ -36,6 +36,17 @@ die() {
     exit 1
 }
 
+sed_in_place() {
+    local expr="$1"
+    local file="$2"
+
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$expr" "$file"
+    else
+        sed -i '' "$expr" "$file"
+    fi
+}
+
 usage() {
     cat <<'EOF'
 Install linehash from GitHub releases.
@@ -129,7 +140,7 @@ done
 do_uninstall() {
     rm -f "$DEST/$BINARY_NAME" "$DEST/$BINARY_NAME.exe"
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        [ -f "$rc" ] && sed -i "/${BINARY_NAME} installer/d" "$rc" 2>/dev/null || true
+        [ -f "$rc" ] && sed_in_place "/${BINARY_NAME} installer/d" "$rc" 2>/dev/null || true
     done
     log_success "Uninstalled"
     exit 0
