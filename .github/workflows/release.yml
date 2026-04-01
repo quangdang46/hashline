@@ -31,12 +31,12 @@ jobs:
             archive_ext: tar.gz
             use_cross: true
           - name: macos-x86_64
-            os: macos-latest
+            os: macos-13
             target: x86_64-apple-darwin
             archive_ext: tar.gz
             use_cross: false
           - name: macos-aarch64
-            os: macos-latest
+            os: macos-14
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             use_cross: false
@@ -57,7 +57,7 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: taiki-e/install-action@cross
 
       - name: Build binary
         shell: bash
