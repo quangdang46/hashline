@@ -99,7 +99,8 @@ fn parse_workflow_pack(
         .strip_prefix(root)
         .unwrap_or(path)
         .display()
-        .to_string();
+        .to_string()
+        .replace('\\', "/");
     let parent_name = path
         .parent()
         .and_then(Path::file_name)
