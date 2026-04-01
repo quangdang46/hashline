@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 use crate::cli::{
     AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
     GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MergePatchesCmd, MoveCmd,
-    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCmd, WorkflowsCmd,
+    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::LinehashError;
 use crate::orchestration::{
     annotate_lines, command_name, doctor_payload, grep_lines, index_payload, read_payload,
-    verify_report,
+    verify_report, watch_capabilities_payload,
 };
 use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
@@ -30,6 +30,7 @@ Preferred workflow:\n\
 4. Call linehash_verify before risky grouped edits or when anchors may be stale.\n\
 5. Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch for mutations once anchors are known.\n\
 6. Call linehash_workflows when you want a repo-local skill pack instead of reconstructing a linehash workflow from scratch.\n\
+7. Use linehash_watch_capabilities before assuming MCP supports a streaming watch loop.\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
@@ -325,6 +326,10 @@ fn dispatch_tool(
             cmd.json = true;
             invoke_command(Commands::Workflows(cmd))
         }
+        "linehash_watch_capabilities" => {
+            let cmd = WatchCapabilitiesCmd { json: true };
+            invoke_command(Commands::WatchCapabilities(cmd))
+        }
         "linehash_stats" => tool_stats(arguments, session),
         "linehash_doctor" => tool_doctor(arguments, session),
         "linehash_from_diff" => {
@@ -343,7 +348,7 @@ fn dispatch_tool(
                 return Err(tool_error(
                     -32602,
                     "continuous watch is not supported over MCP; omit `continuous` or set `once=true`",
-                    None,
+                    Some(json!({ "capabilities": watch_capabilities_payload() })),
                 ));
             }
             cmd.once = true;
@@ -774,6 +779,14 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
+            "linehash_watch_capabilities",
+            "Explain the current watch capability split: the CLI supports continuous watch, while MCP supports only single-event watch calls today.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+        ),
+        tool(
             "linehash_find_block",
             "Find a likely structural block around an anchor.",
             json!({
@@ -1078,6 +1091,10 @@ mod tests {
 
         assert_eq!(error.code, -32602);
         assert!(error.message.contains("continuous watch"));
+        assert_eq!(
+            error.data.as_ref().unwrap()["capabilities"]["mcp_streaming_supported"],
+            false
+        );
     }
 
     #[test]
@@ -1279,5 +1296,19 @@ mod tests {
             result["data"]["packs"][0]["allowed_mcp_tools"][0],
             "linehash_index"
         );
+    }
+
+    #[test]
+    fn watch_capabilities_tool_reports_mcp_limitations() {
+        let result = dispatch_tool(
+            "linehash_watch_capabilities",
+            &json!({}),
+            &mut SessionState::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result["command"], "watch-capabilities");
+        assert_eq!(result["data"]["cli_continuous_supported"], true);
+        assert_eq!(result["data"]["mcp_streaming_supported"], false);
     }
 }

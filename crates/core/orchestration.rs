@@ -73,6 +73,16 @@ pub struct DoctorPayload {
     pub next_commands: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct WatchCapabilitiesPayload {
+    pub cli_continuous_supported: bool,
+    pub mcp_single_event_supported: bool,
+    pub mcp_streaming_supported: bool,
+    pub recommended_mcp_mode: &'static str,
+    pub streaming_block_reason: &'static str,
+    pub recommended_alternatives: Vec<&'static str>,
+}
+
 pub fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Read(_) => "read",
@@ -94,10 +104,26 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::FromDiff(_) => "from-diff",
         Commands::MergePatches(_) => "merge-patches",
         Commands::Watch(_) => "watch",
+        Commands::WatchCapabilities(_) => "watch-capabilities",
         Commands::Explode(_) => "explode",
         Commands::Implode(_) => "implode",
         Commands::InstallMcp(_) => "install-mcp",
         Commands::Mcp(_) => "mcp",
+    }
+}
+
+pub fn watch_capabilities_payload() -> WatchCapabilitiesPayload {
+    WatchCapabilitiesPayload {
+        cli_continuous_supported: true,
+        mcp_single_event_supported: true,
+        mcp_streaming_supported: false,
+        recommended_mcp_mode: "single-event watch",
+        streaming_block_reason: "The linehash MCP server currently runs request/response stdio tools, so a continuous watch would block the caller instead of emitting incremental tool events.",
+        recommended_alternatives: vec![
+            "Call `linehash_watch` with `once=true` and re-issue it after each consumed event.",
+            "Use CLI `linehash watch --continuous` outside MCP when you need a live terminal stream.",
+            "Poll `linehash_read`, `linehash_index`, or `linehash_verify` when a client already owns the scheduling loop.",
+        ],
     }
 }
 

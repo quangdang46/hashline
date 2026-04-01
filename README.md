@@ -147,6 +147,11 @@ Current auto-install targets:
 
 Auto-detect is the default. Set `LINEHASH_MCP_HOST=codex` or a comma-separated host list only when you want to override detection and target a specific subset.
 
+For watch behavior, the current split is intentional:
+- CLI supports `linehash watch --continuous`
+- MCP supports only single-event watch calls today
+- `linehash watch-capabilities --json` or MCP `linehash_watch_capabilities` returns the evaluated capability contract and recommended fallback modes
+
 ## Usage
 
 Common workflows for Claude Code, AI code editing, and patch-safe file automation:
@@ -196,6 +201,7 @@ linehash stats src/auth.js
 # Watch for live hash changes (v1 defaults to one change event, then exit)
 linehash watch src/auth.js
 linehash watch src/auth.js --continuous
+linehash watch-capabilities --json
 
 # List repo-local markdown workflow packs / skills
 linehash workflows

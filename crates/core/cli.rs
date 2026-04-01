@@ -39,6 +39,7 @@ pub enum Commands {
     FromDiff(FromDiffCmd),
     MergePatches(MergePatchesCmd),
     Watch(WatchCmd),
+    WatchCapabilities(WatchCapabilitiesCmd),
     Workflows(WorkflowsCmd),
     Explode(ExplodeCmd),
     Implode(ImplodeCmd),
@@ -365,6 +366,17 @@ pub struct WatchCmd {
     #[serde(default)]
     #[arg(long)]
     pub continuous: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Explain watch support across CLI and MCP surfaces",
+    long_about = "Explain watch support across CLI and MCP surfaces. Use this before building an MCP client that expects streaming notifications so you can see the supported modes, the current MCP constraint, and the recommended fallback."
+)]
+pub struct WatchCapabilitiesCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,

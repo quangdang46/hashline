@@ -19,4 +19,5 @@ pub mod stats;
 pub mod swap;
 pub mod verify;
 pub mod watch;
+pub mod watch_capabilities;
 pub mod workflows;

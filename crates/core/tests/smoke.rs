@@ -98,6 +98,21 @@ fn workflows_json_lists_repo_skill_packs() {
 }
 
 #[test]
+fn watch_capabilities_json_reports_mcp_streaming_limit() {
+    let parsed = parse_json(&["watch-capabilities", "--json"]);
+
+    assert_eq!(parsed["cli_continuous_supported"], true);
+    assert_eq!(parsed["mcp_single_event_supported"], true);
+    assert_eq!(parsed["mcp_streaming_supported"], false);
+    assert!(
+        parsed["streaming_block_reason"]
+            .as_str()
+            .unwrap()
+            .contains("request/response")
+    );
+}
+
+#[test]
 fn index_pretty_output_shows_hashes_only() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();

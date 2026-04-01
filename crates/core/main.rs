@@ -258,6 +258,9 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::FromDiff(cmd) => commands::from_diff::run(&mut context, cmd).map(|_| 0),
         Commands::MergePatches(cmd) => commands::merge_patches::run(&mut context, cmd).map(|_| 0),
         Commands::Watch(cmd) => commands::watch::run(&mut context, cmd).map(|_| 0),
+        Commands::WatchCapabilities(cmd) => {
+            commands::watch_capabilities::run(&mut context, cmd).map(|_| 0)
+        }
         Commands::Explode(cmd) => commands::explode::run(&mut context, cmd).map(|_| 0),
         Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
         Commands::InstallMcp(_) => unreachable!("install-mcp is handled before command dispatch"),

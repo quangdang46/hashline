@@ -55,6 +55,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::FromDiff(cmd) => flag_mode(cmd.json),
         Commands::MergePatches(cmd) => flag_mode(cmd.json),
         Commands::Watch(cmd) => flag_mode(cmd.json),
+        Commands::WatchCapabilities(cmd) => flag_mode(cmd.json),
         Commands::Swap(_)
         | Commands::Move(_)
         | Commands::Explode(_)
@@ -77,7 +78,7 @@ mod tests {
     use super::{OutputMode, output_mode_for};
     use crate::cli::{
         Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
-        ReadCmd, WatchCmd, WorkflowsCmd,
+        ReadCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
     };
     use std::path::PathBuf;
 
@@ -140,6 +141,13 @@ mod tests {
             continuous: true,
             json: true,
         });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Json);
+    }
+
+    #[test]
+    fn supports_json_mode_for_watch_capabilities() {
+        let command = Commands::WatchCapabilities(WatchCapabilitiesCmd { json: true });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
     }
