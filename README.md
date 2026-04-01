@@ -197,6 +197,10 @@ linehash stats src/auth.js
 linehash watch src/auth.js
 linehash watch src/auth.js --continuous
 
+# List repo-local markdown workflow packs / skills
+linehash workflows
+linehash workflows --root /path/to/repo --json
+
 # Explode / implode workflow
 linehash explode src/auth.js --out out/auth.lines
 linehash implode out/auth.lines --out src/auth.js --dry-run
@@ -238,6 +242,26 @@ Example:
 - Use qualified anchors like `12:ab` whenever possible; they are safer than bare `ab` when collisions or stale reads matter.
 
 ## Workflow playbooks
+
+## Markdown workflow packs
+
+`linehash` now supports repo-local markdown skill packs under `.linehash/skills/<name>/SKILL.md`.
+Each pack uses TOML frontmatter with bounded CLI and MCP surfaces, then a Markdown body with
+the actual workflow instructions:
+
+```toml
+---
+title = "Anchored Read"
+description = "Orient before mutating."
+allowed_cli_commands = ["linehash index", "linehash read"]
+allowed_mcp_tools = ["linehash_index", "linehash_read"]
+---
+```
+
+Use `linehash workflows` to inspect the loaded pack catalog locally, or call the MCP
+tool `linehash_workflows` to retrieve the same catalog from an integration client.
+The bundled packs cover anchored reads, verify-then-edit, patch transactions, and
+stale-anchor repair.
 
 ### Targeted edit
 

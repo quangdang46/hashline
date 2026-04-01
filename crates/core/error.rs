@@ -108,6 +108,9 @@ pub enum LinehashError {
     #[error("implode directory '{path}' is missing line file for line {line_no}")]
     ImplodeMissingLineFile { path: String, line_no: usize },
 
+    #[error("workflow pack '{path}' is invalid: {reason}")]
+    InvalidWorkflowPack { path: String, reason: String },
+
     #[error("patch failed at operation {op_index}: {reason}")]
     PatchFailed { op_index: usize, reason: String },
 
@@ -194,6 +197,9 @@ impl LinehashError {
             LinehashError::ImplodeMissingLineFile { .. } => Some(
                 "restore the missing line file or regenerate the explode directory before retrying",
             ),
+            LinehashError::InvalidWorkflowPack { .. } => Some(
+                "fix the markdown frontmatter fields in `.linehash/skills` and retry `linehash workflows`",
+            ),
             LinehashError::PatchFailed { .. } => {
                 Some("fix the failing patch operation and retry the transaction")
             }
@@ -243,6 +249,7 @@ impl LinehashError {
             | LinehashError::ImplodeInvalidMeta { .. }
             | LinehashError::ImplodeDirtyDirectory { .. }
             | LinehashError::ImplodeMissingLineFile { .. }
+            | LinehashError::InvalidWorkflowPack { .. }
             | LinehashError::PatchFailed { .. }
             | LinehashError::MultiLineContentUnsupported
             | LinehashError::MutationIndexOutOfBounds { .. }

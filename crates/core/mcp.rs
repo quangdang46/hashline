@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::cli::{
     AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
     GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MergePatchesCmd, MoveCmd,
-    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCmd,
+    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCmd, WorkflowsCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::LinehashError;
@@ -29,6 +29,7 @@ Preferred workflow:\n\
 3. Use linehash_find_block when one tight snippet is not enough structural context.\n\
 4. Call linehash_verify before risky grouped edits or when anchors may be stale.\n\
 5. Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch for mutations once anchors are known.\n\
+6. Call linehash_workflows when you want a repo-local skill pack instead of reconstructing a linehash workflow from scratch.\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
@@ -318,6 +319,11 @@ fn dispatch_tool(
             let mut cmd: FindBlockCmd = parse_args(arguments)?;
             cmd.json = true;
             invoke_command(Commands::FindBlock(cmd))
+        }
+        "linehash_workflows" => {
+            let mut cmd: WorkflowsCmd = parse_args(arguments)?;
+            cmd.json = true;
+            invoke_command(Commands::Workflows(cmd))
         }
         "linehash_stats" => tool_stats(arguments, session),
         "linehash_doctor" => tool_doctor(arguments, session),
@@ -755,6 +761,16 @@ fn tool_definitions() -> Vec<Value> {
                     "expect_inode": integer_schema("Optional expected inode.")
                 },
                 "required": ["file", "range", "amount"]
+            }),
+        ),
+        tool(
+            "linehash_workflows",
+            "List repo-local markdown skill packs from `.linehash/skills` so agents can follow a bounded read/search/edit workflow instead of improvising command sequences.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "root": string_schema("Workspace root that contains `.linehash/skills`. Defaults to the MCP server current working directory.")
+                }
             }),
         ),
         tool(
@@ -1227,6 +1243,41 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("blocked")
+        );
+    }
+
+    #[test]
+    fn workflows_tool_returns_repo_skill_pack_catalog() {
+        let dir = TempDir::new().unwrap();
+        let skills_dir = dir.path().join(".linehash/skills/anchored-read");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("SKILL.md"),
+            concat!(
+                "---\n",
+                "title = \"Anchored read\"\n",
+                "description = \"Inspect before mutating\"\n",
+                "surfaces = [\"local\", \"mcp\"]\n",
+                "allowed_cli_commands = [\"linehash index\", \"linehash read\"]\n",
+                "allowed_mcp_tools = [\"linehash_index\", \"linehash_read\"]\n",
+                "---\n",
+                "Use index first, then a focused read.\n",
+            ),
+        )
+        .unwrap();
+
+        let result = dispatch_tool(
+            "linehash_workflows",
+            &json!({ "root": dir.path() }),
+            &mut SessionState::default(),
+        )
+        .unwrap();
+
+        assert_eq!(result["command"], "workflows");
+        assert_eq!(result["data"]["packs"][0]["name"], "anchored-read");
+        assert_eq!(
+            result["data"]["packs"][0]["allowed_mcp_tools"][0],
+            "linehash_index"
         );
     }
 }

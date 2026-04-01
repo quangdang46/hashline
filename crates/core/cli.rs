@@ -39,6 +39,7 @@ pub enum Commands {
     FromDiff(FromDiffCmd),
     MergePatches(MergePatchesCmd),
     Watch(WatchCmd),
+    Workflows(WorkflowsCmd),
     Explode(ExplodeCmd),
     Implode(ImplodeCmd),
     InstallMcp(InstallMcpCmd),
@@ -317,6 +318,19 @@ pub struct StatsCmd {
 )]
 pub struct DoctorCmd {
     pub file: PathBuf,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "List repo-local markdown workflow packs",
+    long_about = "List repo-local markdown workflow packs and skill docs from `.linehash/skills`. Use this to expose curated linehash agent workflows to both local CLI users and MCP clients without relying on ad hoc prompt text."
+)]
+pub struct WorkflowsCmd {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,

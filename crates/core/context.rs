@@ -51,6 +51,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
         Commands::Stats(cmd) => flag_mode(cmd.json),
         Commands::Doctor(cmd) => flag_mode(cmd.json),
+        Commands::Workflows(cmd) => flag_mode(cmd.json),
         Commands::FromDiff(cmd) => flag_mode(cmd.json),
         Commands::MergePatches(cmd) => flag_mode(cmd.json),
         Commands::Watch(cmd) => flag_mode(cmd.json),
@@ -76,7 +77,7 @@ mod tests {
     use super::{OutputMode, output_mode_for};
     use crate::cli::{
         Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
-        ReadCmd, WatchCmd,
+        ReadCmd, WatchCmd, WorkflowsCmd,
     };
     use std::path::PathBuf;
 
@@ -137,6 +138,16 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             once: false,
             continuous: true,
+            json: true,
+        });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Json);
+    }
+
+    #[test]
+    fn supports_json_mode_for_workflows() {
+        let command = Commands::Workflows(WorkflowsCmd {
+            root: Some(PathBuf::from(".")),
             json: true,
         });
 

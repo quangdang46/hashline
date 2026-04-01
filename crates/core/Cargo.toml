@@ -25,6 +25,7 @@ memchr = { workspace = true }
 memmap2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+toml = "0.8"
 
 [dev-dependencies]
 assert_cmd = "2"

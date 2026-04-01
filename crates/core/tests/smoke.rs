@@ -1,6 +1,7 @@
 mod support;
 
 use std::fs;
+use tempfile::TempDir;
 
 use support::{assert_err_contains, do_edit, fixture_path, parse_json, run_linehash, tmpfile};
 #[cfg(unix)]
@@ -64,6 +65,36 @@ fn read_anchor_context_only_shows_neighborhood() {
     assert!(stdout.contains(" 8:"));
     assert!(!stdout.contains(" 1:"));
     assert!(!stdout.contains(" 9:"));
+}
+
+#[test]
+fn workflows_json_lists_repo_skill_packs() {
+    let dir = TempDir::new().unwrap();
+    let skills_dir = dir.path().join(".linehash/skills/anchored-read");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(
+        skills_dir.join("SKILL.md"),
+        concat!(
+            "---\n",
+            "title = \"Anchored read\"\n",
+            "description = \"Orient before edit\"\n",
+            "allowed_cli_commands = [\"linehash read\"]\n",
+            "allowed_mcp_tools = [\"linehash_read\"]\n",
+            "---\n",
+            "Read the right snippet first.\n",
+        ),
+    )
+    .unwrap();
+
+    let root = dir.path().to_string_lossy().into_owned();
+    let parsed = parse_json(&["workflows", "--root", &root, "--json"]);
+
+    assert_eq!(parsed["root"], root);
+    assert_eq!(parsed["packs"][0]["name"], "anchored-read");
+    assert_eq!(
+        parsed["packs"][0]["allowed_cli_commands"][0],
+        "linehash read"
+    );
 }
 
 #[test]

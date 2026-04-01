@@ -12,6 +12,7 @@ mod orchestration;
 mod output;
 mod receipt;
 mod risk;
+mod workflows;
 
 use std::io;
 use std::io::Write;
@@ -253,6 +254,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
         Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
         Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
+        Commands::Workflows(cmd) => commands::workflows::run(&mut context, cmd).map(|_| 0),
         Commands::FromDiff(cmd) => commands::from_diff::run(&mut context, cmd).map(|_| 0),
         Commands::MergePatches(cmd) => commands::merge_patches::run(&mut context, cmd).map(|_| 0),
         Commands::Watch(cmd) => commands::watch::run(&mut context, cmd).map(|_| 0),

@@ -90,6 +90,7 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::FindBlock(_) => "find-block",
         Commands::Stats(_) => "stats",
         Commands::Doctor(_) => "doctor",
+        Commands::Workflows(_) => "workflows",
         Commands::FromDiff(_) => "from-diff",
         Commands::MergePatches(_) => "merge-patches",
         Commands::Watch(_) => "watch",
