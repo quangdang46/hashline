@@ -17,6 +17,7 @@ use crate::orchestration::{
     annotate_lines, command_name, doctor_payload, grep_lines, index_payload, read_payload,
     verify_report,
 };
+use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
 
 const SERVER_INSTRUCTIONS: &str = "\
@@ -496,6 +497,7 @@ fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError>
 }
 
 fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
+    let risk = assess_command(&command);
     let command_name = command_name(&command);
 
     let mut stdout = Vec::new();
@@ -515,6 +517,15 @@ fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
 
     if let Ok(data) = serde_json::from_str::<Value>(payload["stdout"].as_str().unwrap_or("")) {
         payload["data"] = data;
+    }
+    if let Some(risk) = risk {
+        payload["risk"] = serde_json::to_value(risk).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize risk payload: {error}"),
+                None,
+            )
+        })?;
     }
 
     Ok(payload)
@@ -538,6 +549,9 @@ fn command_error(error: LinehashError) -> JsonRpcError {
     }
     if let Some(command) = error.command() {
         data.insert("command".into(), json!(command));
+    }
+    if let Some(risk) = blocked_assessment(&error) {
+        data.insert("risk".into(), json!(risk));
     }
 
     tool_error(
@@ -1134,6 +1148,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["risk"]["level"], "high");
+        assert!(
+            result["risk"]["summary"]
+                .as_str()
+                .unwrap()
+                .contains("permanently")
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\ndelta\n");
     }
 
@@ -1171,5 +1192,41 @@ mod tests {
         assert_eq!(error.code, -32001);
         assert!(error.message.contains("invalid range anchor"));
         assert_eq!(error.data.unwrap()["hint"], "use a range like '2:f1..4:9c'");
+    }
+
+    #[test]
+    fn stale_anchor_error_includes_blocked_risk_context() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("demo.txt");
+        std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+        let mut session = SessionState::default();
+
+        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let anchor = format!(
+            "{}:{}",
+            read["data"]["lines"][1]["n"].as_u64().unwrap(),
+            read["data"]["lines"][1]["hash"].as_str().unwrap()
+        );
+        std::fs::write(&path, "alpha\ngamma\nbeta\n").unwrap();
+
+        let error = dispatch_tool(
+            "linehash_edit",
+            &json!({
+                "file": path,
+                "anchor": anchor,
+                "content": "BETA",
+            }),
+            &mut session,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, -32001);
+        assert_eq!(error.data.as_ref().unwrap()["risk"]["level"], "blocked");
+        assert!(
+            error.data.as_ref().unwrap()["risk"]["summary"]
+                .as_str()
+                .unwrap()
+                .contains("blocked")
+        );
     }
 }

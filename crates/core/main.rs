@@ -11,6 +11,7 @@ mod mutation;
 mod orchestration;
 mod output;
 mod receipt;
+mod risk;
 
 use std::io;
 use std::io::Write;
@@ -26,6 +27,7 @@ use crate::cli::{Cli, Commands};
 use crate::context::{CommandContext, output_mode_for};
 use crate::error::LinehashError;
 use crate::orchestration::command_name;
+use crate::risk::assess_command;
 
 fn main() {
     let cli = Cli::parse();
@@ -219,11 +221,20 @@ pub(crate) fn run_command<W: Write, E: Write>(
     stderr: &mut E,
 ) -> Result<i32, LinehashError> {
     let output_mode = output_mode_for(&command);
+    let risk = assess_command(&command);
     debug!(
         command = command_name(&command),
         ?output_mode,
         "dispatching command"
     );
+    if let Some(risk) = risk.as_ref() {
+        info!(
+            command = command_name(&command),
+            risk_level = risk.level.as_str(),
+            risk_summary = %risk.summary,
+            "destructive command risk assessed"
+        );
+    }
     let mut context = CommandContext::new(stdout, stderr, output_mode);
 
     match command {

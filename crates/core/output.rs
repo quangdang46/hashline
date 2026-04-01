@@ -10,12 +10,15 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
 use crate::orchestration::{IndexPayload, LineView, ReadPayload};
+use crate::risk::blocked_assessment;
 
 #[derive(Serialize)]
 struct ErrorPayload<'a> {
     error: String,
     hint: Option<&'a str>,
     command: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    risk: Option<crate::risk::RiskAssessment>,
 }
 
 #[allow(dead_code)]
@@ -206,16 +209,34 @@ pub fn write_error<W: Write, E: Write>(
     match ctx.output_mode() {
         OutputMode::Pretty => {
             writeln!(ctx.stderr(), "Error: {error}")?;
+            if let Some(risk) = blocked_assessment(error) {
+                writeln!(
+                    ctx.stderr(),
+                    "Risk: {} - {}",
+                    risk.level.as_str(),
+                    risk.summary
+                )?;
+                for reason in risk.reasons {
+                    writeln!(ctx.stderr(), "Reason: {}", reason.message)?;
+                }
+            }
             if let Some(hint) = error.hint() {
                 writeln!(ctx.stderr(), "Hint: {hint}")?;
             }
             Ok(())
         }
         OutputMode::Json => {
+            let risk = blocked_assessment(error);
             let payload = ErrorPayload {
                 error: error.to_string(),
                 hint: error.hint(),
-                command: error.command(),
+                command: error.command().or_else(|| {
+                    risk.as_ref().map(|risk| match risk.operation {
+                        "patch" => "patch",
+                        _ => "anchor-safety",
+                    })
+                }),
+                risk,
             };
             serde_json::to_writer_pretty(ctx.stderr(), &payload)?;
             writeln!(ctx.stderr())
