@@ -14,7 +14,7 @@ pub fn run<W: Write, E: Write>(
     let stats = doc.compute_stats();
 
     if cmd.json {
-        output::print_stats_json(ctx.stdout(), &stats)?;
+        output::write_json_success(ctx, &stats)?;
     } else {
         output::print_stats(ctx.stdout(), &stats)?;
     }

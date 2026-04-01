@@ -6,6 +6,7 @@ use crate::commands::common::{atomic_write, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
+use crate::orchestration::read_payload;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -185,7 +186,10 @@ fn write_dry_run<W: Write, E: Write>(
     summary: &IndentSummary,
 ) -> Result<(), LinehashError> {
     match ctx.output_mode() {
-        OutputMode::Json => output::print_read_json(ctx.stdout(), doc).map_err(LinehashError::from),
+        OutputMode::Json => {
+            let payload = read_payload(doc, &[], 0)?;
+            output::print_read_json(ctx.stdout(), &payload).map_err(LinehashError::from)
+        }
         OutputMode::Pretty => {
             let change = match summary.change {
                 IndentChange::Indent(amount) => format!(

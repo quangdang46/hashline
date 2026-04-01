@@ -4,6 +4,7 @@ use crate::cli::IndexCmd;
 use crate::context::CommandContext;
 use crate::document::Document;
 use crate::error::LinehashError;
+use crate::orchestration::index_payload;
 use crate::output;
 
 pub fn run<W: Write, E: Write>(
@@ -13,7 +14,8 @@ pub fn run<W: Write, E: Write>(
     let doc = Document::load(&cmd.file)?;
 
     if cmd.json {
-        output::print_index_json(ctx.stdout(), &doc)?;
+        let payload = index_payload(&doc);
+        output::print_index_json(ctx.stdout(), &payload)?;
     } else {
         output::print_index(ctx.stdout(), &doc)?;
     }

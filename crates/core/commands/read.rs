@@ -1,10 +1,10 @@
 use std::io::Write;
 
-use crate::anchor::{parse_anchor, resolve};
 use crate::cli::ReadCmd;
 use crate::context::CommandContext;
 use crate::document::Document;
 use crate::error::LinehashError;
+use crate::orchestration::{read_payload, resolve_read_anchors};
 use crate::output;
 
 pub fn run<W: Write, E: Write>(
@@ -14,7 +14,8 @@ pub fn run<W: Write, E: Write>(
     let doc = Document::load(&cmd.file)?;
 
     if cmd.json {
-        output::print_read_json(ctx.stdout(), &doc)?;
+        let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+        output::print_read_json(ctx.stdout(), &payload)?;
         return Ok(());
     }
 
@@ -23,13 +24,7 @@ pub fn run<W: Write, E: Write>(
         return Ok(());
     }
 
-    let index = doc.build_index();
-    let mut resolved = Vec::with_capacity(cmd.anchor.len());
-    for anchor in &cmd.anchor {
-        let parsed = parse_anchor(anchor)?;
-        resolved.push(resolve(&parsed, &doc, &index)?);
-    }
-
+    let resolved = resolve_read_anchors(&doc, &cmd.anchor)?;
     output::print_read_context(ctx.stdout(), &doc, &resolved, cmd.context)?;
     Ok(())
 }

@@ -9,55 +9,13 @@ use crate::anchor::ResolvedLine;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
+use crate::orchestration::{IndexPayload, LineView, ReadPayload};
 
 #[derive(Serialize)]
 struct ErrorPayload<'a> {
     error: String,
     hint: Option<&'a str>,
     command: Option<&'a str>,
-}
-
-#[derive(Serialize)]
-pub struct ReadLinePayload<'a> {
-    n: usize,
-    hash: &'a str,
-    content: &'a str,
-}
-
-#[derive(Serialize)]
-struct IndexLinePayload<'a> {
-    n: usize,
-    hash: &'a str,
-}
-
-#[derive(Serialize)]
-struct ReadPayload<'a> {
-    file: String,
-    newline: &'static str,
-    trailing_newline: bool,
-    mtime: i64,
-    mtime_nanos: u32,
-    inode: u64,
-    lines: Vec<ReadLineOwnedPayload<'a>>,
-}
-
-#[derive(Serialize)]
-struct ReadLineOwnedPayload<'a> {
-    n: usize,
-    hash: String,
-    content: &'a str,
-}
-
-#[derive(Serialize)]
-struct IndexPayload {
-    file: String,
-    lines: Vec<IndexLineOwnedPayload>,
-}
-
-#[derive(Serialize)]
-struct IndexLineOwnedPayload {
-    n: usize,
-    hash: String,
 }
 
 #[allow(dead_code)]
@@ -69,7 +27,7 @@ pub fn write_success_line<W: Write, E: Write>(
 }
 
 #[allow(dead_code)]
-pub fn write_json_success<W: Write, E: Write, T: Serialize>(
+pub fn write_json_success<W: Write, E: Write, T: Serialize + ?Sized>(
     ctx: &mut CommandContext<'_, W, E>,
     value: &T,
 ) -> io::Result<()> {
@@ -92,34 +50,7 @@ pub fn print_read(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
     Ok(())
 }
 
-pub fn print_read_json(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
-    let payload = ReadPayload {
-        file: doc.path.display().to_string(),
-        newline: newline_name(doc.newline),
-        trailing_newline: doc.trailing_newline,
-        mtime: doc
-            .file_meta
-            .as_ref()
-            .map(|meta| meta.mtime_secs)
-            .unwrap_or(0),
-        mtime_nanos: doc
-            .file_meta
-            .as_ref()
-            .map(|meta| meta.mtime_nanos)
-            .unwrap_or(0),
-        inode: doc.file_meta.as_ref().map(|meta| meta.inode).unwrap_or(0),
-        lines: doc
-            .lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| ReadLineOwnedPayload {
-                n: index + 1,
-                hash: format_short_hash(line.short_hash),
-                content: &line.content,
-            })
-            .collect(),
-    };
-
+pub fn print_read_json(writer: &mut impl Write, payload: &ReadPayload) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut *writer, &payload)?;
     writeln!(writer)
 }
@@ -178,20 +109,7 @@ pub fn print_index(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
     Ok(())
 }
 
-pub fn print_index_json(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
-    let payload = IndexPayload {
-        file: doc.path.display().to_string(),
-        lines: doc
-            .lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| IndexLineOwnedPayload {
-                n: index + 1,
-                hash: format_short_hash(line.short_hash),
-            })
-            .collect(),
-    };
-
+pub fn print_index_json(writer: &mut impl Write, payload: &IndexPayload) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut *writer, &payload)?;
     writeln!(writer)
 }
@@ -255,24 +173,30 @@ pub fn print_grep(writer: &mut impl Write, doc: &Document, indexes: &[usize]) ->
     Ok(())
 }
 
+pub fn print_line_views(writer: &mut impl Write, lines: &[LineView]) -> io::Result<()> {
+    let width = lines
+        .iter()
+        .map(|line| line.n.to_string().len())
+        .max()
+        .unwrap_or(1);
+    for line in lines {
+        writeln!(
+            writer,
+            "{number:>width$}:{hash}| {content}",
+            number = line.n,
+            hash = line.hash,
+            content = line.content,
+            width = width
+        )?;
+    }
+    Ok(())
+}
+
 pub fn write_grep_json<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
-    doc: &Document,
-    indexes: &[usize],
+    lines: &[LineView],
 ) -> io::Result<()> {
-    let payload = indexes
-        .iter()
-        .map(|index| {
-            let line = &doc.lines[*index];
-            ReadLineOwnedPayload {
-                n: *index + 1,
-                hash: format_short_hash(line.short_hash),
-                content: &line.content,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    write_json_success(ctx, &payload)
+    write_json_success(ctx, lines)
 }
 
 pub fn write_error<W: Write, E: Write>(
@@ -332,6 +256,7 @@ mod tests {
     };
     use crate::anchor::ResolvedLine;
     use crate::document::{Document, FileStats, format_short_hash};
+    use crate::orchestration::{index_payload, read_payload};
     use std::path::Path;
 
     #[test]
@@ -511,7 +436,8 @@ mod tests {
     fn test_read_json_valid() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
         let mut out = Vec::new();
-        print_read_json(&mut out, &doc).unwrap();
+        let payload = read_payload(&doc, &[], 0).unwrap();
+        print_read_json(&mut out, &payload).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed["file"], "demo.txt");
         assert_eq!(parsed["newline"], "lf");
@@ -526,7 +452,8 @@ mod tests {
     fn test_index_json_valid() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\n").unwrap();
         let mut out = Vec::new();
-        print_index_json(&mut out, &doc).unwrap();
+        let payload = index_payload(&doc);
+        print_index_json(&mut out, &payload).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed["file"], "demo.txt");
         assert_eq!(parsed["lines"][0]["n"], 1);

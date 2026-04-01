@@ -1,22 +1,22 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use regex::RegexBuilder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::anchor::{parse_anchor, resolve};
 use crate::cli::{
     AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
     GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MergePatchesCmd, MoveCmd,
     PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCmd,
 };
-use crate::document::{
-    Document, FileMeta, FileStats, ShortHashIndex, format_short_hash, read_file_meta,
-};
+use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::LinehashError;
+use crate::orchestration::{
+    annotate_lines, command_name, doctor_payload, grep_lines, index_payload, read_payload,
+    verify_report,
+};
 use crate::run_command;
 
 const SERVER_INSTRUCTIONS: &str = "\
@@ -39,7 +39,6 @@ struct SessionState {
 struct CacheEntry {
     meta: FileMeta,
     doc: Document,
-    index: Option<ShortHashIndex>,
     stats: Option<FileStats>,
 }
 
@@ -56,7 +55,6 @@ impl SessionState {
                 CacheEntry {
                     meta,
                     doc,
-                    index: None,
                     stats: None,
                 },
             );
@@ -73,10 +71,6 @@ impl SessionState {
 }
 
 impl CacheEntry {
-    fn index(&mut self) -> &ShortHashIndex {
-        self.index.get_or_insert_with(|| self.doc.build_index())
-    }
-
     fn stats(&mut self) -> &FileStats {
         self.stats.get_or_insert_with(|| self.doc.compute_stats())
     }
@@ -372,11 +366,17 @@ fn dispatch_tool(
 fn tool_read(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: ReadCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    let indexes = snippet_indexes(&entry.doc, &cmd.anchor, cmd.context)?;
+    let data = read_payload(&entry.doc, &cmd.anchor, cmd.context).map_err(command_error)?;
     Ok(success_payload(
         "read",
         0,
-        read_payload(&entry.doc, indexes.as_deref()),
+        serde_json::to_value(data).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize read payload: {error}"),
+                None,
+            )
+        })?,
         true,
     ))
 }
@@ -384,38 +384,36 @@ fn tool_read(arguments: &Value, session: &mut SessionState) -> Result<Value, Jso
 fn tool_index(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: IndexCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    Ok(success_payload("index", 0, index_payload(&entry.doc), true))
+    Ok(success_payload(
+        "index",
+        0,
+        serde_json::to_value(index_payload(&entry.doc)).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize index payload: {error}"),
+                None,
+            )
+        })?,
+        true,
+    ))
 }
 
 fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: GrepCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    let regex = RegexBuilder::new(&cmd.pattern)
-        .case_insensitive(cmd.case_insensitive)
-        .build()
-        .map_err(|error| {
-            command_error(LinehashError::InvalidPattern {
-                pattern: cmd.pattern.clone(),
-                message: error.to_string(),
-            })
-        })?;
-
-    let indexes = entry
-        .doc
-        .lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            let is_match = regex.is_match(&line.content);
-            let include = if cmd.invert { !is_match } else { is_match };
-            include.then_some(index)
-        })
-        .collect::<Vec<_>>();
+    let data = grep_lines(&entry.doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)
+        .map_err(command_error)?;
 
     Ok(success_payload(
         "grep",
         0,
-        lines_payload(&entry.doc, &indexes),
+        serde_json::to_value(data).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize grep payload: {error}"),
+                None,
+            )
+        })?,
         true,
     ))
 }
@@ -423,35 +421,19 @@ fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, Jso
 fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: AnnotateCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    let matched = if cmd.regex {
-        let regex = RegexBuilder::new(&cmd.query).build().map_err(|error| {
-            command_error(LinehashError::InvalidPattern {
-                pattern: cmd.query.clone(),
-                message: error.to_string(),
-            })
-        })?;
-
-        entry
-            .doc
-            .lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| regex.is_match(&line.content).then_some(index))
-            .collect::<Vec<_>>()
-    } else {
-        entry
-            .doc
-            .lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| line.content.contains(&cmd.query).then_some(index))
-            .collect::<Vec<_>>()
-    };
+    let report =
+        annotate_lines(&entry.doc, &cmd.query, cmd.regex, cmd.expect_one).map_err(command_error)?;
 
     Ok(success_payload(
         "annotate",
-        i32::from(cmd.expect_one && matched.len() > 1),
-        lines_payload(&entry.doc, &matched),
+        report.exit_code,
+        serde_json::to_value(report.lines).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize annotate payload: {error}"),
+                None,
+            )
+        })?,
         true,
     ))
 }
@@ -459,48 +441,18 @@ fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value,
 fn tool_verify(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: VerifyCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    let index = entry.index().clone();
-    let mut results = Vec::with_capacity(cmd.anchors.len());
-    let mut has_failures = false;
-
-    for anchor_str in cmd.anchors {
-        match parse_anchor(&anchor_str) {
-            Ok(anchor) => match resolve(&anchor, &entry.doc, &index) {
-                Ok(resolved) => results.push(json!({
-                    "anchor": anchor_str,
-                    "status": "ok",
-                    "line_no": resolved.line_no,
-                    "content": entry.doc.lines[resolved.index].content,
-                    "error": Value::Null,
-                })),
-                Err(error) => {
-                    has_failures = true;
-                    results.push(json!({
-                        "anchor": anchor_str,
-                        "status": verify_status_for_error(&error),
-                        "line_no": verify_line_no_for_error(&error),
-                        "content": Value::Null,
-                        "error": error.to_string(),
-                    }));
-                }
-            },
-            Err(error) => {
-                has_failures = true;
-                results.push(json!({
-                    "anchor": anchor_str,
-                    "status": verify_status_for_error(&error),
-                    "line_no": Value::Null,
-                    "content": Value::Null,
-                    "error": error.to_string(),
-                }));
-            }
-        }
-    }
+    let report = verify_report(&entry.doc, &cmd.anchors);
 
     Ok(success_payload(
         "verify",
-        i32::from(has_failures),
-        Value::Array(results),
+        report.exit_code,
+        serde_json::to_value(report.results).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize verify payload: {error}"),
+                None,
+            )
+        })?,
         true,
     ))
 }
@@ -518,20 +470,17 @@ fn tool_doctor(arguments: &Value, session: &mut SessionState) -> Result<Value, J
     let cmd: DoctorCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
     let stats = entry.stats().clone();
+    let payload = doctor_payload(&cmd.file, &stats);
     Ok(success_payload(
         "doctor",
         0,
-        json!({
-            "file": cmd.file.display().to_string(),
-            "line_count": stats.line_count,
-            "estimated_read_tokens": stats.estimated_read_tokens,
-            "recommended_read_mode": stats.recommended_read_mode,
-            "recommended_anchor_mode": stats.recommended_anchor_mode,
-            "recommended_workflow": stats.recommended_workflow,
-            "suggested_context": stats.suggested_context_n,
-            "warnings": stats.warnings,
-            "next_commands": doctor_next_commands(&cmd.file.display().to_string(), &stats),
-        }),
+        serde_json::to_value(payload).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize doctor payload: {error}"),
+                None,
+            )
+        })?,
         true,
     ))
 }
@@ -547,30 +496,7 @@ fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError>
 }
 
 fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
-    let command_name = match &command {
-        Commands::Read(_) => "read",
-        Commands::Index(_) => "index",
-        Commands::Edit(_) => "edit",
-        Commands::Insert(_) => "insert",
-        Commands::Delete(_) => "delete",
-        Commands::Verify(_) => "verify",
-        Commands::Grep(_) => "grep",
-        Commands::Annotate(_) => "annotate",
-        Commands::Patch(_) => "patch",
-        Commands::Swap(_) => "swap",
-        Commands::Move(_) => "move",
-        Commands::Indent(_) => "indent",
-        Commands::FindBlock(_) => "find_block",
-        Commands::Stats(_) => "stats",
-        Commands::Doctor(_) => "doctor",
-        Commands::FromDiff(_) => "from_diff",
-        Commands::MergePatches(_) => "merge_patches",
-        Commands::Watch(_) => "watch",
-        Commands::Explode(_) => "explode",
-        Commands::Implode(_) => "implode",
-        Commands::InstallMcp(_) => "install_mcp",
-        Commands::Mcp(_) => "mcp",
-    };
+    let command_name = command_name(&command);
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -603,128 +529,6 @@ fn success_payload(command: &str, exit_code: i32, data: Value, cache_used: bool)
         "data": data,
         "cache": { "used": cache_used },
     })
-}
-
-fn read_payload(doc: &Document, indexes: Option<&[usize]>) -> Value {
-    let line_indexes = indexes
-        .map(|indexes| indexes.to_vec())
-        .unwrap_or_else(|| (0..doc.lines.len()).collect::<Vec<_>>());
-    json!({
-        "file": doc.path.display().to_string(),
-        "newline": match doc.newline {
-            crate::document::NewlineStyle::Lf => "lf",
-            crate::document::NewlineStyle::Crlf => "crlf",
-        },
-        "trailing_newline": doc.trailing_newline,
-        "mtime": doc.file_meta.as_ref().map(|meta| meta.mtime_secs).unwrap_or(0),
-        "mtime_nanos": doc.file_meta.as_ref().map(|meta| meta.mtime_nanos).unwrap_or(0),
-        "inode": doc.file_meta.as_ref().map(|meta| meta.inode).unwrap_or(0),
-        "lines": line_indexes.into_iter().map(|index| {
-            let line = &doc.lines[index];
-            json!({
-                "n": index + 1,
-                "hash": format_short_hash(line.short_hash),
-                "content": line.content,
-            })
-        }).collect::<Vec<_>>(),
-    })
-}
-
-fn snippet_indexes(
-    doc: &Document,
-    anchors: &[String],
-    context: usize,
-) -> Result<Option<Vec<usize>>, JsonRpcError> {
-    if anchors.is_empty() {
-        return Ok(None);
-    }
-
-    let index = doc.build_index();
-    let mut selected = BTreeSet::new();
-
-    for anchor in anchors {
-        let parsed = parse_anchor(anchor).map_err(command_error)?;
-        let resolved = resolve(&parsed, doc, &index).map_err(command_error)?;
-        let start = resolved.index.saturating_sub(context);
-        let end = (resolved.index + context).min(doc.lines.len().saturating_sub(1));
-        for line_index in start..=end {
-            selected.insert(line_index);
-        }
-    }
-
-    Ok(Some(selected.into_iter().collect()))
-}
-
-fn index_payload(doc: &Document) -> Value {
-    json!({
-        "file": doc.path.display().to_string(),
-        "lines": doc.lines.iter().enumerate().map(|(index, line)| {
-            json!({
-                "n": index + 1,
-                "hash": format_short_hash(line.short_hash),
-            })
-        }).collect::<Vec<_>>(),
-    })
-}
-
-fn lines_payload(doc: &Document, indexes: &[usize]) -> Value {
-    Value::Array(
-        indexes
-            .iter()
-            .map(|index| {
-                let line = &doc.lines[*index];
-                json!({
-                    "n": index + 1,
-                    "hash": format_short_hash(line.short_hash),
-                    "content": line.content,
-                })
-            })
-            .collect(),
-    )
-}
-
-fn verify_status_for_error(error: &LinehashError) -> &'static str {
-    match error {
-        LinehashError::HashNotFound { .. } => "not_found",
-        LinehashError::AmbiguousHash { .. } => "ambiguous",
-        LinehashError::StaleAnchor { .. } => "stale",
-        LinehashError::InvalidAnchor { .. } => "parse_error",
-        _ => "error",
-    }
-}
-
-fn verify_line_no_for_error(error: &LinehashError) -> Option<usize> {
-    match error {
-        LinehashError::StaleAnchor { line, .. } => Some(*line),
-        _ => None,
-    }
-}
-
-fn doctor_next_commands(file: &str, stats: &FileStats) -> Vec<String> {
-    let mut commands = Vec::new();
-
-    if stats.recommended_read_mode == "read" {
-        commands.push(format!("linehash read {file}"));
-    } else {
-        commands.push(format!("linehash index {file}"));
-        commands.push(format!(
-            "linehash read {file} --anchor <line:hash> --context {}",
-            stats.suggested_context_n
-        ));
-    }
-
-    commands.push(format!("linehash annotate {file} <text>"));
-    commands.push(format!("linehash grep {file} <pattern>"));
-
-    if stats.collision_count > 0 || stats.line_count > 2_000 {
-        commands.push(format!("linehash find-block {file} <line:hash>"));
-        commands.push(format!("linehash patch {file} <patch.json> --dry-run"));
-    } else {
-        commands.push(format!("linehash verify {file} <line:hash>"));
-        commands.push(format!("linehash edit {file} <line:hash> <new_content>"));
-    }
-
-    commands
 }
 
 fn command_error(error: LinehashError) -> JsonRpcError {

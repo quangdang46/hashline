@@ -1,0 +1,468 @@
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use regex::RegexBuilder;
+use serde::Serialize;
+
+use crate::anchor::{ResolvedLine, parse_anchor, resolve};
+use crate::cli::Commands;
+use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
+use crate::error::LinehashError;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LineView {
+    pub n: usize,
+    pub hash: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IndexLineView {
+    pub n: usize,
+    pub hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ReadPayload {
+    pub file: String,
+    pub newline: &'static str,
+    pub trailing_newline: bool,
+    pub mtime: i64,
+    pub mtime_nanos: u32,
+    pub inode: u64,
+    pub lines: Vec<LineView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IndexPayload {
+    pub file: String,
+    pub lines: Vec<IndexLineView>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MatchReport {
+    pub lines: Vec<LineView>,
+    pub exit_code: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct VerifyResult {
+    pub anchor: String,
+    pub status: &'static str,
+    pub line_no: Option<usize>,
+    pub content: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct VerifyReport {
+    pub results: Vec<VerifyResult>,
+    pub exit_code: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DoctorPayload {
+    pub file: String,
+    pub line_count: usize,
+    pub estimated_read_tokens: usize,
+    pub recommended_read_mode: &'static str,
+    pub recommended_anchor_mode: &'static str,
+    pub recommended_workflow: &'static str,
+    pub suggested_context: usize,
+    pub warnings: Vec<&'static str>,
+    pub next_commands: Vec<String>,
+}
+
+pub fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Read(_) => "read",
+        Commands::Index(_) => "index",
+        Commands::Edit(_) => "edit",
+        Commands::Insert(_) => "insert",
+        Commands::Delete(_) => "delete",
+        Commands::Verify(_) => "verify",
+        Commands::Grep(_) => "grep",
+        Commands::Annotate(_) => "annotate",
+        Commands::Patch(_) => "patch",
+        Commands::Swap(_) => "swap",
+        Commands::Move(_) => "move",
+        Commands::Indent(_) => "indent",
+        Commands::FindBlock(_) => "find-block",
+        Commands::Stats(_) => "stats",
+        Commands::Doctor(_) => "doctor",
+        Commands::FromDiff(_) => "from-diff",
+        Commands::MergePatches(_) => "merge-patches",
+        Commands::Watch(_) => "watch",
+        Commands::Explode(_) => "explode",
+        Commands::Implode(_) => "implode",
+        Commands::InstallMcp(_) => "install-mcp",
+        Commands::Mcp(_) => "mcp",
+    }
+}
+
+pub fn resolve_read_anchors(
+    doc: &Document,
+    anchors: &[String],
+) -> Result<Vec<ResolvedLine>, LinehashError> {
+    let index = doc.build_index();
+    anchors
+        .iter()
+        .map(|anchor| {
+            let parsed = parse_anchor(anchor)?;
+            resolve(&parsed, doc, &index)
+        })
+        .collect()
+}
+
+pub fn read_payload(
+    doc: &Document,
+    anchors: &[String],
+    context: usize,
+) -> Result<ReadPayload, LinehashError> {
+    let lines = if anchors.is_empty() {
+        doc.lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| LineView {
+                n: index + 1,
+                hash: format_short_hash(line.short_hash),
+                content: line.content.clone(),
+            })
+            .collect()
+    } else {
+        let resolved = resolve_read_anchors(doc, anchors)?;
+        let indexes = collect_context_indexes(doc, &resolved, context);
+        indexes
+            .into_iter()
+            .map(|index| {
+                let line = &doc.lines[index];
+                LineView {
+                    n: index + 1,
+                    hash: format_short_hash(line.short_hash),
+                    content: line.content.clone(),
+                }
+            })
+            .collect()
+    };
+
+    Ok(ReadPayload {
+        file: doc.path.display().to_string(),
+        newline: newline_name(doc.newline),
+        trailing_newline: doc.trailing_newline,
+        mtime: doc
+            .file_meta
+            .as_ref()
+            .map(|meta| meta.mtime_secs)
+            .unwrap_or(0),
+        mtime_nanos: doc
+            .file_meta
+            .as_ref()
+            .map(|meta| meta.mtime_nanos)
+            .unwrap_or(0),
+        inode: doc.file_meta.as_ref().map(|meta| meta.inode).unwrap_or(0),
+        lines,
+    })
+}
+
+pub fn index_payload(doc: &Document) -> IndexPayload {
+    IndexPayload {
+        file: doc.path.display().to_string(),
+        lines: doc
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| IndexLineView {
+                n: index + 1,
+                hash: format_short_hash(line.short_hash),
+            })
+            .collect(),
+    }
+}
+
+pub fn grep_lines(
+    doc: &Document,
+    pattern: &str,
+    invert: bool,
+    case_insensitive: bool,
+) -> Result<Vec<LineView>, LinehashError> {
+    let regex = RegexBuilder::new(pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .map_err(|error| LinehashError::InvalidPattern {
+            pattern: pattern.to_owned(),
+            message: error.to_string(),
+        })?;
+
+    Ok(doc
+        .lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let is_match = regex.is_match(&line.content);
+            let include = if invert { !is_match } else { is_match };
+            include.then_some(LineView {
+                n: index + 1,
+                hash: format_short_hash(line.short_hash),
+                content: line.content.clone(),
+            })
+        })
+        .collect())
+}
+
+pub fn annotate_lines(
+    doc: &Document,
+    query: &str,
+    regex: bool,
+    expect_one: bool,
+) -> Result<MatchReport, LinehashError> {
+    let lines: Vec<LineView> = if regex {
+        let regex =
+            RegexBuilder::new(query)
+                .build()
+                .map_err(|error| LinehashError::InvalidPattern {
+                    pattern: query.to_owned(),
+                    message: error.to_string(),
+                })?;
+
+        doc.lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                regex.is_match(&line.content).then_some(LineView {
+                    n: index + 1,
+                    hash: format_short_hash(line.short_hash),
+                    content: line.content.clone(),
+                })
+            })
+            .collect()
+    } else {
+        doc.lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                line.content.contains(query).then_some(LineView {
+                    n: index + 1,
+                    hash: format_short_hash(line.short_hash),
+                    content: line.content.clone(),
+                })
+            })
+            .collect()
+    };
+
+    Ok(MatchReport {
+        exit_code: i32::from(expect_one && lines.len() > 1),
+        lines,
+    })
+}
+
+pub fn verify_report(doc: &Document, anchors: &[String]) -> VerifyReport {
+    let index = doc.build_index();
+    let mut results = Vec::with_capacity(anchors.len());
+    let mut has_failures = false;
+
+    for anchor_str in anchors {
+        match parse_anchor(anchor_str) {
+            Ok(anchor) => match resolve(&anchor, doc, &index) {
+                Ok(resolved) => results.push(VerifyResult {
+                    anchor: anchor_str.clone(),
+                    status: "ok",
+                    line_no: Some(resolved.line_no),
+                    content: Some(doc.lines[resolved.index].content.clone()),
+                    error: None,
+                }),
+                Err(error) => {
+                    has_failures = true;
+                    results.push(VerifyResult {
+                        anchor: anchor_str.clone(),
+                        status: verify_status_for_error(&error),
+                        line_no: verify_line_no_for_error(&error),
+                        content: None,
+                        error: Some(error.to_string()),
+                    });
+                }
+            },
+            Err(error) => {
+                has_failures = true;
+                results.push(VerifyResult {
+                    anchor: anchor_str.clone(),
+                    status: verify_status_for_error(&error),
+                    line_no: None,
+                    content: None,
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+    }
+
+    VerifyReport {
+        results,
+        exit_code: i32::from(has_failures),
+    }
+}
+
+pub fn doctor_payload(path: &Path, stats: &FileStats) -> DoctorPayload {
+    let file = path.display().to_string();
+    DoctorPayload {
+        file: file.clone(),
+        line_count: stats.line_count,
+        estimated_read_tokens: stats.estimated_read_tokens,
+        recommended_read_mode: stats.recommended_read_mode,
+        recommended_anchor_mode: stats.recommended_anchor_mode,
+        recommended_workflow: stats.recommended_workflow,
+        suggested_context: stats.suggested_context_n,
+        warnings: stats.warnings.clone(),
+        next_commands: doctor_next_commands(&file, stats),
+    }
+}
+
+fn verify_status_for_error(error: &LinehashError) -> &'static str {
+    match error {
+        LinehashError::HashNotFound { .. } => "not_found",
+        LinehashError::AmbiguousHash { .. } => "ambiguous",
+        LinehashError::StaleAnchor { .. } => "stale",
+        LinehashError::InvalidAnchor { .. } => "parse_error",
+        _ => "error",
+    }
+}
+
+fn verify_line_no_for_error(error: &LinehashError) -> Option<usize> {
+    match error {
+        LinehashError::StaleAnchor { line, .. } => Some(*line),
+        _ => None,
+    }
+}
+
+fn doctor_next_commands(file: &str, stats: &FileStats) -> Vec<String> {
+    let mut commands = Vec::new();
+
+    if stats.recommended_read_mode == "read" {
+        commands.push(format!("linehash read {file}"));
+    } else {
+        commands.push(format!("linehash index {file}"));
+        commands.push(format!(
+            "linehash read {file} --anchor <line:hash> --context {}",
+            stats.suggested_context_n
+        ));
+    }
+
+    commands.push(format!("linehash annotate {file} <text>"));
+    commands.push(format!("linehash grep {file} <pattern>"));
+
+    if stats.collision_count > 0 || stats.line_count > 2_000 {
+        commands.push(format!("linehash find-block {file} <line:hash>"));
+        commands.push(format!("linehash patch {file} <patch.json> --dry-run"));
+    } else {
+        commands.push(format!("linehash verify {file} <line:hash>"));
+        commands.push(format!("linehash edit {file} <line:hash> <new_content>"));
+    }
+
+    commands
+}
+
+fn collect_context_indexes(doc: &Document, anchors: &[ResolvedLine], context: usize) -> Vec<usize> {
+    let mut included = BTreeSet::new();
+
+    for anchor in anchors {
+        let start = anchor.index.saturating_sub(context);
+        let end = (anchor.index + context).min(doc.lines.len().saturating_sub(1));
+        for index in start..=end {
+            included.insert(index);
+        }
+    }
+
+    included.into_iter().collect()
+}
+
+fn newline_name(newline: NewlineStyle) -> &'static str {
+    match newline {
+        NewlineStyle::Lf => "lf",
+        NewlineStyle::Crlf => "crlf",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        annotate_lines, doctor_payload, grep_lines, index_payload, read_payload, verify_report,
+    };
+    use crate::document::{Document, FileStats};
+    use std::path::Path;
+
+    #[test]
+    fn read_payload_respects_anchor_context() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let anchor = format!("2:{}", super::format_short_hash(doc.lines[1].short_hash));
+        let payload = read_payload(&doc, &[anchor], 1).unwrap();
+
+        assert_eq!(payload.lines.len(), 3);
+        assert_eq!(payload.lines[0].content, "alpha");
+        assert_eq!(payload.lines[1].content, "beta");
+        assert_eq!(payload.lines[2].content, "gamma");
+    }
+
+    #[test]
+    fn grep_lines_apply_case_insensitive_and_invert() {
+        let doc = Document::from_str(Path::new("demo.txt"), "Alpha\nbeta\nGamma\n").unwrap();
+        let matches = grep_lines(&doc, "alpha|gamma", false, true).unwrap();
+        assert_eq!(matches.len(), 2);
+
+        let inverted = grep_lines(&doc, "beta", true, false).unwrap();
+        assert_eq!(inverted.len(), 2);
+    }
+
+    #[test]
+    fn annotate_lines_reports_expect_one_exit_code() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\nalpha\n").unwrap();
+        let report = annotate_lines(&doc, "alpha", false, true).unwrap();
+
+        assert_eq!(report.exit_code, 1);
+        assert_eq!(report.lines.len(), 2);
+    }
+
+    #[test]
+    fn verify_report_captures_success_and_failure() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
+        let ok_anchor = format!("1:{}", super::format_short_hash(doc.lines[0].short_hash));
+        let report = verify_report(&doc, &[ok_anchor, "bogus".into()]);
+
+        assert_eq!(report.exit_code, 1);
+        assert_eq!(report.results[0].status, "ok");
+        assert_eq!(report.results[1].status, "parse_error");
+    }
+
+    #[test]
+    fn doctor_payload_reuses_next_command_policy() {
+        let stats = FileStats {
+            line_count: 10,
+            unique_hashes: 10,
+            collision_count: 0,
+            collision_pairs: vec![],
+            estimated_read_tokens: 42,
+            hash_length_advice: 2,
+            suggested_context_n: 5,
+            recommended_read_mode: "read",
+            recommended_anchor_mode: "qualified",
+            recommended_workflow: "read -> annotate -> verify -> edit",
+            warnings: vec!["demo warning"],
+        };
+
+        let payload = doctor_payload(Path::new("demo.txt"), &stats);
+        assert_eq!(payload.file, "demo.txt");
+        assert_eq!(payload.next_commands[0], "linehash read demo.txt");
+        assert!(
+            payload
+                .next_commands
+                .iter()
+                .any(|command| command.contains("verify"))
+        );
+    }
+
+    #[test]
+    fn index_payload_keeps_path_and_hashes() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\n").unwrap();
+        let payload = index_payload(&doc);
+        assert_eq!(payload.file, "demo.txt");
+        assert_eq!(payload.lines.len(), 1);
+        assert_eq!(payload.lines[0].n, 1);
+    }
+}

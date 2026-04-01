@@ -7,6 +7,7 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
 use crate::mutation::{delete_line, delete_range};
+use crate::orchestration::read_payload;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -85,7 +86,10 @@ fn write_dry_run<W: Write, E: Write>(
     summary: &DeleteSummary,
 ) -> Result<(), LinehashError> {
     match ctx.output_mode() {
-        OutputMode::Json => output::print_read_json(ctx.stdout(), doc).map_err(LinehashError::from),
+        OutputMode::Json => {
+            let payload = read_payload(doc, &[], 0)?;
+            output::print_read_json(ctx.stdout(), &payload).map_err(LinehashError::from)
+        }
         OutputMode::Pretty => match &summary.kind {
             DeleteSummaryKind::Single { line_no, deleted } => {
                 output::write_success_line(ctx, &format!("Would delete line {line_no}:"))?;

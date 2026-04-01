@@ -8,6 +8,7 @@ mod hash;
 mod install;
 mod mcp;
 mod mutation;
+mod orchestration;
 mod output;
 mod receipt;
 
@@ -24,6 +25,7 @@ use tracing_subscriber::fmt::writer::MakeWriter;
 use crate::cli::{Cli, Commands};
 use crate::context::{CommandContext, output_mode_for};
 use crate::error::LinehashError;
+use crate::orchestration::command_name;
 
 fn main() {
     let cli = Cli::parse();
@@ -204,33 +206,6 @@ impl<'a> MakeWriter<'a> for SharedFileWriter {
                 .lock()
                 .expect("linehash tracing file lock poisoned"),
         }
-    }
-}
-
-fn command_name(command: &Commands) -> &'static str {
-    match command {
-        Commands::Read(_) => "read",
-        Commands::Index(_) => "index",
-        Commands::Edit(_) => "edit",
-        Commands::Insert(_) => "insert",
-        Commands::Delete(_) => "delete",
-        Commands::Verify(_) => "verify",
-        Commands::Grep(_) => "grep",
-        Commands::Annotate(_) => "annotate",
-        Commands::Patch(_) => "patch",
-        Commands::Swap(_) => "swap",
-        Commands::Move(_) => "move",
-        Commands::Indent(_) => "indent",
-        Commands::FindBlock(_) => "find-block",
-        Commands::Stats(_) => "stats",
-        Commands::Doctor(_) => "doctor",
-        Commands::FromDiff(_) => "from-diff",
-        Commands::MergePatches(_) => "merge-patches",
-        Commands::Watch(_) => "watch",
-        Commands::Explode(_) => "explode",
-        Commands::Implode(_) => "implode",
-        Commands::InstallMcp(_) => "install-mcp",
-        Commands::Mcp(_) => "mcp",
     }
 }
 
