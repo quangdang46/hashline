@@ -1017,7 +1017,7 @@ mod tests {
         }
     }
 
-    fn json_str<'a>(value: &'a Value) -> Result<&'a str> {
+    fn json_str(value: &Value) -> Result<&str> {
         match value.as_str() {
             Some(text) => Ok(text),
             None => Err(anyhow!("expected JSON string, got {value}")),
@@ -1120,14 +1120,14 @@ mod tests {
         assert!(
             read["description"]
                 .as_str()
-                .map_or(false, |text| text.contains("prefer linehash_index"))
+                .is_some_and(|text| text.contains("prefer linehash_index"))
         );
         assert!(
             edit["description"]
                 .as_str()
-                .map_or(false, |text| text.contains("once anchors are known"))
+                .is_some_and(|text| text.contains("once anchors are known"))
         );
-        assert!(delete["description"].as_str().map_or(false, |text| {
+        assert!(delete["description"].as_str().is_some_and(|text| {
             text.contains("instead of leaving deletion as a suggested diff")
         }));
         assert!(SERVER_INSTRUCTIONS.contains("do not start with a full-file linehash_read"));
@@ -1248,7 +1248,7 @@ mod tests {
         assert!(
             result["risk"]["summary"]
                 .as_str()
-                .map_or(false, |text| text.contains("permanently"))
+                .is_some_and(|text| text.contains("permanently"))
         );
         assert_eq!(read_text(&path)?, "alpha\ndelta\n");
         Ok(())
