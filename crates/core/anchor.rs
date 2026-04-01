@@ -277,43 +277,60 @@ mod tests {
     use crate::document::Document;
     use crate::error::LinehashError;
     use crate::hash::format_short_hash;
+    use anyhow::{Result, anyhow};
+    use std::fmt::Display;
     use std::path::Path;
 
-    #[test]
-    fn test_parse_unqualified_lowercase() {
-        assert_eq!(parse_anchor("f1").unwrap(), Anchor::Hash { short: 0xf1 });
+    fn must<T, E: Display>(result: std::result::Result<T, E>) -> Result<T> {
+        result.map_err(|error| anyhow!("{error}"))
+    }
+
+    fn must_err<T, E: Display>(result: std::result::Result<T, E>) -> Result<E> {
+        match result {
+            Ok(_) => Err(anyhow!("expected error")),
+            Err(error) => Ok(error),
+        }
     }
 
     #[test]
-    fn test_parse_unqualified_uppercase_normalizes() {
-        assert_eq!(parse_anchor("F1").unwrap(), Anchor::Hash { short: 0xf1 });
+    fn test_parse_unqualified_lowercase() -> Result<()> {
+        assert_eq!(must(parse_anchor("f1"))?, Anchor::Hash { short: 0xf1 });
+        Ok(())
     }
 
     #[test]
-    fn test_parse_qualified_basic() {
+    fn test_parse_unqualified_uppercase_normalizes() -> Result<()> {
+        assert_eq!(must(parse_anchor("F1"))?, Anchor::Hash { short: 0xf1 });
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_qualified_basic() -> Result<()> {
         assert_eq!(
-            parse_anchor("2:f1").unwrap(),
+            must(parse_anchor("2:f1"))?,
             Anchor::LineHash {
                 line: 2,
                 short: 0xf1
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn test_parse_qualified_uppercase_normalizes() {
+    fn test_parse_qualified_uppercase_normalizes() -> Result<()> {
         assert_eq!(
-            parse_anchor("2:F1").unwrap(),
+            must(parse_anchor("2:F1"))?,
             Anchor::LineHash {
                 line: 2,
                 short: 0xf1
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn test_parse_range_basic() {
-        let range = parse_range("2:f1..4:9c").unwrap();
+    fn test_parse_range_basic() -> Result<()> {
+        let range = must(parse_range("2:f1..4:9c"))?;
         assert_eq!(
             range.start,
             Anchor::LineHash {
@@ -328,6 +345,7 @@ mod tests {
                 short: 0x9c
             }
         );
+        Ok(())
     }
 
     #[test]
@@ -371,138 +389,144 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_unqualified_not_found() {
-        let doc = sample_doc();
+    fn test_resolve_unqualified_not_found() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
-        let error = resolve(&Anchor::Hash { short: 0xff }, &doc, &index).unwrap_err();
+        let error = must_err(resolve(&Anchor::Hash { short: 0xff }, &doc, &index))?;
 
         assert!(matches!(error, LinehashError::HashNotFound { .. }));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_unqualified_single_match() {
-        let doc = sample_doc();
+    fn test_resolve_unqualified_single_match() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
         let short = doc.lines[1].short_hash;
 
         assert_eq!(
-            resolve(&Anchor::Hash { short }, &doc, &index).unwrap(),
+            must(resolve(&Anchor::Hash { short }, &doc, &index))?,
             ResolvedLine {
                 index: 1,
                 line_no: 2,
                 short_hash: format_short_hash(short)
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_unqualified_ambiguous() {
-        let doc = collision_doc();
+    fn test_resolve_unqualified_ambiguous() -> Result<()> {
+        let doc = collision_doc()?;
         let index = doc.build_index();
         let short = doc.lines[0].short_hash;
-        let error = resolve(&Anchor::Hash { short }, &doc, &index).unwrap_err();
+        let error = must_err(resolve(&Anchor::Hash { short }, &doc, &index))?;
 
         assert!(matches!(error, LinehashError::AmbiguousHash { .. }));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_qualified_match() {
-        let doc = sample_doc();
+    fn test_resolve_qualified_match() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
         let short = doc.lines[1].short_hash;
 
         assert_eq!(
-            resolve(&Anchor::LineHash { line: 2, short }, &doc, &index).unwrap(),
+            must(resolve(&Anchor::LineHash { line: 2, short }, &doc, &index))?,
             ResolvedLine {
                 index: 1,
                 line_no: 2,
                 short_hash: format_short_hash(short)
             }
         );
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_qualified_stale() {
-        let doc = sample_doc();
+    fn test_resolve_qualified_stale() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
-        let error = resolve(
+        let error = must_err(resolve(
             &Anchor::LineHash {
                 line: 2,
                 short: 0xff,
             },
             &doc,
             &index,
-        )
-        .unwrap_err();
+        ))?;
 
         assert!(matches!(error, LinehashError::StaleAnchor { .. }));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_qualified_stale_mentions_relocated_hash_when_present() {
-        let doc = sample_doc();
+    fn test_resolve_qualified_stale_mentions_relocated_hash_when_present() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
         let relocated_hash = doc.lines[0].short_hash;
-        let error = resolve(
+        let error = must_err(resolve(
             &Anchor::LineHash {
                 line: 2,
                 short: relocated_hash,
             },
             &doc,
             &index,
-        )
-        .unwrap_err();
+        ))?;
 
         let rendered = error.to_string();
         assert!(matches!(error, LinehashError::StaleAnchor { .. }));
         assert!(rendered.contains("hash still exists at line(s) 1"));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_qualified_out_of_range_line() {
-        let doc = sample_doc();
+    fn test_resolve_qualified_out_of_range_line() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
-        let error = resolve(
+        let error = must_err(resolve(
             &Anchor::LineHash {
                 line: 99,
                 short: 0xaa,
             },
             &doc,
             &index,
-        )
-        .unwrap_err();
+        ))?;
 
         assert!(matches!(error, LinehashError::InvalidAnchor { .. }));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_range_valid() {
-        let doc = sample_doc();
+    fn test_resolve_range_valid() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
         let start = format!("1:{}", format_short_hash(doc.lines[0].short_hash));
         let end = format!("3:{}", format_short_hash(doc.lines[2].short_hash));
-        let range = parse_range(&format!("{start}..{end}")).unwrap();
+        let range = must(parse_range(&format!("{start}..{end}")))?;
 
-        let (resolved_start, resolved_end) = resolve_range(&range, &doc, &index).unwrap();
+        let (resolved_start, resolved_end) = must(resolve_range(&range, &doc, &index))?;
         assert_eq!(resolved_start.index, 0);
         assert_eq!(resolved_end.index, 2);
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_range_start_after_end_fails() {
-        let doc = sample_doc();
+    fn test_resolve_range_start_after_end_fails() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
         let start = format!("3:{}", format_short_hash(doc.lines[2].short_hash));
         let end = format!("1:{}", format_short_hash(doc.lines[0].short_hash));
-        let range = parse_range(&format!("{start}..{end}")).unwrap();
+        let range = must(parse_range(&format!("{start}..{end}")))?;
 
-        let error = resolve_range(&range, &doc, &index).unwrap_err();
+        let error = must_err(resolve_range(&range, &doc, &index))?;
         assert!(matches!(error, LinehashError::InvalidRange { .. }));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_all_collects_all_errors() {
-        let doc = collision_doc();
+    fn test_resolve_all_collects_all_errors() -> Result<()> {
+        let doc = collision_doc()?;
         let index = doc.build_index();
         let results = resolve_all(
             &[
@@ -523,11 +547,12 @@ mod tests {
             results[1],
             Err(LinehashError::HashNotFound { .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn test_resolve_all_all_success() {
-        let doc = sample_doc();
+    fn test_resolve_all_all_success() -> Result<()> {
+        let doc = sample_doc()?;
         let index = doc.build_index();
         let results = resolve_all(
             &[
@@ -545,24 +570,30 @@ mod tests {
         );
 
         assert!(results.iter().all(|result| result.is_ok()));
+        Ok(())
     }
 
-    fn sample_doc() -> Document {
-        Document::from_str(Path::new("demo.txt"), "alpha\nbeta\ngamma\n").unwrap()
+    fn sample_doc() -> Result<Document> {
+        must(Document::from_str(
+            Path::new("demo.txt"),
+            "alpha\nbeta\ngamma\n",
+        ))
     }
 
-    fn collision_doc() -> Document {
+    fn collision_doc() -> Result<Document> {
         for i in 0..10_000 {
             let left = format!("line-{i}");
             for j in (i + 1)..10_000 {
                 let right = format!("line-{j}");
-                let doc = Document::from_str(Path::new("demo.txt"), &format!("{left}\n{right}\n"))
-                    .unwrap();
+                let doc = must(Document::from_str(
+                    Path::new("demo.txt"),
+                    &format!("{left}\n{right}\n"),
+                ))?;
                 if doc.lines[0].short_hash == doc.lines[1].short_hash {
-                    return doc;
+                    return Ok(doc);
                 }
             }
         }
-        panic!("failed to find a collision doc");
+        Err(anyhow!("failed to find a collision doc"))
     }
 }

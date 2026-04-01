@@ -213,20 +213,31 @@ fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionState) -> Jso
     };
 
     match dispatch_tool(&params.name, &params.arguments, session) {
-        Ok(payload) => JsonRpcResponse {
-            jsonrpc: "2.0",
-            id: request.id.clone(),
-            result: Some(json!({
-                "content": [
-                    {
-                        "type": "text",
-                        "text": serde_json::to_string_pretty(&payload)
-                            .expect("tool payload should serialize")
-                    }
-                ],
-                "structuredContent": payload,
-            })),
-            error: None,
+        Ok(payload) => match serde_json::to_string_pretty(&payload) {
+            Ok(text) => JsonRpcResponse {
+                jsonrpc: "2.0",
+                id: request.id.clone(),
+                result: Some(json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text
+                        }
+                    ],
+                    "structuredContent": payload,
+                })),
+                error: None,
+            },
+            Err(error) => JsonRpcResponse {
+                jsonrpc: "2.0",
+                id: request.id.clone(),
+                result: None,
+                error: Some(tool_error(
+                    -32603,
+                    &format!("failed to serialize tool payload: {error}"),
+                    None,
+                )),
+            },
         },
         Err(error) => JsonRpcResponse {
             jsonrpc: "2.0",
@@ -981,14 +992,66 @@ fn mutation_schema(anchor_key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{SERVER_INSTRUCTIONS, SessionState, dispatch_tool, tool_definitions};
+    use anyhow::{Result, anyhow};
+    use serde_json::Value;
     use serde_json::json;
+    use std::fmt::Debug;
+    use std::path::Path;
     use tempfile::TempDir;
 
+    fn must<T, E: Debug>(result: std::result::Result<T, E>) -> Result<T> {
+        result.map_err(|error| anyhow!("{error:?}"))
+    }
+
+    fn must_err<T, E: Debug>(result: std::result::Result<T, E>) -> Result<E> {
+        match result {
+            Ok(_) => Err(anyhow!("expected error")),
+            Err(error) => Ok(error),
+        }
+    }
+
+    fn json_u64(value: &Value) -> Result<u64> {
+        match value.as_u64() {
+            Some(number) => Ok(number),
+            None => Err(anyhow!("expected JSON number, got {value}")),
+        }
+    }
+
+    fn json_str<'a>(value: &'a Value) -> Result<&'a str> {
+        match value.as_str() {
+            Some(text) => Ok(text),
+            None => Err(anyhow!("expected JSON string, got {value}")),
+        }
+    }
+
+    fn json_array(value: &Value) -> Result<&[Value]> {
+        match value.as_array() {
+            Some(lines) => Ok(lines),
+            None => Err(anyhow!("expected JSON array, got {value}")),
+        }
+    }
+
+    fn line_anchor(read: &Value, index: usize) -> Result<String> {
+        Ok(format!(
+            "{}:{}",
+            json_u64(&read["data"]["lines"][index]["n"])?,
+            json_str(&read["data"]["lines"][index]["hash"])?
+        ))
+    }
+
+    fn write_text(path: &Path, content: &str) -> Result<()> {
+        std::fs::write(path, content).map_err(|error| anyhow!("{error}"))
+    }
+
+    fn read_text(path: &Path) -> Result<String> {
+        std::fs::read_to_string(path).map_err(|error| anyhow!("{error}"))
+    }
+
     #[test]
-    fn read_tool_returns_structured_json() {
-        let dir = TempDir::new().unwrap();
+    fn read_tool_returns_structured_json() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        write_text(&path, "alpha\nbeta\n")?;
 
         let result = dispatch_tool(
             "linehash_read",
@@ -996,27 +1059,28 @@ mod tests {
                 "file": path,
             }),
             &mut SessionState::default(),
-        )
-        .unwrap();
+        );
+        let result = must(result)?;
 
         assert_eq!(result["command"], "read");
         assert_eq!(result["exit_code"], 0);
         assert_eq!(result["data"]["lines"][0]["content"], "alpha");
+        Ok(())
     }
 
     #[test]
-    fn read_tool_honors_anchor_and_context_for_snippets() {
-        let dir = TempDir::new().unwrap();
+    fn read_tool_honors_anchor_and_context_for_snippets() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\nepsilon\n").unwrap();
+        write_text(&path, "alpha\nbeta\ngamma\ndelta\nepsilon\n")?;
         let mut session = SessionState::default();
 
-        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
-        let anchor = format!(
-            "{}:{}",
-            read["data"]["lines"][2]["n"].as_u64().unwrap(),
-            read["data"]["lines"][2]["hash"].as_str().unwrap()
-        );
+        let read = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
+        let anchor = line_anchor(&read, 2)?;
 
         let snippet = dispatch_tool(
             "linehash_read",
@@ -1026,59 +1090,56 @@ mod tests {
                 "context": 1,
             }),
             &mut session,
-        )
-        .unwrap();
+        );
+        let snippet = must(snippet)?;
 
-        let lines = snippet["data"]["lines"].as_array().unwrap();
+        let lines = json_array(&snippet["data"]["lines"])?;
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0]["content"], "beta");
         assert_eq!(lines[1]["content"], "gamma");
         assert_eq!(lines[2]["content"], "delta");
+        Ok(())
     }
 
     #[test]
-    fn tool_definitions_push_models_toward_targeted_mutations() {
+    fn tool_definitions_push_models_toward_targeted_mutations() -> Result<()> {
         let tools = tool_definitions();
         let read = tools
             .iter()
             .find(|tool| tool["name"] == "linehash_read")
-            .unwrap();
+            .ok_or_else(|| anyhow!("missing linehash_read tool"))?;
         let edit = tools
             .iter()
             .find(|tool| tool["name"] == "linehash_edit")
-            .unwrap();
+            .ok_or_else(|| anyhow!("missing linehash_edit tool"))?;
         let delete = tools
             .iter()
             .find(|tool| tool["name"] == "linehash_delete")
-            .unwrap();
+            .ok_or_else(|| anyhow!("missing linehash_delete tool"))?;
 
         assert!(
             read["description"]
                 .as_str()
-                .unwrap()
-                .contains("prefer linehash_index")
+                .map_or(false, |text| text.contains("prefer linehash_index"))
         );
         assert!(
             edit["description"]
                 .as_str()
-                .unwrap()
-                .contains("once anchors are known")
+                .map_or(false, |text| text.contains("once anchors are known"))
         );
-        assert!(
-            delete["description"]
-                .as_str()
-                .unwrap()
-                .contains("instead of leaving deletion as a suggested diff")
-        );
+        assert!(delete["description"].as_str().map_or(false, |text| {
+            text.contains("instead of leaving deletion as a suggested diff")
+        }));
         assert!(SERVER_INSTRUCTIONS.contains("do not start with a full-file linehash_read"));
         assert!(
             SERVER_INSTRUCTIONS
                 .contains("Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch")
         );
+        Ok(())
     }
 
     #[test]
-    fn watch_tool_rejects_continuous_mode() {
+    fn watch_tool_rejects_continuous_mode() -> Result<()> {
         let error = dispatch_tool(
             "linehash_watch",
             &json!({
@@ -1086,52 +1147,60 @@ mod tests {
                 "continuous": true,
             }),
             &mut SessionState::default(),
-        )
-        .unwrap_err();
+        );
+        let error = must_err(error)?;
 
         assert_eq!(error.code, -32602);
         assert!(error.message.contains("continuous watch"));
         assert_eq!(
-            error.data.as_ref().unwrap()["capabilities"]["mcp_streaming_supported"],
-            false
+            error
+                .data
+                .as_ref()
+                .map(|data| &data["capabilities"]["mcp_streaming_supported"]),
+            Some(&json!(false))
         );
+        Ok(())
     }
 
     #[test]
-    fn read_tool_cache_refreshes_after_file_change() {
-        let dir = TempDir::new().unwrap();
+    fn read_tool_cache_refreshes_after_file_change() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\n").unwrap();
+        write_text(&path, "alpha\n")?;
         let mut session = SessionState::default();
 
-        let first = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let first = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
         assert_eq!(first["data"]["lines"][0]["content"], "alpha");
 
-        std::fs::write(&path, "beta\n").unwrap();
+        write_text(&path, "beta\n")?;
 
-        let second =
-            dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
+        let second = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
         assert_eq!(second["data"]["lines"][0]["content"], "beta");
+        Ok(())
     }
 
     #[test]
-    fn edit_tool_accepts_multiline_content_for_range_anchor() {
-        let dir = TempDir::new().unwrap();
+    fn edit_tool_accepts_multiline_content_for_range_anchor() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        write_text(&path, "alpha\nbeta\ngamma\ndelta\n")?;
         let mut session = SessionState::default();
 
-        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
-        let start = format!(
-            "{}:{}",
-            read["data"]["lines"][1]["n"].as_u64().unwrap(),
-            read["data"]["lines"][1]["hash"].as_str().unwrap()
-        );
-        let end = format!(
-            "{}:{}",
-            read["data"]["lines"][2]["n"].as_u64().unwrap(),
-            read["data"]["lines"][2]["hash"].as_str().unwrap()
-        );
+        let read = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
+        let start = line_anchor(&read, 1)?;
+        let end = line_anchor(&read, 2)?;
 
         let result = dispatch_tool(
             "linehash_edit",
@@ -1141,34 +1210,28 @@ mod tests {
                 "content": "left\nmiddle\nright",
             }),
             &mut session,
-        )
-        .unwrap();
+        );
+        let result = must(result)?;
 
         assert_eq!(result["exit_code"], 0);
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "alpha\nleft\nmiddle\nright\ndelta\n"
-        );
+        assert_eq!(read_text(&path)?, "alpha\nleft\nmiddle\nright\ndelta\n");
+        Ok(())
     }
 
     #[test]
-    fn delete_tool_accepts_range_anchor() {
-        let dir = TempDir::new().unwrap();
+    fn delete_tool_accepts_range_anchor() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        write_text(&path, "alpha\nbeta\ngamma\ndelta\n")?;
         let mut session = SessionState::default();
 
-        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
-        let start = format!(
-            "{}:{}",
-            read["data"]["lines"][1]["n"].as_u64().unwrap(),
-            read["data"]["lines"][1]["hash"].as_str().unwrap()
-        );
-        let end = format!(
-            "{}:{}",
-            read["data"]["lines"][2]["n"].as_u64().unwrap(),
-            read["data"]["lines"][2]["hash"].as_str().unwrap()
-        );
+        let read = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
+        let start = line_anchor(&read, 1)?;
+        let end = line_anchor(&read, 2)?;
 
         let result = dispatch_tool(
             "linehash_delete",
@@ -1177,41 +1240,37 @@ mod tests {
                 "anchor": format!("{start}..{end}"),
             }),
             &mut session,
-        )
-        .unwrap();
+        );
+        let result = must(result)?;
 
         assert_eq!(result["exit_code"], 0);
         assert_eq!(result["risk"]["level"], "high");
         assert!(
             result["risk"]["summary"]
                 .as_str()
-                .unwrap()
-                .contains("permanently")
+                .map_or(false, |text| text.contains("permanently"))
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\ndelta\n");
+        assert_eq!(read_text(&path)?, "alpha\ndelta\n");
+        Ok(())
     }
 
     #[test]
-    fn edit_tool_reports_range_hint_for_dash_separated_qualified_range() {
-        let dir = TempDir::new().unwrap();
+    fn edit_tool_reports_range_hint_for_dash_separated_qualified_range() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        write_text(&path, "alpha\nbeta\ngamma\ndelta\n")?;
         let mut session = SessionState::default();
 
-        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
-        let start = format!(
-            "{}:{}",
-            read["data"]["lines"][1]["n"].as_u64().unwrap(),
-            read["data"]["lines"][1]["hash"].as_str().unwrap()
-        );
-        let end = format!(
-            "{}:{}",
-            read["data"]["lines"][2]["n"].as_u64().unwrap(),
-            read["data"]["lines"][2]["hash"].as_str().unwrap()
-        );
+        let read = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
+        let start = line_anchor(&read, 1)?;
+        let end = line_anchor(&read, 2)?;
         let dashed_range = format!("{start}-{end}");
 
-        let error = dispatch_tool(
+        let error = must_err(dispatch_tool(
             "linehash_edit",
             &json!({
                 "file": path,
@@ -1219,30 +1278,33 @@ mod tests {
                 "content": "left\nmiddle\nright",
             }),
             &mut session,
-        )
-        .unwrap_err();
+        ))?;
 
         assert_eq!(error.code, -32001);
         assert!(error.message.contains("invalid range anchor"));
-        assert_eq!(error.data.unwrap()["hint"], "use a range like '2:f1..4:9c'");
+        assert_eq!(
+            error.data.map(|data| data["hint"].clone()),
+            Some(json!("use a range like '2:f1..4:9c'"))
+        );
+        Ok(())
     }
 
     #[test]
-    fn stale_anchor_error_includes_blocked_risk_context() {
-        let dir = TempDir::new().unwrap();
+    fn stale_anchor_error_includes_blocked_risk_context() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
-        std::fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+        write_text(&path, "alpha\nbeta\ngamma\n")?;
         let mut session = SessionState::default();
 
-        let read = dispatch_tool("linehash_read", &json!({ "file": path }), &mut session).unwrap();
-        let anchor = format!(
-            "{}:{}",
-            read["data"]["lines"][1]["n"].as_u64().unwrap(),
-            read["data"]["lines"][1]["hash"].as_str().unwrap()
-        );
-        std::fs::write(&path, "alpha\ngamma\nbeta\n").unwrap();
+        let read = must(dispatch_tool(
+            "linehash_read",
+            &json!({ "file": path }),
+            &mut session,
+        ))?;
+        let anchor = line_anchor(&read, 1)?;
+        write_text(&path, "alpha\ngamma\nbeta\n")?;
 
-        let error = dispatch_tool(
+        let error = must_err(dispatch_tool(
             "linehash_edit",
             &json!({
                 "file": path,
@@ -1250,24 +1312,31 @@ mod tests {
                 "content": "BETA",
             }),
             &mut session,
-        )
-        .unwrap_err();
+        ))?;
 
         assert_eq!(error.code, -32001);
-        assert_eq!(error.data.as_ref().unwrap()["risk"]["level"], "blocked");
-        assert!(
-            error.data.as_ref().unwrap()["risk"]["summary"]
-                .as_str()
-                .unwrap()
-                .contains("blocked")
+        assert_eq!(
+            error
+                .data
+                .as_ref()
+                .map(|data| data["risk"]["level"].clone()),
+            Some(json!("blocked"))
         );
+        assert!(
+            error
+                .data
+                .as_ref()
+                .and_then(|data| data["risk"]["summary"].as_str())
+                .is_some_and(|text| text.contains("blocked"))
+        );
+        Ok(())
     }
 
     #[test]
-    fn workflows_tool_returns_repo_skill_pack_catalog() {
-        let dir = TempDir::new().unwrap();
+    fn workflows_tool_returns_repo_skill_pack_catalog() -> Result<()> {
+        let dir = must(TempDir::new())?;
         let skills_dir = dir.path().join(".linehash/skills/anchored-read");
-        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::create_dir_all(&skills_dir).map_err(|error| anyhow!("{error}"))?;
         std::fs::write(
             skills_dir.join("SKILL.md"),
             concat!(
@@ -1281,14 +1350,13 @@ mod tests {
                 "Use index first, then a focused read.\n",
             ),
         )
-        .unwrap();
+        .map_err(|error| anyhow!("{error}"))?;
 
-        let result = dispatch_tool(
+        let result = must(dispatch_tool(
             "linehash_workflows",
             &json!({ "root": dir.path() }),
             &mut SessionState::default(),
-        )
-        .unwrap();
+        ))?;
 
         assert_eq!(result["command"], "workflows");
         assert_eq!(result["data"]["packs"][0]["name"], "anchored-read");
@@ -1296,19 +1364,20 @@ mod tests {
             result["data"]["packs"][0]["allowed_mcp_tools"][0],
             "linehash_index"
         );
+        Ok(())
     }
 
     #[test]
-    fn watch_capabilities_tool_reports_mcp_limitations() {
-        let result = dispatch_tool(
+    fn watch_capabilities_tool_reports_mcp_limitations() -> Result<()> {
+        let result = must(dispatch_tool(
             "linehash_watch_capabilities",
             &json!({}),
             &mut SessionState::default(),
-        )
-        .unwrap();
+        ))?;
 
         assert_eq!(result["command"], "watch-capabilities");
         assert_eq!(result["data"]["cli_continuous_supported"], true);
         assert_eq!(result["data"]["mcp_streaming_supported"], false);
+        Ok(())
     }
 }
