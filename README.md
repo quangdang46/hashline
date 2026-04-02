@@ -5,6 +5,24 @@
 
 `linehash` is a Rust CLI for safe file editing with content-hashed line anchors. It helps Claude Code and other AI coding tools read files, locate lines, apply edits, and reject stale changes before they corrupt code.
 
+## Installation
+
+### From GitHub releases
+
+Install the latest release with the generated installer:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/linehash/main/install.sh?$(date +%s)" | bash
+```
+
+
+The installer downloads the matching GitHub release asset for your platform, verifies checksums when available, can optionally add the install directory to your shell PATH, then auto-detects supported MCP providers and installs the `linehash` MCP entry for each detected host.
+
+### From source
+
+```bash
+cargo install --path crates/core
+```
 
 ## Why linehash
 
@@ -105,24 +123,7 @@ Simplest tool in the suite.
 
 
 
-## Installation
 
-### From GitHub releases
-
-Install the latest release with the generated installer:
-
-```bash
-curl -fsSL "https://raw.githubusercontent.com/quangdang46/linehash/main/install.sh?$(date +%s)" | bash
-```
-
-
-The installer downloads the matching GitHub release asset for your platform, verifies checksums when available, can optionally add the install directory to your shell PATH, then auto-detects supported MCP providers and installs the `linehash` MCP entry for each detected host.
-
-### From source
-
-```bash
-cargo install --path crates/core
-```
 
 ## MCP server
 
