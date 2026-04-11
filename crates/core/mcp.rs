@@ -4,18 +4,18 @@ use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::cli::{
     AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
     GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MergePatchesCmd, MoveCmd,
     PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
 };
-use crate::document::{Document, FileMeta, FileStats, read_file_meta};
+use crate::document::{read_file_meta, Document, FileMeta, FileStats};
 use crate::error::LinehashError;
 use crate::orchestration::{
-    annotate_lines, command_name, doctor_payload, grep_lines, index_payload, read_payload,
-    verify_report, watch_capabilities_payload,
+    annotate_lines, command_name, doctor_payload, grep_lines, grep_lines_indexed, index_payload,
+    read_payload, verify_report, watch_capabilities_payload,
 };
 use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
@@ -424,8 +424,12 @@ fn tool_index(arguments: &Value, session: &mut SessionState) -> Result<Value, Js
 fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
     let cmd: GrepCmd = parse_args(arguments)?;
     let entry = session.get(&cmd.file)?;
-    let data = grep_lines(&entry.doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)
-        .map_err(command_error)?;
+    let data = if cmd.no_index {
+        grep_lines(&entry.doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)
+    } else {
+        grep_lines_indexed(&entry.doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)
+    }
+    .map_err(command_error)?;
 
     Ok(success_payload(
         "grep",
@@ -991,10 +995,10 @@ fn mutation_schema(anchor_key: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{SERVER_INSTRUCTIONS, SessionState, dispatch_tool, tool_definitions};
-    use anyhow::{Result, anyhow};
-    use serde_json::Value;
+    use super::{dispatch_tool, tool_definitions, SessionState, SERVER_INSTRUCTIONS};
+    use anyhow::{anyhow, Result};
     use serde_json::json;
+    use serde_json::Value;
     use std::fmt::Debug;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1117,24 +1121,18 @@ mod tests {
             .find(|tool| tool["name"] == "linehash_delete")
             .ok_or_else(|| anyhow!("missing linehash_delete tool"))?;
 
-        assert!(
-            read["description"]
-                .as_str()
-                .is_some_and(|text| text.contains("prefer linehash_index"))
-        );
-        assert!(
-            edit["description"]
-                .as_str()
-                .is_some_and(|text| text.contains("once anchors are known"))
-        );
+        assert!(read["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("prefer linehash_index")));
+        assert!(edit["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("once anchors are known")));
         assert!(delete["description"].as_str().is_some_and(|text| {
             text.contains("instead of leaving deletion as a suggested diff")
         }));
         assert!(SERVER_INSTRUCTIONS.contains("do not start with a full-file linehash_read"));
-        assert!(
-            SERVER_INSTRUCTIONS
-                .contains("Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch")
-        );
+        assert!(SERVER_INSTRUCTIONS
+            .contains("Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch"));
         Ok(())
     }
 
@@ -1245,11 +1243,9 @@ mod tests {
 
         assert_eq!(result["exit_code"], 0);
         assert_eq!(result["risk"]["level"], "high");
-        assert!(
-            result["risk"]["summary"]
-                .as_str()
-                .is_some_and(|text| text.contains("permanently"))
-        );
+        assert!(result["risk"]["summary"]
+            .as_str()
+            .is_some_and(|text| text.contains("permanently")));
         assert_eq!(read_text(&path)?, "alpha\ndelta\n");
         Ok(())
     }
@@ -1322,13 +1318,11 @@ mod tests {
                 .map(|data| data["risk"]["level"].clone()),
             Some(json!("blocked"))
         );
-        assert!(
-            error
-                .data
-                .as_ref()
-                .and_then(|data| data["risk"]["summary"].as_str())
-                .is_some_and(|text| text.contains("blocked"))
-        );
+        assert!(error
+            .data
+            .as_ref()
+            .and_then(|data| data["risk"]["summary"].as_str())
+            .is_some_and(|text| text.contains("blocked")));
         Ok(())
     }
 
