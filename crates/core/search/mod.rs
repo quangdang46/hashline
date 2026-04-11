@@ -2,6 +2,7 @@
 
 pub mod decompose;
 pub mod extract;
+pub mod filter;
 pub mod index;
 pub mod persist;
 pub mod types;
