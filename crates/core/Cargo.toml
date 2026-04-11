@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
+regex-syntax = { workspace = true }
 notify = { workspace = true }
 walkdir = { workspace = true }
 memchr = { workspace = true }
