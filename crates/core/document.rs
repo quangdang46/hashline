@@ -141,10 +141,12 @@ impl Document {
             self.lines.len().saturating_sub(1) + usize::from(self.trailing_newline);
         let mut rendered = Vec::with_capacity(self.content_len + separator.len() * separator_count);
 
-        for (index, line) in self.lines.iter().enumerate() {
-            if index > 0 {
+        let mut first = true;
+        for line in &self.lines {
+            if !first {
                 rendered.extend_from_slice(separator);
             }
+            first = false;
             rendered.extend_from_slice(line.content.as_bytes());
         }
 
