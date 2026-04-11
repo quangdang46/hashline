@@ -172,6 +172,9 @@ pub struct GrepCmd {
     #[serde(default)]
     #[arg(long)]
     pub case_insensitive: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub no_index: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]

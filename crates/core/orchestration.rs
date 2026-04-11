@@ -1,13 +1,17 @@
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use regex::RegexBuilder;
 use serde::Serialize;
 
-use crate::anchor::{ResolvedLine, parse_anchor, resolve};
+use crate::anchor::{parse_anchor, resolve, ResolvedLine};
 use crate::cli::Commands;
-use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
+use crate::document::{format_short_hash, Document, FileStats, NewlineStyle};
 use crate::error::LinehashError;
+use crate::search::filter::filter_candidates;
+use crate::search::index::IndexBuilder;
+use crate::search::verify::verify_candidates;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LineView {
@@ -234,6 +238,48 @@ pub fn grep_lines(
             })
         })
         .collect())
+}
+
+pub fn grep_lines_indexed(
+    doc: &Document,
+    pattern: &str,
+    invert: bool,
+    case_insensitive: bool,
+) -> Result<Vec<LineView>, LinehashError> {
+    let lines: Vec<Arc<str>> = doc
+        .lines
+        .iter()
+        .map(|l| Arc::from(l.content.as_str()))
+        .collect();
+
+    let mut builder = IndexBuilder::new();
+    for (idx, line) in lines.iter().enumerate() {
+        builder.add_line(idx, line.as_bytes());
+    }
+    let index = builder.build();
+
+    let (candidates, is_match_all) = filter_candidates(&index, pattern);
+
+    if is_match_all {
+        return grep_lines(doc, pattern, invert, case_insensitive);
+    }
+
+    let results = verify_candidates(&candidates, &lines, pattern, case_insensitive);
+
+    let filtered: Vec<LineView> = results
+        .into_iter()
+        .filter_map(|r| {
+            let is_match = true;
+            let include = if invert { !is_match } else { is_match };
+            include.then_some(LineView {
+                n: r.line_idx as usize + 1,
+                hash: format_short_hash(doc.lines[r.line_idx as usize].short_hash),
+                content: r.content.to_string(),
+            })
+        })
+        .collect();
+
+    Ok(filtered)
 }
 
 pub fn annotate_lines(
@@ -476,12 +522,10 @@ mod tests {
         let payload = doctor_payload(Path::new("demo.txt"), &stats);
         assert_eq!(payload.file, "demo.txt");
         assert_eq!(payload.next_commands[0], "linehash read demo.txt");
-        assert!(
-            payload
-                .next_commands
-                .iter()
-                .any(|command| command.contains("verify"))
-        );
+        assert!(payload
+            .next_commands
+            .iter()
+            .any(|command| command.contains("verify")));
     }
 
     #[test]
