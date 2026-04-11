@@ -1,8 +1,6 @@
 use std::io::Write;
 
-use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve_range, resolve_without_index,
-};
+use crate::anchor::{looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range};
 use crate::cli::EditCmd;
 use crate::commands::common::{atomic_write, check_guard};
 use crate::context::{CommandContext, OutputMode};
@@ -22,10 +20,10 @@ pub fn run<W: Write, E: Write>(
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
 
+    let index = doc.build_index();
     let summary = match looks_like_range_anchor(&cmd.anchor) {
         true => {
             let range = parse_range(&cmd.anchor)?;
-            let index = doc.build_index();
             let (start, end) = resolve_range(&range, &doc, &index)?;
             let before = doc.lines[start.index..=end.index]
                 .iter()
@@ -42,7 +40,7 @@ pub fn run<W: Write, E: Write>(
         }
         false => {
             let anchor = parse_anchor(&cmd.anchor)?;
-            let resolved = resolve_without_index(&anchor, &doc)?;
+            let resolved = resolve(&anchor, &doc, &index)?;
             let before = doc.lines[resolved.index].content.clone();
             replace_line(&mut doc, resolved.index, &cmd.content)?;
             EditSummary::Single {
