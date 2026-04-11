@@ -223,22 +223,8 @@ fn decompose_hir(hir: &regex_syntax::hir::Hir) -> DecomposedPattern {
             }
         }
 
-        // Dot (.): matches any character - MatchAll
+        // Dot (.): matches any character - MatchAll (binding pattern captures the value)
         Dot => DecomposedPattern {
-            required_trigrams: vec![],
-            is_match_all: true,
-            case_insensitive: false,
-        },
-
-        // Look-around assertions: no content to extract
-        Look(_) => DecomposedPattern {
-            required_trigrams: vec![],
-            is_match_all: true,
-            case_insensitive: false,
-        },
-
-        // Other cases: MatchAll
-        _ => DecomposedPattern {
             required_trigrams: vec![],
             is_match_all: true,
             case_insensitive: false,

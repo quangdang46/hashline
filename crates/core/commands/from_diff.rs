@@ -408,7 +408,7 @@ fn is_false(value: &bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{PatchOp, compile_patch};
+    use super::{compile_patch, PatchOp};
     use crate::document::Document;
     use crate::error::LinehashError;
     use std::path::Path;

@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const SERVER_NAME: &str = "linehash";
 
@@ -371,7 +371,7 @@ fn home_dir() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstallStatus, SERVER_NAME, upsert_json_server};
+    use super::{upsert_json_server, InstallStatus, SERVER_NAME};
     use serde_json::json;
 
     #[test]

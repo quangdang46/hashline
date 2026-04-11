@@ -75,7 +75,7 @@ fn flag_mode(json: bool) -> OutputMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputMode, output_mode_for};
+    use super::{output_mode_for, OutputMode};
     use crate::cli::{
         Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
         ReadCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,

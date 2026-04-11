@@ -9,6 +9,7 @@ use crate::anchor::{parse_anchor, resolve, ResolvedLine};
 use crate::cli::Commands;
 use crate::document::{format_short_hash, Document, FileStats, NewlineStyle};
 use crate::error::LinehashError;
+use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
 use crate::search::index::IndexBuilder;
 use crate::search::verify::verify_candidates;
@@ -257,6 +258,63 @@ pub fn grep_lines_indexed(
         builder.add_line(idx, line.as_bytes());
     }
     let index = builder.build();
+
+    let (candidates, is_match_all) = filter_candidates(&index, pattern);
+
+    if is_match_all {
+        return grep_lines(doc, pattern, invert, case_insensitive);
+    }
+
+    let results = verify_candidates(&candidates, &lines, pattern, case_insensitive);
+
+    let filtered: Vec<LineView> = results
+        .into_iter()
+        .filter_map(|r| {
+            let is_match = true;
+            let include = if invert { !is_match } else { is_match };
+            include.then_some(LineView {
+                n: r.line_idx as usize + 1,
+                hash: format_short_hash(doc.lines[r.line_idx as usize].short_hash),
+                content: r.content.to_string(),
+            })
+        })
+        .collect();
+
+    Ok(filtered)
+}
+
+/// Grep with cached index for improved performance on repeated searches.
+///
+/// Uses a shared in-memory cache to avoid rebuilding the trigram index
+/// on every search. The cache tracks file metadata (mtime, size, content hash)
+/// to detect when the index needs rebuilding.
+pub fn grep_lines_indexed_cached(
+    doc: &Document,
+    pattern: &str,
+    invert: bool,
+    case_insensitive: bool,
+    cache: &SharedIndexCache,
+) -> Result<Vec<LineView>, LinehashError> {
+    let lines: Vec<Arc<str>> = doc
+        .lines
+        .iter()
+        .map(|l| Arc::from(l.content.as_str()))
+        .collect();
+
+    let mtime = doc
+        .file_meta
+        .as_ref()
+        .map(|m| m.mtime_secs as u64)
+        .unwrap_or(0);
+    let content_bytes: Vec<u8> = doc
+        .lines
+        .iter()
+        .flat_map(|l| l.content.as_bytes().to_vec())
+        .collect();
+
+    let index = cache
+        .get_index(&doc.path, &content_bytes, mtime)
+        .map_err(|e| LinehashError::Io(e))?;
 
     let (candidates, is_match_all) = filter_candidates(&index, pattern);
 

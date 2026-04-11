@@ -143,7 +143,7 @@ pub fn blocked_assessment(error: &LinehashError) -> Option<RiskAssessment> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RiskLevel, assess_command, blocked_assessment};
+    use super::{assess_command, blocked_assessment, RiskLevel};
     use crate::cli::{Commands, DeleteCmd, MoveCmd, MoveDirection, PatchCmd};
     use crate::error::LinehashError;
     use std::path::PathBuf;

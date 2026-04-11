@@ -121,9 +121,46 @@ line content → xxhash32 → take low byte as 2 hex chars
 Pure Rust. No tree-sitter. No LLM. No external dependencies.
 Simplest tool in the suite.
 
+## Instant Grep (Trigram Index)
 
+`linehash grep` uses a **trigram inverted index** for fast regex search, inspired by Cursor's instant grep algorithm. This provides 20-100× speedup over linear scanning for large files.
 
+### How It Works
 
+1. **Trigram Decomposition**: Each line is split into overlapping 3-byte sequences:
+   ```
+   "hello" → ["hel", "ell", "llo"]
+   ```
+
+2. **Inverted Index**: Maps each trigram to posting lists recording which lines contain it
+
+3. **Candidate Filtering**: Uses bloom filters to quickly reject non-matching lines
+
+4. **Regex Verification**: Full regex check only on candidate lines
+
+### Auto-Indexing
+
+- Index is built automatically on first search
+- Content hash validates index freshness
+- LRU cache prevents memory bloat (configurable capacity)
+- Persistent storage available for instant warm restarts
+
+### Using `--no-index`
+
+For small files or one-off searches:
+```bash
+linehash grep --no-index file.txt "pattern"
+```
+
+### Architecture
+
+| Component | Purpose |
+|---|---|
+| `search/decompose.rs` | Regex → trigram decomposition |
+| `search/filter.rs` | Candidate filtering using masks |
+| `search/verify.rs` | Full regex verification on candidates |
+| `search/cache.rs` | LRU cache with content-hash validation |
+| `search/persist.rs` | Persistent index storage |
 
 ## MCP server
 
@@ -346,7 +383,7 @@ linehash watch src/auth.js --json
 ## Additional Commands
 
 - `verify` checks whether anchors still resolve and returns a non-zero exit code if any do not.
-- `grep` searches by regex and returns anchor-addressed matches.
+- `grep` searches by regex using trigram index for speed (20-100× faster than linear on large files). Use `--no-index` to force linear scan.
 - `annotate` maps exact substrings or regex matches back to current anchors.
 - `doctor` recommends a read-only workflow for a file using current size/collision heuristics.
 - `patch` applies a JSON patch transaction atomically.

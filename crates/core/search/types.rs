@@ -391,6 +391,92 @@ impl TrigramIndex {
     }
 }
 
+/// Statistics and diagnostics for a TrigramIndex.
+///
+/// Provides a comprehensive view of index health, memory usage,
+/// and search performance characteristics.
+#[derive(Clone, Debug, Default)]
+pub struct IndexStats {
+    /// Number of lines indexed.
+    pub line_count: usize,
+    /// Number of unique trigrams.
+    pub unique_trigrams: usize,
+    /// Total number of postings (trigram occurrences across all lines).
+    pub total_postings: usize,
+    /// Average postings per trigram.
+    pub avg_postings_per_trigram: f64,
+    /// Average postings per line.
+    pub avg_postings_per_line: f64,
+    /// Most frequent trigrams with their counts.
+    pub top_trigrams: Vec<(Trigram, usize)>,
+    /// Lines with the most trigrams (potential complexity hotspots).
+    pub top_lines: Vec<(u32, usize)>,
+    /// Memory usage estimate in bytes.
+    pub estimated_memory_bytes: usize,
+    /// Selectivity score: higher means more selective (fewer candidates).
+    /// Range: 0.0 to 1.0, where 1.0 means highly selective.
+    pub selectivity: f64,
+}
+
+impl TrigramIndex {
+    /// Compute detailed statistics about this index.
+    pub fn stats(&self) -> IndexStats {
+        let line_count = self.line_count;
+        let unique_trigrams = self.trigrams.len();
+        let total_postings: usize = self.trigrams.values().map(|v| v.len()).sum();
+
+        let avg_postings_per_trigram = if unique_trigrams > 0 {
+            total_postings as f64 / unique_trigrams as f64
+        } else {
+            0.0
+        };
+
+        let avg_postings_per_line = if line_count > 0 {
+            total_postings as f64 / line_count as f64
+        } else {
+            0.0
+        };
+
+        let mut top_trigrams: Vec<_> = self.trigrams.iter().map(|(&t, p)| (t, p.len())).collect();
+        top_trigrams.sort_by(|a, b| b.1.cmp(&a.1));
+        top_trigrams.truncate(10);
+
+        let mut line_posting_counts: HashMap<u32, usize> = HashMap::new();
+        for postings in self.trigrams.values() {
+            for posting in postings {
+                *line_posting_counts.entry(posting.line_idx).or_insert(0) += 1;
+            }
+        }
+        let mut top_lines: Vec<_> = line_posting_counts.into_iter().collect();
+        top_lines.sort_by(|a, b| b.1.cmp(&a.1));
+        top_lines.truncate(10);
+
+        let estimated_memory_bytes = std::mem::size_of::<TrigramIndex>()
+            + (unique_trigrams * std::mem::size_of::<(Trigram, Vec<Posting>)>())
+            + (total_postings * std::mem::size_of::<Posting>());
+
+        let selectivity = if line_count > 0 && total_postings > 0 {
+            let avg_candidates = total_postings as f64 / unique_trigrams as f64;
+            let expected_selectivity = 1.0 - (avg_candidates / line_count as f64);
+            expected_selectivity.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        IndexStats {
+            line_count,
+            unique_trigrams,
+            total_postings,
+            avg_postings_per_trigram,
+            avg_postings_per_line,
+            top_trigrams,
+            top_lines,
+            estimated_memory_bytes,
+            selectivity,
+        }
+    }
+}
+
 fn read_u32(cursor: &mut std::io::Cursor<&[u8]>) -> std::io::Result<u32> {
     let mut buf = [0u8; 4];
     cursor.read_exact(&mut buf)?;
