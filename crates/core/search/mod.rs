@@ -6,5 +6,6 @@ pub mod filter;
 pub mod index;
 pub mod persist;
 pub mod types;
+pub mod verify;
 
 pub use types::{IndexMeta, LocMask, NextMask, Posting, Trigram, TrigramIndex};
