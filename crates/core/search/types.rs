@@ -477,6 +477,14 @@ impl TrigramIndex {
     }
 }
 
+fn write_u32<W: std::io::Write>(writer: &mut W, val: u32) -> std::io::Result<()> {
+    writer.write_all(&val.to_le_bytes())
+}
+
+fn write_u64<W: std::io::Write>(writer: &mut W, val: u64) -> std::io::Result<()> {
+    writer.write_all(&val.to_le_bytes())
+}
+
 fn read_u32(cursor: &mut std::io::Cursor<&[u8]>) -> std::io::Result<u32> {
     let mut buf = [0u8; 4];
     cursor.read_exact(&mut buf)?;
@@ -489,15 +497,6 @@ fn read_u64(cursor: &mut std::io::Cursor<&[u8]>) -> std::io::Result<u64> {
     Ok(u64::from_le_bytes(buf))
 }
 
-fn write_u32<W: std::io::Write>(writer: &mut W, val: u32) -> std::io::Result<()> {
-    writer.write_all(&val.to_le_bytes())
-}
-
-fn write_u64<W: std::io::Write>(writer: &mut W, val: u64) -> std::io::Result<()> {
-    writer.write_all(&val.to_le_bytes())
-}
-
-#[derive(Debug)]
 pub struct MmapIndex {
     data: Vec<u8>,
     line_count: usize,

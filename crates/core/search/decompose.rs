@@ -224,7 +224,7 @@ fn decompose_hir(hir: &regex_syntax::hir::Hir) -> DecomposedPattern {
         }
 
         // Dot (.): matches any character - MatchAll (binding pattern captures the value)
-        Dot => DecomposedPattern {
+        _Dot => DecomposedPattern {
             required_trigrams: vec![],
             is_match_all: true,
             case_insensitive: false,

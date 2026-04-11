@@ -60,29 +60,6 @@ pub fn verify_candidates(
     results
 }
 
-pub fn verify_line(
-    content: &str,
-    pattern: &str,
-    case_insensitive: bool,
-) -> Option<Vec<MatchRange>> {
-    let regex_pattern = if case_insensitive {
-        format!("(?i){}", pattern)
-    } else {
-        pattern.to_string()
-    };
-
-    let re = Regex::new(&regex_pattern).ok()?;
-
-    Some(
-        re.find_iter(content)
-            .map(|m| MatchRange {
-                start: m.start(),
-                end: m.end(),
-            })
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
