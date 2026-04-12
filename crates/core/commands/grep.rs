@@ -13,7 +13,13 @@ pub fn run<W: Write, E: Write>(
     cmd: GrepCmd,
 ) -> Result<(), LinehashError> {
     if cmd.daemon {
+        #[cfg(unix)]
         return run_via_daemon(ctx, cmd);
+        #[cfg(not(unix))]
+        {
+            eprintln!("daemon mode is only supported on Unix");
+            return Ok(());
+        }
     }
 
     let use_fast_path = !cmd.case_insensitive && !contains_regex_metacharacters(&cmd.pattern);
@@ -35,6 +41,7 @@ pub fn run<W: Write, E: Write>(
     Ok(())
 }
 
+#[cfg(unix)]
 fn run_via_daemon<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: GrepCmd,

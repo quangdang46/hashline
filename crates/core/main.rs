@@ -13,6 +13,7 @@ mod output;
 mod receipt;
 mod risk;
 mod search;
+#[cfg(unix)]
 mod server;
 mod workflows;
 
@@ -267,6 +268,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
         Commands::InstallMcp(_) => unreachable!("install-mcp is handled before command dispatch"),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
+        #[cfg(unix)]
         Commands::Daemon => {
             info!("starting daemon mode");
             if let Err(error) = server::run_daemon() {
@@ -275,6 +277,13 @@ pub(crate) fn run_command<W: Write, E: Write>(
                 return Err(error);
             }
             Ok(0)
+        }
+        #[cfg(not(unix))]
+        Commands::Daemon => {
+            eprintln!("daemon mode is only supported on Unix");
+            Err(Box::new(std::io::Error::other(
+                "daemon not supported on this platform",
+            )))
         }
     }
 }

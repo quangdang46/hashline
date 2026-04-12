@@ -19,6 +19,7 @@ use crate::orchestration::{
 };
 use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
+#[cfg(unix)]
 use crate::server::ensure_daemon_running;
 
 const SERVER_INSTRUCTIONS: &str = "\
@@ -86,6 +87,7 @@ pub fn run(_cmd: McpCmd) -> io::Result<()> {
     let mut stdout = stdout.lock();
     let mut session = SessionState::default();
 
+    #[cfg(unix)]
     if let Err(e) = ensure_daemon_running() {
         eprintln!("warning: failed to start daemon: {e}");
     }

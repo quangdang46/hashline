@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -503,10 +504,9 @@ pub fn ensure_daemon_running() -> Result<(), LinehashError> {
     let exe = std::env::current_exe()
         .map_err(|e| std::io::Error::other(format!("failed to get exe: {e}")))?;
 
-    let daemon_exe = exe.display().to_string();
-
     #[cfg(unix)]
     {
+        let daemon_exe = exe.display().to_string();
         use std::process::Command;
         Command::new("sh")
             .args([
@@ -519,6 +519,7 @@ pub fn ensure_daemon_running() -> Result<(), LinehashError> {
 
     #[cfg(not(unix))]
     {
+        drop(exe);
         start_daemon()?;
     }
 
