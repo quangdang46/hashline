@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -314,7 +316,7 @@ pub fn grep_lines_indexed_cached(
 
     let index = cache
         .get_index(&doc.path, &content_bytes, mtime)
-        .map_err(|e| LinehashError::Io(e))?;
+        .map_err(LinehashError::Io)?;
 
     let (candidates, is_match_all) = filter_candidates(&index, pattern);
 

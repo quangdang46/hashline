@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 //! Regex to trigram decomposition for instant grep.
 //!
 //! Converts regex patterns into sets of trigrams that MUST be present in any match.
@@ -224,7 +226,7 @@ fn decompose_hir(hir: &regex_syntax::hir::Hir) -> DecomposedPattern {
         }
 
         // Dot (.): matches any character - MatchAll (binding pattern captures the value)
-        _Dot => DecomposedPattern {
+        _dot => DecomposedPattern {
             required_trigrams: vec![],
             is_match_all: true,
             case_insensitive: false,

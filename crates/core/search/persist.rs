@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 //! Persistence layer for trigram indexes.
 //!
 //! Manages writing and reading index files from `.linehash/indexes/`.

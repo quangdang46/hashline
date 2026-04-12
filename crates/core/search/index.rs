@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 //! Index builder - constructs TrigramIndex from document lines.
 
 use crate::search::extract::build_postings_for_line;

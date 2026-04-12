@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 //! Trigram extraction from text content.
 
 use crate::search::types::{LocMask, NextMask, Posting, Trigram};

@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use regex::Regex;
 use std::sync::Arc;
 
