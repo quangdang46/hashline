@@ -101,7 +101,7 @@ fn newline_name(newline: NewlineStyle) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{explode, format_filename, ExplodeMeta};
+    use super::{ExplodeMeta, explode, format_filename};
     use crate::document::Document;
     use crate::error::LinehashError;
     use std::fs;
@@ -164,9 +164,10 @@ mod tests {
 
         assert_eq!(report.file_count, 1);
         assert!(!out.join("stale.txt").exists());
-        assert!(out
-            .join(format_filename(1, doc.lines[0].short_hash))
-            .exists());
+        assert!(
+            out.join(format_filename(1, doc.lines[0].short_hash))
+                .exists()
+        );
     }
 
     #[test]

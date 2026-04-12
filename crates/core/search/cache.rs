@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::search::index::{compute_content_hash, IndexBuilder};
+use crate::search::index::{IndexBuilder, compute_content_hash};
 use crate::search::persist::IndexStore;
 use crate::search::types::TrigramIndex;
 

@@ -248,9 +248,11 @@ mod tests {
             error,
             LinehashError::PatchFailed { op_index: 0, .. }
         ));
-        assert!(error
-            .to_string()
-            .contains("source and target must resolve to different lines"));
+        assert!(
+            error
+                .to_string()
+                .contains("source and target must resolve to different lines")
+        );
     }
 
     #[test]
