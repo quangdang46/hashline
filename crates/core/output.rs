@@ -7,9 +7,9 @@ use serde::Serialize;
 
 use crate::anchor::ResolvedLine;
 use crate::context::{CommandContext, OutputMode};
-use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
+use crate::document::{Document, FileStats, LineView, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
-use crate::orchestration::{IndexPayload, LineView, ReadPayload};
+use crate::orchestration::{IndexPayload, ReadPayload};
 use crate::risk::blocked_assessment;
 
 #[derive(Serialize)]

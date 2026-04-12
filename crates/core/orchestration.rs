@@ -10,19 +10,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::anchor::{ResolvedLine, parse_anchor, resolve};
 use crate::cli::Commands;
-use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
+use crate::document::{Document, FileStats, LineView, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
 use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
 use crate::search::index::IndexBuilder;
 use crate::search::verify::verify_candidates;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct LineView {
-    pub n: usize,
-    pub hash: String,
-    pub content: String,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct IndexLineView {

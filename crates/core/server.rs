@@ -11,10 +11,9 @@ use memchr::memchr;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-use crate::document::{FileMeta, NewlineStyle, SearchDocument, read_file_meta};
+use crate::document::{FileMeta, LineView, NewlineStyle, SearchDocument, read_file_meta};
 use crate::error::LinehashError;
 use crate::hash::{full_hash, short_from_full};
-use crate::orchestration::LineView;
 
 fn socket_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

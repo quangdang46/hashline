@@ -6,11 +6,17 @@ use std::time::UNIX_EPOCH;
 
 use memchr::{memchr, memchr2};
 use memmap2::Mmap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::LinehashError;
 use crate::hash::{self, ShortHash};
-use crate::orchestration::LineView;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LineView {
+    pub n: usize,
+    pub hash: String,
+    pub content: String,
+}
 
 pub type ShortHashIndex = Vec<Vec<usize>>;
 

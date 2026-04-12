@@ -281,7 +281,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
         #[cfg(not(unix))]
         Commands::Daemon => {
             eprintln!("daemon mode is only supported on Unix");
-            Err(Box::new(std::io::Error::other(
+            Err(LinehashError::Io(std::io::Error::other(
                 "daemon not supported on this platform",
             )))
         }

@@ -2,10 +2,11 @@ use std::io::Write;
 
 use crate::cli::GrepCmd;
 use crate::context::CommandContext;
-use crate::document::{Document, SearchDocument};
+use crate::document::{Document, LineView, SearchDocument};
 use crate::error::LinehashError;
 use crate::orchestration::grep_lines;
 use crate::output;
+#[cfg(unix)]
 use crate::server;
 
 pub fn run<W: Write, E: Write>(
@@ -65,7 +66,7 @@ fn run_via_daemon<W: Write, E: Write>(
     };
 
     let data = server::client_request(&request)?;
-    let lines: Vec<crate::orchestration::LineView> =
+    let lines: Vec<LineView> =
         serde_json::from_value(data).map_err(|e| LinehashError::ServerError {
             message: format!("failed to parse response: {}", e),
             kind: "parse_error".to_string(),
