@@ -149,21 +149,13 @@ pub fn run_daemon() -> Result<(), LinehashError> {
         )
     })?;
 
-    fs::create_dir_all(socket_parent).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("failed to create socket dir: {e}"),
-        )
-    })?;
+    fs::create_dir_all(socket_parent)
+        .map_err(|e| std::io::Error::other(format!("failed to create socket dir: {e}")))?;
 
     let _ = fs::remove_file(&socket);
 
-    let listener = UnixListener::bind(&socket).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("failed to bind socket: {e}"),
-        )
-    })?;
+    let listener = UnixListener::bind(&socket)
+        .map_err(|e| std::io::Error::other(format!("failed to bind socket: {e}")))?;
 
     info!(path = %socket.display(), "daemon listening");
 
@@ -441,28 +433,23 @@ pub fn client_request(request: &Request) -> Result<serde_json::Value, LinehashEr
         )
     })?;
 
-    let request_json = serde_json::to_string(request).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("serialization error: {e}"),
-        )
-    })?;
+    let request_json = serde_json::to_string(request)
+        .map_err(|e| std::io::Error::other(format!("serialization error: {e}")))?;
 
     stream
         .write_all(request_json.as_bytes())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("write error: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("write error: {e}")))?;
     stream
         .write_all(b"\n")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("write error: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("write error: {e}")))?;
 
     let mut response_line = String::new();
     BufReader::new(&mut stream)
         .read_line(&mut response_line)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("read error: {e}")))?;
+        .map_err(|e| std::io::Error::other(format!("read error: {e}")))?;
 
-    let response: Response = serde_json::from_str(response_line.trim()).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("invalid response: {e}"))
-    })?;
+    let response: Response = serde_json::from_str(response_line.trim())
+        .map_err(|e| std::io::Error::other(format!("invalid response: {e}")))?;
 
     match response {
         Response::Ok { data } => Ok(data),
@@ -486,17 +473,13 @@ pub fn start_daemon() -> Result<std::process::Child, LinehashError> {
         });
     }
 
-    let child = Command::new(std::env::current_exe().map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("failed to get exe: {e}"))
-    })?)
+    let child = Command::new(
+        std::env::current_exe()
+            .map_err(|e| std::io::Error::other(format!("failed to get exe: {e}")))?,
+    )
     .arg("daemon")
     .spawn()
-    .map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("failed to spawn daemon: {e}"),
-        )
-    })?;
+    .map_err(|e| std::io::Error::other(format!("failed to spawn daemon: {e}")))?;
 
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -517,9 +500,8 @@ pub fn ensure_daemon_running() -> Result<(), LinehashError> {
         return Ok(());
     }
 
-    let exe = std::env::current_exe().map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("failed to get exe: {e}"))
-    })?;
+    let exe = std::env::current_exe()
+        .map_err(|e| std::io::Error::other(format!("failed to get exe: {e}")))?;
 
     let daemon_exe = exe.display().to_string();
 
@@ -532,12 +514,7 @@ pub fn ensure_daemon_running() -> Result<(), LinehashError> {
                 &format!("nohup {} daemon </dev/null >/dev/null 2>&1 &", daemon_exe),
             ])
             .spawn()
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("failed to spawn daemon: {e}"),
-                )
-            })?;
+            .map_err(|e| std::io::Error::other(format!("failed to spawn daemon: {e}")))?;
     }
 
     #[cfg(not(unix))]
