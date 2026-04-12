@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::error::LinehashError;
 use crate::hash::{self, ShortHash};
+use crate::orchestration::LineView;
 
 pub type ShortHashIndex = Vec<Vec<usize>>;
 
@@ -68,6 +69,107 @@ pub struct Document {
     pub lines: Vec<LineRecord>,
     pub content_len: usize,
     pub file_meta: Option<FileMeta>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SearchDocument {
+    pub path: PathBuf,
+    pub content: String,
+    pub newline: NewlineStyle,
+    pub trailing_newline: bool,
+    pub line_offsets: Vec<usize>,
+}
+
+impl SearchDocument {
+    pub fn load(path: &Path) -> Result<SearchDocument, LinehashError> {
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        let path_string = path.display().to_string();
+
+        if metadata.len() == 0 {
+            return Ok(SearchDocument {
+                path: path.to_path_buf(),
+                content: String::new(),
+                newline: NewlineStyle::Lf,
+                trailing_newline: false,
+                line_offsets: vec![0],
+            });
+        }
+
+        let mmap = unsafe { Mmap::map(&file) }?;
+        let bytes = &mmap[..];
+
+        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
+            return Err(LinehashError::BinaryFile { path: path_string });
+        }
+
+        let content_owned = std::str::from_utf8(bytes)
+            .map_err(|_| LinehashError::InvalidUtf8 {
+                path: path_string.clone(),
+            })?
+            .to_owned();
+
+        let (newline, trailing_newline, line_offsets) = parse_line_offsets(&content_owned);
+        let path_buf = path.to_path_buf();
+        drop(file);
+        drop(mmap);
+        let _ = metadata;
+
+        Ok(SearchDocument {
+            path: path_buf,
+            content: content_owned,
+            newline,
+            trailing_newline,
+            line_offsets,
+        })
+    }
+
+    pub fn grep_lines(&self, pattern: &str, invert: bool) -> Vec<LineView> {
+        let pattern_bytes = pattern.as_bytes();
+        let pat_len = pattern_bytes.len();
+        let mut results = Vec::new();
+
+        for (line_idx, &start) in self.line_offsets.iter().enumerate() {
+            let end = if line_idx + 1 < self.line_offsets.len() {
+                self.line_offsets[line_idx + 1]
+            } else {
+                self.content.len()
+            };
+            let line_end = if self.trailing_newline
+                && end > start
+                && self.content.as_bytes()[end.saturating_sub(1)] == b'\n'
+            {
+                end - 1
+            } else {
+                end.min(self.content.len())
+            };
+            let line_content = &self.content[start..line_end];
+
+            let is_match = if pat_len == 1 {
+                memchr(pattern_bytes[0], line_content.as_bytes()).is_some()
+            } else if pat_len <= line_content.len() {
+                line_content
+                    .as_bytes()
+                    .windows(pat_len)
+                    .any(|w| w == pattern_bytes)
+            } else {
+                false
+            };
+
+            let include = if invert { !is_match } else { is_match };
+            if include {
+                let full_hash = hash::full_hash(line_content);
+                let short_hash = hash::short_from_full(full_hash);
+                results.push(LineView {
+                    n: line_idx + 1,
+                    hash: hash::format_short_hash(short_hash),
+                    content: line_content.to_string(),
+                });
+            }
+        }
+
+        results
+    }
 }
 
 impl Document {
@@ -292,6 +394,52 @@ fn parse_document_content(
     Ok((newline, trailing_newline, lines, content_len))
 }
 
+fn parse_line_offsets(content: &str) -> (NewlineStyle, bool, Vec<usize>) {
+    if content.is_empty() {
+        return (NewlineStyle::Lf, false, vec![0]);
+    }
+
+    let bytes = content.as_bytes();
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+    let mut saw_bare_cr = false;
+    let mut newline = NewlineStyle::Lf;
+    let trailing_newline = content.ends_with('\n');
+    let estimated_lines = memchr::memchr_iter(b'\n', bytes).count() + 1;
+    let mut line_offsets = Vec::with_capacity(estimated_lines);
+    line_offsets.push(0);
+    let mut search_from = 0;
+
+    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
+        let index = search_from + relative;
+        match bytes[index] {
+            b'\r' => {
+                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                    saw_crlf = true;
+                    newline = NewlineStyle::Crlf;
+                    search_from = index + 2;
+                    line_offsets.push(search_from);
+                } else {
+                    saw_bare_cr = true;
+                    search_from = index + 1;
+                }
+            }
+            b'\n' => {
+                saw_lf = true;
+                search_from = index + 1;
+                line_offsets.push(search_from);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    if saw_bare_cr || (saw_crlf && saw_lf) {
+        return (NewlineStyle::Lf, trailing_newline, line_offsets);
+    }
+
+    (newline, trailing_newline, line_offsets)
+}
+
 fn build_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
@@ -505,7 +653,7 @@ fn change_time_from_metadata(_metadata: &fs::Metadata) -> (i64, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, FileStats, NewlineStyle, format_short_hash};
+    use super::{format_short_hash, Document, FileStats, NewlineStyle};
     use crate::error::LinehashError;
     use std::fs;
     use std::path::{Path, PathBuf};
