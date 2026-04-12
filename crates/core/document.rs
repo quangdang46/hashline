@@ -149,7 +149,9 @@ impl SearchDocument {
             } else {
                 end.min(self.content.len())
             };
-            let line_content = &self.content[start..line_end];
+            let line_content = self.content[start..line_end]
+                .strip_suffix('\r')
+                .unwrap_or(&self.content[start..line_end]);
 
             let is_match = if pat_len == 1 {
                 memchr(pattern_bytes[0], line_content.as_bytes()).is_some()
