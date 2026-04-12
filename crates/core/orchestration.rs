@@ -4,12 +4,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use memchr::memchr;
 use regex::RegexBuilder;
 use serde::Serialize;
 
-use crate::anchor::{ResolvedLine, parse_anchor, resolve};
+use crate::anchor::{parse_anchor, resolve, ResolvedLine};
 use crate::cli::Commands;
-use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
+use crate::document::{format_short_hash, Document, FileStats, NewlineStyle};
 use crate::error::LinehashError;
 use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
@@ -219,6 +220,10 @@ pub fn grep_lines(
     invert: bool,
     case_insensitive: bool,
 ) -> Result<Vec<LineView>, LinehashError> {
+    if !case_insensitive && !contains_regex_metacharacters(pattern) {
+        return grep_lines_fast(doc, pattern, invert);
+    }
+
     let regex = RegexBuilder::new(pattern)
         .case_insensitive(case_insensitive)
         .build()
@@ -243,21 +248,71 @@ pub fn grep_lines(
         .collect())
 }
 
+fn grep_lines_fast(
+    doc: &Document,
+    pattern: &str,
+    invert: bool,
+) -> Result<Vec<LineView>, LinehashError> {
+    let pattern_bytes = pattern.as_bytes();
+    let mut results = Vec::new();
+
+    if pattern_bytes.len() == 1 {
+        let byte = pattern_bytes[0];
+        for (index, line) in doc.lines.iter().enumerate() {
+            let is_match = memchr(byte, line.content.as_bytes()).is_some();
+            let include = if invert { !is_match } else { is_match };
+            if include {
+                results.push(LineView {
+                    n: index + 1,
+                    hash: format_short_hash(line.short_hash),
+                    content: line.content.clone(),
+                });
+            }
+        }
+    } else {
+        for (index, line) in doc.lines.iter().enumerate() {
+            let is_match = if pattern_bytes.len() <= line.content.len() {
+                line.content
+                    .as_bytes()
+                    .windows(pattern_bytes.len())
+                    .any(|w| w == pattern_bytes)
+            } else {
+                false
+            };
+            let include = if invert { !is_match } else { is_match };
+            if include {
+                results.push(LineView {
+                    n: index + 1,
+                    hash: format_short_hash(line.short_hash),
+                    content: line.content.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn contains_regex_metacharacters(s: &str) -> bool {
+    for c in s.chars() {
+        match c {
+            '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\'
+            | '"' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn grep_lines_indexed(
     doc: &Document,
     pattern: &str,
     invert: bool,
     case_insensitive: bool,
 ) -> Result<Vec<LineView>, LinehashError> {
-    let lines: Vec<Arc<str>> = doc
-        .lines
-        .iter()
-        .map(|l| Arc::from(l.content.as_str()))
-        .collect();
-
     let mut builder = IndexBuilder::new();
-    for (idx, line) in lines.iter().enumerate() {
-        builder.add_line(idx, line.as_bytes());
+    for (idx, line) in doc.lines.iter().enumerate() {
+        builder.add_line(idx, line.content.as_bytes());
     }
     let index = builder.build();
 
@@ -267,7 +322,7 @@ pub fn grep_lines_indexed(
         return grep_lines(doc, pattern, invert, case_insensitive);
     }
 
-    let results = verify_candidates(&candidates, &lines, pattern, case_insensitive);
+    let results = verify_candidates(&candidates, &doc.lines, pattern, case_insensitive);
 
     let filtered: Vec<LineView> = results
         .into_iter()
@@ -297,12 +352,6 @@ pub fn grep_lines_indexed_cached(
     case_insensitive: bool,
     cache: &SharedIndexCache,
 ) -> Result<Vec<LineView>, LinehashError> {
-    let lines: Vec<Arc<str>> = doc
-        .lines
-        .iter()
-        .map(|l| Arc::from(l.content.as_str()))
-        .collect();
-
     let mtime = doc
         .file_meta
         .as_ref()
@@ -324,7 +373,7 @@ pub fn grep_lines_indexed_cached(
         return grep_lines(doc, pattern, invert, case_insensitive);
     }
 
-    let results = verify_candidates(&candidates, &lines, pattern, case_insensitive);
+    let results = verify_candidates(&candidates, &doc.lines, pattern, case_insensitive);
 
     let filtered: Vec<LineView> = results
         .into_iter()
@@ -582,12 +631,10 @@ mod tests {
         let payload = doctor_payload(Path::new("demo.txt"), &stats);
         assert_eq!(payload.file, "demo.txt");
         assert_eq!(payload.next_commands[0], "linehash read demo.txt");
-        assert!(
-            payload
-                .next_commands
-                .iter()
-                .any(|command| command.contains("verify"))
-        );
+        assert!(payload
+            .next_commands
+            .iter()
+            .any(|command| command.contains("verify")));
     }
 
     #[test]

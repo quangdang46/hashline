@@ -3,6 +3,8 @@
 use regex::Regex;
 use std::sync::Arc;
 
+use crate::document::LineRecord;
+
 pub struct VerifyResult {
     pub line_idx: u32,
     pub content: Arc<str>,
@@ -17,7 +19,7 @@ pub struct MatchRange {
 
 pub fn verify_candidates(
     candidates: &[u32],
-    lines: &[Arc<str>],
+    lines: &[LineRecord],
     pattern: &str,
     case_insensitive: bool,
 ) -> Vec<VerifyResult> {
@@ -40,7 +42,7 @@ pub fn verify_candidates(
             continue;
         }
 
-        let content = &lines[line_idx_usize];
+        let content = &lines[line_idx_usize].content;
 
         let matches: Vec<MatchRange> = re
             .find_iter(content)
@@ -53,7 +55,7 @@ pub fn verify_candidates(
         if !matches.is_empty() {
             results.push(VerifyResult {
                 line_idx,
-                content: content.clone(),
+                content: Arc::from(content.clone()),
                 matches,
             });
         }
@@ -65,13 +67,22 @@ pub fn verify_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::LineRecord;
+
+    fn make_line(idx: u32, content: &str) -> LineRecord {
+        LineRecord {
+            content: content.to_string(),
+            full_hash: 0,
+            short_hash: idx as u8,
+        }
+    }
 
     #[test]
     fn test_verify_simple_match() {
-        let lines: Vec<Arc<str>> = vec![
-            Arc::from("hello world"),
-            Arc::from("foo bar"),
-            Arc::from("baz qux"),
+        let lines = vec![
+            make_line(0, "hello world"),
+            make_line(1, "foo bar"),
+            make_line(2, "baz qux"),
         ];
 
         let results = verify_candidates(&[0, 1, 2], &lines, "foo", false);
@@ -82,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_verify_no_match() {
-        let lines: Vec<Arc<str>> = vec![Arc::from("hello world"), Arc::from("foo bar")];
+        let lines = vec![make_line(0, "hello world"), make_line(1, "foo bar")];
 
         let results = verify_candidates(&[0, 1], &lines, "xyz", false);
         assert!(results.is_empty());
@@ -90,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_verify_case_insensitive() {
-        let lines: Vec<Arc<str>> = vec![Arc::from("Hello World"), Arc::from("foo bar")];
+        let lines = vec![make_line(0, "Hello World"), make_line(1, "foo bar")];
 
         let results = verify_candidates(&[0, 1], &lines, "hello", true);
         assert_eq!(results.len(), 1);
