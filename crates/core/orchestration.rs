@@ -7,9 +7,9 @@ use std::sync::Arc;
 use regex::RegexBuilder;
 use serde::Serialize;
 
-use crate::anchor::{ResolvedLine, parse_anchor, resolve};
+use crate::anchor::{parse_anchor, resolve, ResolvedLine};
 use crate::cli::Commands;
-use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
+use crate::document::{format_short_hash, Document, FileStats, NewlineStyle};
 use crate::error::LinehashError;
 use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
@@ -297,25 +297,20 @@ pub fn grep_lines_indexed_cached(
     case_insensitive: bool,
     cache: &SharedIndexCache,
 ) -> Result<Vec<LineView>, LinehashError> {
-    let lines: Vec<Arc<str>> = doc
-        .lines
-        .iter()
-        .map(|l| Arc::from(l.content.as_str()))
-        .collect();
-
     let mtime = doc
         .file_meta
         .as_ref()
         .map(|m| m.mtime_secs as u64)
         .unwrap_or(0);
+
     let content_bytes: Vec<u8> = doc
         .lines
         .iter()
         .flat_map(|l| l.content.as_bytes().to_vec())
         .collect();
 
-    let index = cache
-        .get_index(&doc.path, &content_bytes, mtime)
+    let (index, lines, _) = cache
+        .get_index_data(&doc.path, &content_bytes, mtime)
         .map_err(LinehashError::Io)?;
 
     let (candidates, is_match_all) = filter_candidates(&index, pattern);
@@ -582,12 +577,10 @@ mod tests {
         let payload = doctor_payload(Path::new("demo.txt"), &stats);
         assert_eq!(payload.file, "demo.txt");
         assert_eq!(payload.next_commands[0], "linehash read demo.txt");
-        assert!(
-            payload
-                .next_commands
-                .iter()
-                .any(|command| command.contains("verify"))
-        );
+        assert!(payload
+            .next_commands
+            .iter()
+            .any(|command| command.contains("verify")));
     }
 
     #[test]

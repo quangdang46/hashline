@@ -1,4 +1,4 @@
-use crate::search::decompose::{DecomposedPattern, decompose_regex};
+use crate::search::decompose::{decompose_regex, DecomposedPattern};
 use crate::search::types::{Trigram, TrigramIndex};
 
 pub struct CandidateFilter<'a> {
@@ -68,6 +68,13 @@ pub fn filter_candidates(index: &TrigramIndex, pattern: &str) -> (Vec<u32>, bool
     }
 
     let candidates = CandidateFilter::new(index, &decomposed).filter();
+
+    // If candidates are more than 50% of total lines, fall back to linear scan
+    // Linear scan is faster when trigram filtering can't narrow down enough
+    if candidates.len() >= (index.line_count as usize / 2) {
+        return ((0..index.line_count as u32).collect(), true);
+    }
+
     (candidates, false)
 }
 

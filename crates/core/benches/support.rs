@@ -2,9 +2,15 @@
 
 pub fn generate_short_fixture(line_count: usize) -> String {
     let mut lines = Vec::with_capacity(line_count);
+    let marker_line = line_count / 10;
     for i in 0..line_count {
+        let marker = if i == marker_line {
+            " SPARSE_MARKER_12345"
+        } else {
+            ""
+        };
         lines.push(format!(
-            "fn generated_line_{i:05}() {{ let value = \"{:08x}\"; }}",
+            "fn generated_line_{i:05}() {{ let value = \"{:08x}\";{marker} }}",
             i.wrapping_mul(2654435761_u32 as usize)
         ));
     }

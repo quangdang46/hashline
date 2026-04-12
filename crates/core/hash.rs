@@ -70,10 +70,9 @@ mod tests {
     #[test]
     fn test_short_hash_always_lowercase_hex() {
         let hash = short_hash("demo");
-        assert!(
-            hash.chars()
-                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
-        );
+        assert!(hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()));
     }
 
     #[test]

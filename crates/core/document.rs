@@ -505,7 +505,7 @@ fn change_time_from_metadata(_metadata: &fs::Metadata) -> (i64, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, FileStats, NewlineStyle, format_short_hash};
+    use super::{format_short_hash, Document, FileStats, NewlineStyle};
     use crate::error::LinehashError;
     use std::fs;
     use std::path::{Path, PathBuf};

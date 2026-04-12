@@ -52,5 +52,9 @@ name = "watch_bench"
 harness = false
 
 [[bench]]
+name = "search_bench"
+harness = false
+
+[[bench]]
 name = "edit_bench"
 harness = false

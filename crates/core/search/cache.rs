@@ -22,14 +22,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::search::index::{IndexBuilder, compute_content_hash};
+use crate::search::index::{compute_content_hash, IndexBuilder};
 use crate::search::persist::IndexStore;
 use crate::search::types::TrigramIndex;
 
-/// Cache entry storing the index and its metadata.
+/// Cache entry storing the index, lines, and content bytes with metadata.
 struct CacheEntry {
-    /// The cached trigram index.
-    index: TrigramIndex,
+    /// The cached trigram index (cheaply clonable via Arc).
+    index: Arc<TrigramIndex>,
+    /// The cached lines as Arc-wrapped Arc<str> for sharing.
+    lines: Arc<Vec<Arc<str>>>,
+    /// The cached content bytes for hash validation.
+    content_bytes: Arc<Vec<u8>>,
     /// File mtime when index was built.
     mtime: u64,
     /// File size when index was built.
@@ -48,15 +52,10 @@ struct CacheEntry {
 ///
 /// - `P`: Persistence backend (e.g., `IndexStore` for disk persistence)
 pub struct IndexCache {
-    /// Backing persistence store for reading/writing indexes.
     store: IndexStore,
-    /// In-memory cache: file path → cache entry.
     entries: HashMap<PathBuf, CacheEntry>,
-    /// Maximum number of entries to cache (0 = unlimited).
     max_capacity: usize,
-    /// Access counter for LRU eviction.
     access_counter: u64,
-    /// Whether to use persistent storage.
     use_persistence: bool,
 }
 
@@ -83,6 +82,125 @@ impl IndexCache {
         Self::new(".", 0, false)
     }
 
+    /// Get cached index, lines, and content bytes for a file.
+    ///
+    /// Returns all cached data if valid, or builds and caches all three.
+    pub fn get_index_data(
+        &mut self,
+        path: &Path,
+        content: &[u8],
+        mtime: u64,
+    ) -> std::io::Result<(Arc<TrigramIndex>, Arc<Vec<Arc<str>>>, Arc<Vec<u8>>)> {
+        let size = content.len() as u64;
+        let content_hash = compute_content_hash(content);
+        let line_count = Self::count_lines(content);
+
+        let path_buf = path.to_path_buf();
+
+        // Check if we have a valid cached entry
+        if let Some(entry) = self.entries.get(&path_buf) {
+            if entry.mtime == mtime
+                && entry.size == size
+                && entry.content_hash == content_hash
+                && entry.line_count == line_count
+            {
+                self.access_counter += 1;
+                let entry = self.entries.get_mut(&path_buf).unwrap();
+                entry.last_access = self.access_counter;
+                return Ok((
+                    entry.index.clone(),
+                    entry.lines.clone(),
+                    entry.content_bytes.clone(),
+                ));
+            }
+        }
+
+        // Build lines from content
+        let lines: Vec<Arc<str>> = content
+            .split(|&b| b == b'\n')
+            .map(|line| Arc::from(String::from_utf8_lossy(line).as_ref()))
+            .collect();
+
+        // Build index
+        let mut builder = IndexBuilder::new();
+        for (idx, line) in lines.iter().enumerate() {
+            builder.add_line(idx, line.as_bytes());
+        }
+        let index = builder.build();
+
+        // Try to use persisted index if available and valid
+        if self.use_persistence {
+            if let Ok((_mmap_index, meta)) = self.store.read_index(&path_buf) {
+                if meta.file_mtime == mtime
+                    && meta.file_size == size
+                    && meta.content_hash == content_hash
+                    && meta.line_count == line_count
+                {
+                    // Re-build index from persisted data (same as above but with stored metadata)
+                    let mut builder = IndexBuilder::new();
+                    let line_count_usize = meta.line_count as usize;
+                    for (idx, line) in content.split(|&b| b == b'\n').enumerate() {
+                        if idx < line_count_usize {
+                            builder.add_line(idx, line);
+                        }
+                    }
+                    let index = builder.build();
+
+                    self.access_counter += 1;
+                    self.evict_if_needed()?;
+
+                    let entry = CacheEntry {
+                        index: Arc::new(index),
+                        lines: Arc::new(lines.clone()),
+                        content_bytes: Arc::new(content.to_vec()),
+                        mtime,
+                        size,
+                        content_hash,
+                        line_count,
+                        last_access: self.access_counter,
+                    };
+                    self.entries.insert(path_buf.clone(), entry);
+                    if let Some(entry) = self.entries.get(&path_buf) {
+                        return Ok((
+                            entry.index.clone(),
+                            entry.lines.clone(),
+                            entry.content_bytes.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        self.access_counter += 1;
+        self.evict_if_needed()?;
+
+        let entry = CacheEntry {
+            index: Arc::new(index),
+            lines: Arc::new(lines),
+            content_bytes: Arc::new(content.to_vec()),
+            mtime,
+            size,
+            content_hash,
+            line_count,
+            last_access: self.access_counter,
+        };
+        self.entries.insert(path_buf.clone(), entry);
+
+        if self.use_persistence {
+            let _ = self.store.write_index(path, content, mtime);
+        }
+
+        if let Some(entry) = self.entries.get(&path_buf) {
+            Ok((
+                entry.index.clone(),
+                entry.lines.clone(),
+                entry.content_bytes.clone(),
+            ))
+        } else {
+            unreachable!("entry was just inserted")
+        }
+    }
+
     /// Get an index for the given file, building if necessary.
     ///
     /// Returns the cached index if valid, or builds a new one.
@@ -101,85 +219,9 @@ impl IndexCache {
         path: &Path,
         content: &[u8],
         mtime: u64,
-    ) -> std::io::Result<&TrigramIndex> {
-        let size = content.len() as u64;
-        let content_hash = compute_content_hash(content);
-        let line_count = Self::count_lines(content);
-
-        let path_buf = path.to_path_buf();
-        let needs_rebuild = match self.entries.get(&path_buf) {
-            Some(entry) => {
-                entry.mtime != mtime
-                    || entry.size != size
-                    || entry.content_hash != content_hash
-                    || entry.line_count != line_count
-            }
-            None => true,
-        };
-
-        if !needs_rebuild {
-            self.access_counter += 1;
-            self.entries.get_mut(&path_buf).unwrap().last_access = self.access_counter;
-            return Ok(&self.entries.get(&path_buf).unwrap().index);
-        }
-
-        if self.use_persistence {
-            if let Ok((_mmap_index, meta)) = self.store.read_index(&path_buf) {
-                if meta.file_mtime == mtime
-                    && meta.file_size == size
-                    && meta.content_hash == content_hash
-                    && meta.line_count == line_count
-                {
-                    let mut builder = IndexBuilder::new();
-                    let line_count_usize = meta.line_count as usize;
-                    for (idx, line) in content.split(|&b| b == b'\n').enumerate() {
-                        if idx < line_count_usize {
-                            builder.add_line(idx, line);
-                        }
-                    }
-                    let index = builder.build();
-
-                    self.access_counter += 1;
-                    self.evict_if_needed()?;
-
-                    let entry = CacheEntry {
-                        index,
-                        mtime,
-                        size,
-                        content_hash,
-                        line_count,
-                        last_access: self.access_counter,
-                    };
-                    self.entries.insert(path_buf.clone(), entry);
-                    return Ok(&self.entries.get(&path_buf).unwrap().index);
-                }
-            }
-        }
-
-        let mut builder = IndexBuilder::new();
-        for (idx, line) in content.split(|&b| b == b'\n').enumerate() {
-            builder.add_line(idx, line);
-        }
-        let index = builder.build();
-
-        self.access_counter += 1;
-        self.evict_if_needed()?;
-
-        let entry = CacheEntry {
-            index,
-            mtime,
-            size,
-            content_hash,
-            line_count,
-            last_access: self.access_counter,
-        };
-        self.entries.insert(path_buf, entry);
-
-        if self.use_persistence {
-            let _ = self.store.write_index(path, content, mtime);
-        }
-
-        Ok(&self.entries.get(path).unwrap().index)
+    ) -> std::io::Result<Arc<TrigramIndex>> {
+        let (index, _, _) = self.get_index_data(path, content, mtime)?;
+        Ok(index)
     }
 
     /// Get an index with a provided TrigramIndex (for cases where caller has already built one).
@@ -187,6 +229,8 @@ impl IndexCache {
         &mut self,
         path: &Path,
         index: TrigramIndex,
+        lines: Arc<Vec<Arc<str>>>,
+        content_bytes: Arc<Vec<u8>>,
         mtime: u64,
         size: u64,
         content_hash: u64,
@@ -196,7 +240,9 @@ impl IndexCache {
         self.evict_if_needed()?;
 
         let entry = CacheEntry {
-            index,
+            index: Arc::new(index),
+            lines,
+            content_bytes,
             mtime,
             size,
             content_hash,
@@ -343,19 +389,26 @@ impl SharedIndexCache {
         }
     }
 
+    /// Get index, lines, and content bytes for the given file.
+    pub fn get_index_data(
+        &self,
+        path: &Path,
+        content: &[u8],
+        mtime: u64,
+    ) -> std::io::Result<(Arc<TrigramIndex>, Arc<Vec<Arc<str>>>, Arc<Vec<u8>>)> {
+        let mut cache = self.inner.write().unwrap();
+        cache.get_index_data(path, content, mtime)
+    }
+
     /// Get an index for the given file.
     pub fn get_index(
         &self,
         path: &Path,
         content: &[u8],
         mtime: u64,
-    ) -> std::io::Result<TrigramIndex> {
+    ) -> std::io::Result<Arc<TrigramIndex>> {
         let mut cache = self.inner.write().unwrap();
-        // We need to return a owned index since the borrow checker
-        // can't ensure the lock is held while the caller uses the index.
-        // Clone the index since TrigramIndex is Clone.
-        let index = cache.get_index(path, content, mtime)?.clone();
-        Ok(index)
+        cache.get_index(path, content, mtime)
     }
 
     /// Put an index into the cache.
@@ -363,13 +416,24 @@ impl SharedIndexCache {
         &self,
         path: &Path,
         index: TrigramIndex,
+        lines: Arc<Vec<Arc<str>>>,
+        content_bytes: Arc<Vec<u8>>,
         mtime: u64,
         size: u64,
         content_hash: u64,
         line_count: u32,
     ) -> std::io::Result<()> {
         let mut cache = self.inner.write().unwrap();
-        cache.put_index(path, index, mtime, size, content_hash, line_count)
+        cache.put_index(
+            path,
+            index,
+            lines,
+            content_bytes,
+            mtime,
+            size,
+            content_hash,
+            line_count,
+        )
     }
 
     /// Invalidate the cache for a file.

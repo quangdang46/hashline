@@ -21,6 +21,12 @@ pub fn verify_candidates(
     pattern: &str,
     case_insensitive: bool,
 ) -> Vec<VerifyResult> {
+    let use_fast_path = !case_insensitive && !contains_regex_metacharacters(pattern);
+
+    if use_fast_path {
+        return verify_candidates_fast(candidates, lines, pattern);
+    }
+
     let regex_pattern = if case_insensitive {
         format!("(?i){}", pattern)
     } else {
@@ -60,6 +66,61 @@ pub fn verify_candidates(
     }
 
     results
+}
+
+fn verify_candidates_fast(
+    candidates: &[u32],
+    lines: &[Arc<str>],
+    pattern: &str,
+) -> Vec<VerifyResult> {
+    let mut results = Vec::new();
+
+    for &line_idx in candidates {
+        let line_idx_usize = line_idx as usize;
+        if line_idx_usize >= lines.len() {
+            continue;
+        }
+
+        let content = &lines[line_idx_usize];
+
+        if let Some(pos) = content.find(pattern) {
+            results.push(VerifyResult {
+                line_idx,
+                content: content.clone(),
+                matches: vec![MatchRange {
+                    start: pos,
+                    end: pos + pattern.len(),
+                }],
+            });
+        }
+    }
+
+    results
+}
+
+fn contains_regex_metacharacters(s: &str) -> bool {
+    for c in s.chars() {
+        if matches!(
+            c,
+            '.' | '+'
+                | '*'
+                | '?'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '^'
+                | '$'
+                | '|'
+                | '\\'
+                | '"'
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
