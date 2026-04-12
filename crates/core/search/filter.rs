@@ -1,4 +1,4 @@
-use crate::search::decompose::{DecomposedPattern, decompose_regex};
+use crate::search::decompose::{decompose_regex, DecomposedPattern};
 use crate::search::types::{Trigram, TrigramIndex};
 
 pub struct CandidateFilter<'a> {

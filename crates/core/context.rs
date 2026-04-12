@@ -61,7 +61,8 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         | Commands::Explode(_)
         | Commands::Implode(_)
         | Commands::InstallMcp(_)
-        | Commands::Mcp(_) => OutputMode::Pretty,
+        | Commands::Mcp(_)
+        | Commands::Daemon => OutputMode::Pretty,
     }
 }
 
@@ -75,7 +76,7 @@ fn flag_mode(json: bool) -> OutputMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputMode, output_mode_for};
+    use super::{output_mode_for, OutputMode};
     use crate::cli::{
         Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
         ReadCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,

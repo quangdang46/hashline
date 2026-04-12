@@ -45,6 +45,7 @@ pub enum Commands {
     Implode(ImplodeCmd),
     InstallMcp(InstallMcpCmd),
     Mcp(McpCmd),
+    Daemon,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -175,6 +176,9 @@ pub struct GrepCmd {
     #[serde(default)]
     #[arg(long)]
     pub no_index: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub daemon: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -418,3 +422,10 @@ pub struct InstallMcpCmd {}
     long_about = "Run linehash as a JSON-RPC MCP server over stdio so agents can call the existing linehash feature set without shelling out."
 )]
 pub struct McpCmd {}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Run as a persistent daemon for fast grep operations",
+    long_about = "Start the linehash daemon that listens on a Unix socket and maintains an in-memory cache of file contents for sub-millisecond grep operations."
+)]
+pub struct DaemonCmd {}

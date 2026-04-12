@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use memchr::memchr;
 use regex::RegexBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::anchor::{parse_anchor, resolve, ResolvedLine};
 use crate::cli::Commands;
@@ -17,7 +17,7 @@ use crate::search::filter::filter_candidates;
 use crate::search::index::IndexBuilder;
 use crate::search::verify::verify_candidates;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LineView {
     pub n: usize,
     pub hash: String,
@@ -117,6 +117,7 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Implode(_) => "implode",
         Commands::InstallMcp(_) => "install-mcp",
         Commands::Mcp(_) => "mcp",
+        Commands::Daemon => "daemon",
     }
 }
 

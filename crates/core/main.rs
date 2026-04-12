@@ -13,6 +13,7 @@ mod output;
 mod receipt;
 mod risk;
 mod search;
+mod server;
 mod workflows;
 
 use std::io;
@@ -22,11 +23,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use clap::Parser;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
+use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Commands};
-use crate::context::{CommandContext, output_mode_for};
+use crate::context::{output_mode_for, CommandContext};
 use crate::error::LinehashError;
 use crate::orchestration::command_name;
 use crate::risk::assess_command;
@@ -266,6 +267,15 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
         Commands::InstallMcp(_) => unreachable!("install-mcp is handled before command dispatch"),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
+        Commands::Daemon => {
+            info!("starting daemon mode");
+            if let Err(error) = server::run_daemon() {
+                error!(%error, "daemon failed");
+                eprintln!("daemon error: {error}");
+                return Err(error);
+            }
+            Ok(0)
+        }
     }
 }
 

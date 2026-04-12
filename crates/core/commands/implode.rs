@@ -239,7 +239,7 @@ fn render_document(newline: NewlineStyle, trailing_newline: bool, lines: Vec<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{ExplodeMeta, implode};
+    use super::{implode, ExplodeMeta};
     use crate::commands::explode::explode;
     use crate::error::LinehashError;
     use std::fs;

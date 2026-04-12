@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::document::{Document, ShortHashIndex, format_short_hash};
+use crate::document::{format_short_hash, Document, ShortHashIndex};
 use crate::error::LinehashError;
 use crate::hash::ShortHash;
 
@@ -271,13 +271,13 @@ fn display_anchor(anchor: &Anchor) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Anchor, ResolvedLine, looks_like_range_anchor, parse_anchor, parse_range, resolve,
-        resolve_all, resolve_range,
+        looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_all, resolve_range,
+        Anchor, ResolvedLine,
     };
     use crate::document::Document;
     use crate::error::LinehashError;
     use crate::hash::format_short_hash;
-    use anyhow::{Result, anyhow};
+    use anyhow::{anyhow, Result};
     use std::fmt::Display;
     use std::path::Path;
 

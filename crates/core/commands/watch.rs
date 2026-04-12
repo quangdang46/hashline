@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::cli::WatchCmd;
 use crate::context::CommandContext;
-use crate::document::{Document, format_short_hash};
+use crate::document::{format_short_hash, Document};
 use crate::error::LinehashError;
 
 pub fn run<W: Write, E: Write>(
@@ -217,7 +217,7 @@ pub fn diff_documents(old_doc: &Document, new_doc: &Document) -> Vec<HashDiff> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffKind, diff_documents, watch_file};
+    use super::{diff_documents, watch_file, DiffKind};
     use crate::document::Document;
     use std::fs;
     use std::path::Path;

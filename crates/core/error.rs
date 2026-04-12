@@ -78,7 +78,9 @@ pub enum LinehashError {
     )]
     UnbalancedBlock { line_no: usize },
 
-    #[error("block language is ambiguous at line {line_no} — use an explicit range anchor instead")]
+    #[error(
+        "block language is ambiguous at line {line_no} — use an explicit range anchor instead"
+    )]
     AmbiguousBlockLanguage { line_no: usize },
 
     #[error("invalid pattern '{pattern}': {message}")]
@@ -126,6 +128,9 @@ pub enum LinehashError {
         end: usize,
         len: usize,
     },
+
+    #[error("server error: {message}")]
+    ServerError { message: String, kind: String },
 }
 
 impl LinehashError {
@@ -212,6 +217,9 @@ impl LinehashError {
             LinehashError::InvalidMutationRange { .. } => {
                 Some("use a valid in-bounds range where the start line is not after the end line")
             }
+            LinehashError::ServerError { .. } => {
+                Some("ensure the daemon is running with `linehash daemon`")
+            }
             LinehashError::Io(_) => {
                 Some("check the file path and permissions, then retry the command")
             }
@@ -253,7 +261,8 @@ impl LinehashError {
             | LinehashError::PatchFailed { .. }
             | LinehashError::MultiLineContentUnsupported
             | LinehashError::MutationIndexOutOfBounds { .. }
-            | LinehashError::InvalidMutationRange { .. } => None,
+            | LinehashError::InvalidMutationRange { .. }
+            | LinehashError::ServerError { .. } => None,
         }
     }
 
@@ -364,6 +373,10 @@ mod tests {
                 end: 1,
                 len: 2,
             },
+            LinehashError::ServerError {
+                message: "connection refused".into(),
+                kind: "not_running".into(),
+            },
         ];
 
         for error in errors {
@@ -416,46 +429,36 @@ mod tests {
 
     #[test]
     fn invariant_failures_log_as_error() {
-        assert!(
-            LinehashError::InvalidMutationRange {
-                start: 3,
-                end: 1,
-                len: 2,
-            }
-            .log_as_error()
-        );
+        assert!(LinehashError::InvalidMutationRange {
+            start: 3,
+            end: 1,
+            len: 2,
+        }
+        .log_as_error());
     }
 
     #[test]
     fn implode_errors_have_recovery_hints() {
-        assert!(
-            LinehashError::ImplodeMissingMeta { path: "out".into() }
-                .hint()
-                .is_some()
-        );
-        assert!(
-            LinehashError::ImplodeInvalidMeta {
-                path: "out/.meta.json".into(),
-                reason: "bad".into()
-            }
+        assert!(LinehashError::ImplodeMissingMeta { path: "out".into() }
             .hint()
-            .is_some()
-        );
-        assert!(
-            LinehashError::ImplodeDirtyDirectory {
-                path: "out".into(),
-                entry: "notes.txt".into()
-            }
-            .hint()
-            .is_some()
-        );
-        assert!(
-            LinehashError::ImplodeMissingLineFile {
-                path: "out".into(),
-                line_no: 2
-            }
-            .hint()
-            .is_some()
-        );
+            .is_some());
+        assert!(LinehashError::ImplodeInvalidMeta {
+            path: "out/.meta.json".into(),
+            reason: "bad".into()
+        }
+        .hint()
+        .is_some());
+        assert!(LinehashError::ImplodeDirtyDirectory {
+            path: "out".into(),
+            entry: "notes.txt".into()
+        }
+        .hint()
+        .is_some());
+        assert!(LinehashError::ImplodeMissingLineFile {
+            path: "out".into(),
+            line_no: 2
+        }
+        .hint()
+        .is_some());
     }
 }

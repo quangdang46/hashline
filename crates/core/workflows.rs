@@ -240,10 +240,8 @@ mod tests {
         .unwrap();
 
         let error = load_workflow_catalog(dir.path()).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("expected at least one `allowed_cli_commands` entry")
-        );
+        assert!(error
+            .to_string()
+            .contains("expected at least one `allowed_cli_commands` entry"));
     }
 }
