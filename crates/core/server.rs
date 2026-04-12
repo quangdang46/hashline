@@ -512,6 +512,52 @@ pub fn start_daemon() -> Result<std::process::Child, LinehashError> {
     })
 }
 
+pub fn ensure_daemon_running() -> Result<(), LinehashError> {
+    if is_daemon_running() {
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe().map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::Other, format!("failed to get exe: {e}"))
+    })?;
+
+    let daemon_exe = exe.display().to_string();
+
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        Command::new("nohup")
+            .arg(&daemon_exe)
+            .arg("daemon")
+            .arg("&")
+            .arg("disown")
+            .spawn()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("failed to spawn daemon: {e}"),
+                )
+            })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        start_daemon()?;
+    }
+
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        if is_daemon_running() {
+            return Ok(());
+        }
+    }
+
+    Err(LinehashError::ServerError {
+        message: "daemon failed to start".to_string(),
+        kind: "startup_failed".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

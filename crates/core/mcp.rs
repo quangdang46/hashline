@@ -19,6 +19,7 @@ use crate::orchestration::{
 };
 use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
+use crate::server::ensure_daemon_running;
 
 const SERVER_INSTRUCTIONS: &str = "\
 linehash MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\
@@ -84,6 +85,10 @@ pub fn run(_cmd: McpCmd) -> io::Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     let mut session = SessionState::default();
+
+    if let Err(e) = ensure_daemon_running() {
+        eprintln!("warning: failed to start daemon: {e}");
+    }
 
     for line in stdin.lock().lines() {
         let line = line?;
