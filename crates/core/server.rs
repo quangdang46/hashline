@@ -20,15 +20,15 @@ fn socket_path() -> PathBuf {
     PathBuf::from(home).join(".linehash").join("daemon.sock")
 }
 
-const PROTOCOL_VERSION: &str = "1.0";
-
 #[derive(Clone)]
 struct CachedDocument {
     content: Arc<String>,
     line_offsets: Arc<Vec<usize>>,
+    #[allow(dead_code)]
     newline: NewlineStyle,
     trailing_newline: bool,
     file_meta: FileMeta,
+    #[allow(dead_code)]
     loaded_at: Instant,
     access_count: u64,
 }
