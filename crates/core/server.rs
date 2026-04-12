@@ -10,7 +10,7 @@ use memchr::memchr;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
-use crate::document::{read_file_meta, FileMeta, NewlineStyle, SearchDocument};
+use crate::document::{FileMeta, NewlineStyle, SearchDocument, read_file_meta};
 use crate::error::LinehashError;
 use crate::hash::{full_hash, short_from_full};
 use crate::orchestration::LineView;

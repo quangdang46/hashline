@@ -549,9 +549,5 @@ fn patch_error(op_index: usize, error: LinehashError) -> LinehashError {
 }
 
 fn plural_suffix(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if count == 1 { "" } else { "s" }
 }

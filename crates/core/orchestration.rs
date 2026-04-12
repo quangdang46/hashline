@@ -8,9 +8,9 @@ use memchr::memchr;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 
-use crate::anchor::{parse_anchor, resolve, ResolvedLine};
+use crate::anchor::{ResolvedLine, parse_anchor, resolve};
 use crate::cli::Commands;
-use crate::document::{format_short_hash, Document, FileStats, NewlineStyle};
+use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
 use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
@@ -632,10 +632,12 @@ mod tests {
         let payload = doctor_payload(Path::new("demo.txt"), &stats);
         assert_eq!(payload.file, "demo.txt");
         assert_eq!(payload.next_commands[0], "linehash read demo.txt");
-        assert!(payload
-            .next_commands
-            .iter()
-            .any(|command| command.contains("verify")));
+        assert!(
+            payload
+                .next_commands
+                .iter()
+                .any(|command| command.contains("verify"))
+        );
     }
 
     #[test]

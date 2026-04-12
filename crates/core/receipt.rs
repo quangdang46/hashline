@@ -93,7 +93,7 @@ pub fn write_audit_warning<W: Write, E: Write>(
 
 #[cfg(test)]
 mod tests {
-    use super::{append_to_audit_log, build_receipt, ChangeKind, LineChange};
+    use super::{ChangeKind, LineChange, append_to_audit_log, build_receipt};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;

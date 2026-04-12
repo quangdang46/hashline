@@ -479,7 +479,7 @@ fn is_brace_extension(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_braces, find_brace_block, BraceScanState, BraceToken};
+    use super::{BraceScanState, BraceToken, code_braces, find_brace_block};
     use crate::document::Document;
     use std::path::Path;
 

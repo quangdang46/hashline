@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use clap::Parser;
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::fmt::writer::MakeWriter;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriter;
 
 use crate::cli::{Cli, Commands};
-use crate::context::{output_mode_for, CommandContext};
+use crate::context::{CommandContext, output_mode_for};
 use crate::error::LinehashError;
 use crate::orchestration::command_name;
 use crate::risk::assess_command;

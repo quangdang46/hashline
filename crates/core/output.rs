@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::anchor::ResolvedLine;
 use crate::context::{CommandContext, OutputMode};
-use crate::document::{format_short_hash, Document, FileStats, NewlineStyle};
+use crate::document::{Document, FileStats, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
 use crate::orchestration::{IndexPayload, LineView, ReadPayload};
 use crate::risk::blocked_assessment;
@@ -276,7 +276,7 @@ mod tests {
         print_stats, print_stats_json,
     };
     use crate::anchor::ResolvedLine;
-    use crate::document::{format_short_hash, Document, FileStats};
+    use crate::document::{Document, FileStats, format_short_hash};
     use crate::orchestration::{index_payload, read_payload};
     use std::path::Path;
 
@@ -374,12 +374,16 @@ mod tests {
         .unwrap();
         let rendered = String::from_utf8(out).unwrap();
         assert!(rendered.contains("..."));
-        assert!(rendered
-            .lines()
-            .any(|line| line.trim_start().starts_with("→2:")));
-        assert!(rendered
-            .lines()
-            .any(|line| line.trim_start().starts_with("→9:")));
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.trim_start().starts_with("→2:"))
+        );
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.trim_start().starts_with("→9:"))
+        );
     }
 
     #[test]
