@@ -2,7 +2,9 @@ use std::io::Write;
 
 use crate::cli::GrepCmd;
 use crate::context::CommandContext;
-use crate::document::{Document, LineView, SearchDocument};
+#[cfg(unix)]
+use crate::document::LineView;
+use crate::document::{Document, SearchDocument};
 use crate::error::LinehashError;
 use crate::orchestration::grep_lines;
 use crate::output;
