@@ -526,11 +526,11 @@ pub fn ensure_daemon_running() -> Result<(), LinehashError> {
     #[cfg(unix)]
     {
         use std::process::Command;
-        Command::new("nohup")
-            .arg(&daemon_exe)
-            .arg("daemon")
-            .arg("&")
-            .arg("disown")
+        Command::new("sh")
+            .args([
+                "-c",
+                &format!("nohup {} daemon </dev/null >/dev/null 2>&1 &", daemon_exe),
+            ])
             .spawn()
             .map_err(|e| {
                 std::io::Error::new(
