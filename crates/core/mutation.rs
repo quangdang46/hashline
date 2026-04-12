@@ -30,8 +30,10 @@ pub fn replace_line(doc: &mut Document, index: usize, content: &str) -> Result<(
     ensure_index(doc, index)?;
 
     let old_len = doc.lines[index].content.len();
-    doc.lines[index].content = content.to_owned();
-    refresh_line_metadata(&mut doc.lines[index]);
+    if doc.lines[index].content != content {
+        doc.lines[index].content = content.to_owned();
+        refresh_line_metadata(&mut doc.lines[index]);
+    }
     doc.content_len = doc.content_len + doc.lines[index].content.len() - old_len;
     Ok(())
 }
