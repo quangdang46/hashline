@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 //! In-memory cache for trigram indexes with incremental updates.
 //!
 //! This module provides an in-memory cache that stores trigram indexes

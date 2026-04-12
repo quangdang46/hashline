@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 //! Trigram index types for instant grep.
 //!
 //! This module defines the core data structures for a trigram-based inverted index,
