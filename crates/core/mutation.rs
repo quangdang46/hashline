@@ -71,12 +71,17 @@ pub fn replace_range(
 }
 
 pub fn insert_line(doc: &mut Document, index: usize, content: &str) -> Result<(), LinehashError> {
-    validate_single_line_content(content)?;
     ensure_insert_index(doc, index)?;
 
-    doc.lines.insert(index, new_line_record(content));
-    refresh_line_metadata(&mut doc.lines[index]);
-    doc.content_len += doc.lines[index].content.len();
+    let lines = split_content_lines(content);
+    let total_len: usize = lines.iter().map(|l| l.len()).sum();
+
+    for (i, line) in lines.into_iter().enumerate() {
+        let insert_at = index + i;
+        doc.lines.insert(insert_at, new_line_record(&line));
+        refresh_line_metadata(&mut doc.lines[insert_at]);
+    }
+    doc.content_len += total_len;
     Ok(())
 }
 
@@ -267,6 +272,34 @@ mod tests {
         insert_line(&mut doc, 1, "beta").unwrap();
 
         assert_eq!(doc.render(), b"alpha\nbeta\n");
+    }
+
+    #[test]
+    fn insert_line_allows_multiline_content() {
+        let mut doc = Document::from_str(Path::new("demo.txt"), "alpha\ndelta\n").unwrap();
+
+        insert_line(&mut doc, 1, "beta\ngamma").unwrap();
+
+        assert_eq!(doc.lines.len(), 4);
+        assert_eq!(doc.lines[0].content, "alpha");
+        assert_eq!(doc.lines[1].content, "beta");
+        assert_eq!(doc.lines[2].content, "gamma");
+        assert_eq!(doc.lines[3].content, "delta");
+        assert_eq!(doc.render(), b"alpha\nbeta\ngamma\ndelta\n");
+    }
+
+    #[test]
+    fn insert_line_multiline_with_blank_lines() {
+        let mut doc = Document::from_str(Path::new("demo.txt"), "alpha\nepsilon\n").unwrap();
+
+        insert_line(&mut doc, 1, "beta\ngamma").unwrap();
+
+        assert_eq!(doc.lines.len(), 4);
+        assert_eq!(doc.lines[0].content, "alpha");
+        assert_eq!(doc.lines[1].content, "beta");
+        assert_eq!(doc.lines[2].content, "gamma");
+        assert_eq!(doc.lines[3].content, "epsilon");
+        assert_eq!(doc.render(), b"alpha\nbeta\ngamma\nepsilon\n");
     }
 
     #[test]
