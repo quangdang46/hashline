@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"/home/quangdang/projects/tools/linehash/target/release/linehash insert /tmp/test.txt \\\"2:c8\\\" \\\"newline1\\nnewline2\\\" && /home/quangdang/projects/tools/linehash/target/release/linehash read...",
+  "error": "Exit code 1\nError: line 2 content changed since last read in /tmp/test.txt (expected hash c8, got 89); hash still exists at line(s) 1\nRisk: blocked - The mutation was blocked because the file changed since the last anchor read.\nReason: Linehash refuses to apply destructive changes when the file state has drifted.\nHint: re-read the file with `linehash read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor",
+  "timestamp": "2026-04-16T17:40:42.239Z",
+  "retry_count": 1
+}

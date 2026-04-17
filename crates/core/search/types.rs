@@ -440,7 +440,7 @@ impl TrigramIndex {
         };
 
         let mut top_trigrams: Vec<_> = self.trigrams.iter().map(|(&t, p)| (t, p.len())).collect();
-        top_trigrams.sort_by(|a, b| b.1.cmp(&a.1));
+        top_trigrams.sort_by_key(|b| std::cmp::Reverse(b.1));
         top_trigrams.truncate(10);
 
         let mut line_posting_counts: HashMap<u32, usize> = HashMap::new();
@@ -450,7 +450,7 @@ impl TrigramIndex {
             }
         }
         let mut top_lines: Vec<_> = line_posting_counts.into_iter().collect();
-        top_lines.sort_by(|a, b| b.1.cmp(&a.1));
+        top_lines.sort_by_key(|b| std::cmp::Reverse(b.1));
         top_lines.truncate(10);
 
         let estimated_memory_bytes = std::mem::size_of::<TrigramIndex>()

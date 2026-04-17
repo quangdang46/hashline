@@ -1,0 +1,168 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1776359650198,
+  "projectRoot": "/home/quangdang/projects/tools/linehash",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Rust",
+        "version": "1.85",
+        "confidence": "high",
+        "markers": [
+          "Cargo.toml"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "cargo",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "cargo build",
+    "testCommand": "cargo test",
+    "lintCommand": "cargo clippy",
+    "devCommand": "cargo run",
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "scripts"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bench-results": {
+      "path": "bench-results",
+      "purpose": null,
+      "fileCount": 43,
+      "lastAccessed": 1776359650098,
+      "keyFiles": [
+        "bench-2026-03-10-00-00-00.md",
+        "bench-2026-03-11-22-02-35.md",
+        "bench-2026-03-11-22-32-09.md",
+        "bench-2026-03-11-22-58-13.md",
+        "bench-2026-03-11-23-13-40.md"
+      ]
+    },
+    "benchmark": {
+      "path": "benchmark",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1776359650104,
+      "keyFiles": [
+        "analyze_workflows.py",
+        "run_workflows.py"
+      ]
+    },
+    "crates": {
+      "path": "crates",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1776359650141,
+      "keyFiles": []
+    },
+    "poc": {
+      "path": "poc",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1776359650157,
+      "keyFiles": [
+        "benchmark.js",
+        "linehash.js"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 1,
+      "lastAccessed": 1776359650157,
+      "keyFiles": [
+        "render_edit_bench_report.py"
+      ]
+    },
+    "target": {
+      "path": "target",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1776359650162,
+      "keyFiles": [
+        "CACHEDIR.TAG"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "crates/core/mutation.rs",
+      "accessCount": 7,
+      "lastAccessed": 1776359929185,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/search/types.rs",
+      "accessCount": 3,
+      "lastAccessed": 1776402910714,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/anchor.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776359726457,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/commands/insert.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776359726509,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/commands/edit.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776359726593,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/error.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776359737554,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/mcp.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776359737838,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/cli.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776359753600,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1776359821574,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/commands/watch.rs",
+      "accessCount": 1,
+      "lastAccessed": 1776389030615,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
