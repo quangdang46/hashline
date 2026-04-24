@@ -3,7 +3,7 @@ use std::io::Write;
 use crate::anchor::{parse_anchor, resolve};
 use crate::cli::{MoveCmd, MoveDirection};
 use crate::commands::common::{atomic_write, check_guard};
-use crate::context::CommandContext;
+use crate::context::{CommandContext, SearchDocCache};
 use crate::document::Document;
 use crate::error::LinehashError;
 use crate::mutation::move_line;
@@ -132,7 +132,7 @@ impl MoveSummary {
 mod tests {
     use super::run;
     use crate::cli::{MoveCmd, MoveDirection};
-    use crate::context::{CommandContext, OutputMode};
+    use crate::context::{CommandContext, OutputMode, SearchDocCache};
     use crate::document::Document;
     use crate::error::LinehashError;
     use std::fs;
@@ -161,7 +161,12 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\ngamma\ndelta\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
+        let mut ctx = CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            OutputMode::Pretty,
+            SearchDocCache::new(0),
+        );
 
         run(
             &mut ctx,
@@ -195,7 +200,12 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\ngamma\ndelta\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
+        let mut ctx = CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            OutputMode::Pretty,
+            SearchDocCache::new(0),
+        );
 
         run(
             &mut ctx,
@@ -229,7 +239,12 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
+        let mut ctx = CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            OutputMode::Pretty,
+            SearchDocCache::new(0),
+        );
 
         let error = run(
             &mut ctx,
@@ -263,7 +278,12 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\ngamma\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
+        let mut ctx = CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            OutputMode::Pretty,
+            SearchDocCache::new(0),
+        );
 
         run(
             &mut ctx,

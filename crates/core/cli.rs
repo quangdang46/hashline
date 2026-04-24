@@ -46,6 +46,12 @@ pub enum Commands {
     InstallMcp(InstallMcpCmd),
     Mcp(McpCmd),
     Daemon,
+    Map(MapCmd),
+    Outline(OutlineCmd),
+    Symbol(SymbolCmd),
+    Callers(CallersCmd),
+    Callees(CalleesCmd),
+    Deps(DepsCmd),
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -429,3 +435,107 @@ pub struct McpCmd {}
     long_about = "Start the linehash daemon that listens on a Unix socket and maintains an in-memory cache of file contents for sub-millisecond grep operations."
 )]
 pub struct DaemonCmd {}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Map directory tree with token estimates",
+    long_about = "Map a directory tree showing file structure with estimated token counts. Useful for understanding codebase size and structure before editing."
+)]
+pub struct MapCmd {
+    #[serde(default)]
+    #[arg(long)]
+    pub scope: Option<PathBuf>,
+    #[serde(default)]
+    #[arg(long)]
+    pub depth: Option<usize>,
+    #[serde(default)]
+    #[arg(long)]
+    pub budget: Option<u64>,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Get structural outline of a file via tree-sitter",
+    long_about = "Get structural outline of a file using tree-sitter parsing. Returns functions, classes, structs, and other definitions with their names and line numbers."
+)]
+pub struct OutlineCmd {
+    pub file: PathBuf,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Search for symbol definitions and usages",
+    long_about = "Search for symbol definitions and usages across files. Use this to find where a function, struct, or variable is defined and where it is used or called."
+)]
+pub struct SymbolCmd {
+    pub query: String,
+    #[serde(default)]
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    #[serde(default)]
+    #[arg(long)]
+    pub scope: Option<PathBuf>,
+    #[serde(default)]
+    #[arg(long)]
+    pub expand: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Find functions that call a given symbol",
+    long_about = "Find functions that call a given symbol using BFS call graph traversal."
+)]
+pub struct CallersCmd {
+    pub target: String,
+    #[serde(default)]
+    #[arg(long)]
+    pub scope: Option<PathBuf>,
+    #[arg(long, default_value = "3")]
+    pub depth: usize,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Find functions called by a given symbol",
+    long_about = "Find functions called by a given symbol using BFS call graph traversal."
+)]
+pub struct CalleesCmd {
+    pub target: String,
+    #[serde(default)]
+    #[arg(long)]
+    pub scope: Option<PathBuf>,
+    #[arg(long, default_value = "3")]
+    pub depth: usize,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Show dependency analysis for a file or directory",
+    long_about = "Show imports and dependencies for a file or directory."
+)]
+pub struct DepsCmd {
+    #[serde(default)]
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    #[serde(default)]
+    #[arg(long)]
+    pub scope: Option<PathBuf>,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+}

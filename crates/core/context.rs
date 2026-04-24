@@ -1,6 +1,11 @@
+use lru::LruCache;
+use parking_lot::RwLock;
 use std::io::Write;
+use std::num::NonZero;
+use std::sync::Arc;
 
 use crate::cli::Commands;
+use crate::document::SearchDocument;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputMode {
@@ -8,18 +13,90 @@ pub enum OutputMode {
     Json,
 }
 
+/// Cache entry for SearchDocument with validation metadata.
+#[derive(Clone)]
+struct SearchDocCacheEntry {
+    search_doc: SearchDocument,
+    mtime: u64,
+    size: u64,
+    content_hash: u64,
+}
+
+/// Thread-safe, LRU-cached SearchDocument cache for grep optimization.
+#[derive(Clone)]
+pub struct SearchDocCache {
+    inner: Arc<RwLock<LruCache<String, SearchDocCacheEntry>>>,
+}
+
+impl SearchDocCache {
+    pub fn new(capacity: usize) -> Self {
+        // Ensure capacity is at least 1 since NonZero::new(0) returns None
+        let non_zero_capacity = NonZero::new(capacity.max(1)).unwrap();
+        Self {
+            inner: Arc::new(RwLock::new(LruCache::new(non_zero_capacity))),
+        }
+    }
+
+    /// Get a cached SearchDocument if still valid.
+    pub fn get(
+        &self,
+        path: &std::path::Path,
+        mtime: u64,
+        size: u64,
+        content_hash: u64,
+    ) -> Option<SearchDocument> {
+        let key = path.display().to_string();
+        let mut cache = self.inner.write();
+        if let Some(entry) = cache.get(&key) {
+            if entry.mtime == mtime && entry.size == size && entry.content_hash == content_hash {
+                return Some(entry.search_doc.clone());
+            }
+        }
+        None
+    }
+
+    /// Insert a SearchDocument into the cache.
+    pub fn put(
+        &self,
+        path: &std::path::Path,
+        search_doc: SearchDocument,
+        mtime: u64,
+        size: u64,
+        content_hash: u64,
+    ) {
+        let key = path.display().to_string();
+        let mut cache = self.inner.write();
+        cache.put(
+            key,
+            SearchDocCacheEntry {
+                search_doc,
+                mtime,
+                size,
+                content_hash,
+            },
+        );
+    }
+}
+
 pub struct CommandContext<'a, W: Write, E: Write> {
     stdout: &'a mut W,
     stderr: &'a mut E,
     output_mode: OutputMode,
+    pub search_doc_cache: SearchDocCache,
 }
 
 impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
-    pub fn new(stdout: &'a mut W, stderr: &'a mut E, output_mode: OutputMode) -> Self {
+    pub fn new(
+        stdout: &'a mut W,
+        stderr: &'a mut E,
+        output_mode: OutputMode,
+        search_doc_cache: SearchDocCache,
+    ) -> Self {
         Self {
             stdout,
             stderr,
             output_mode,
+            search_doc_cache,
         }
     }
 
@@ -62,7 +139,13 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         | Commands::Implode(_)
         | Commands::InstallMcp(_)
         | Commands::Mcp(_)
-        | Commands::Daemon => OutputMode::Pretty,
+        | Commands::Daemon
+        | Commands::Map(_)
+        | Commands::Outline(_)
+        | Commands::Symbol(_)
+        | Commands::Callers(_)
+        | Commands::Callees(_)
+        | Commands::Deps(_) => OutputMode::Pretty,
     }
 }
 

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{
     AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
-    GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MergePatchesCmd, MoveCmd,
+    GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, MapCmd, McpCmd, MergePatchesCmd, MoveCmd,
     PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
@@ -388,6 +388,11 @@ fn dispatch_tool(
                 session.invalidate(&out);
             }
             result
+        }
+        "linehash_map" => {
+            let mut cmd: MapCmd = parse_args(arguments)?;
+            cmd.json = true;
+            invoke_command(Commands::Map(cmd))
         }
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
@@ -832,6 +837,20 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
+            "linehash_symbol",
+            "Search for symbol definitions and usages.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": string_schema("Symbol name to search for."),
+                    "file": string_schema("File to search in (mutually exclusive with scope)."),
+                    "scope": string_schema("Directory to search in."),
+                    "expand": bool_schema("Include source snippets.")
+                },
+                "required": ["query"]
+            }),
+        ),
+        tool(
             "linehash_doctor",
             "Recommend the safest linehash workflow for a file.",
             json!({
@@ -904,6 +923,33 @@ fn tool_definitions() -> Vec<Value> {
                     "dry_run": bool_schema("Preview without writing.")
                 },
                 "required": ["dir", "out"]
+            }),
+        ),
+        tool(
+            "linehash_map",
+            "Map directory tree with estimated token counts. Useful for understanding codebase structure and size.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "scope": string_schema("Root directory to map. Defaults to current directory."),
+                    "depth": integer_schema("Maximum directory depth to traverse."),
+                    "budget": integer_schema("Maximum total tokens before truncation."),
+                    "json": bool_schema("Output in JSON format.")
+                }
+            }),
+        ),
+        tool(
+            "linehash_callees",
+            "Find functions called by a given symbol using BFS call graph traversal.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "target": string_schema("Symbol name to find callees of."),
+                    "scope": string_schema("Directory to search within. Defaults to current directory."),
+                    "depth": integer_schema("Maximum BFS depth to traverse. Default: 3."),
+                    "json": bool_schema("Output in JSON format.")
+                },
+                "required": ["target"]
             }),
         ),
     ]

@@ -5,7 +5,9 @@ mod context;
 mod document;
 mod error;
 mod hash;
+mod index;
 mod install;
+mod lang;
 mod mcp;
 mod mutation;
 mod orchestration;
@@ -28,7 +30,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
 use crate::cli::{Cli, Commands};
-use crate::context::{CommandContext, output_mode_for};
+use crate::context::{CommandContext, SearchDocCache, output_mode_for};
 use crate::error::LinehashError;
 use crate::orchestration::command_name;
 use crate::risk::assess_command;
@@ -84,7 +86,12 @@ fn main() {
             } else {
                 warn!(%error, "command rejected");
             }
-            let mut context = CommandContext::new(&mut stdout, &mut stderr, output_mode);
+            let mut context = CommandContext::new(
+                &mut stdout,
+                &mut stderr,
+                output_mode,
+                SearchDocCache::new(64),
+            );
             let _ = output::write_error(&mut context, &error);
             1
         }
@@ -239,7 +246,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
             "destructive command risk assessed"
         );
     }
-    let mut context = CommandContext::new(stdout, stderr, output_mode);
+    let mut context = CommandContext::new(stdout, stderr, output_mode, SearchDocCache::new(64));
 
     match command {
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
@@ -266,6 +273,12 @@ pub(crate) fn run_command<W: Write, E: Write>(
         }
         Commands::Explode(cmd) => commands::explode::run(&mut context, cmd).map(|_| 0),
         Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
+        Commands::Map(cmd) => commands::map::run(&mut context, cmd).map(|_| 0),
+        Commands::Outline(cmd) => commands::outline::run(&mut context, cmd).map(|_| 0),
+        Commands::Symbol(cmd) => commands::symbol::run(&mut context, cmd).map(|_| 0),
+        Commands::Callers(cmd) => commands::callers::run(&mut context, cmd).map(|_| 0),
+        Commands::Callees(cmd) => commands::callees::run(&mut context, cmd).map(|_| 0),
+        Commands::Deps(cmd) => commands::deps::run(&mut context, cmd).map(|_| 0),
         Commands::InstallMcp(_) => unreachable!("install-mcp is handled before command dispatch"),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
         #[cfg(unix)]
@@ -315,6 +328,7 @@ mod tests {
                 &mut sink_out,
                 &mut sink_err,
                 crate::context::OutputMode::Pretty,
+                crate::context::SearchDocCache::new(0),
             );
             crate::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;
@@ -354,6 +368,7 @@ mod tests {
                 &mut sink_out,
                 &mut sink_err,
                 crate::context::OutputMode::Json,
+                crate::context::SearchDocCache::new(0),
             );
             crate::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;

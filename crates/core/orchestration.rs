@@ -12,6 +12,7 @@ use crate::anchor::{ResolvedLine, parse_anchor, resolve};
 use crate::cli::Commands;
 use crate::document::{Document, FileStats, LineView, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
+use crate::index::adaptive::search_adaptive;
 use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
 use crate::search::index::IndexBuilder;
@@ -110,6 +111,12 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Implode(_) => "implode",
         Commands::InstallMcp(_) => "install-mcp",
         Commands::Mcp(_) => "mcp",
+        Commands::Map(_) => "map",
+        Commands::Outline(_) => "outline",
+        Commands::Symbol(_) => "symbol",
+        Commands::Callers(_) => "callers",
+        Commands::Callees(_) => "callees",
+        Commands::Deps(_) => "deps",
         Commands::Daemon => "daemon",
     }
 }
@@ -215,7 +222,47 @@ pub fn grep_lines(
     case_insensitive: bool,
 ) -> Result<Vec<LineView>, LinehashError> {
     if !case_insensitive && !contains_regex_metacharacters(pattern) {
-        return grep_lines_fast(doc, pattern, invert);
+        // Build line_offsets and full_content for adaptive search
+        let mut line_offsets = Vec::with_capacity(doc.lines.len() + 1);
+        line_offsets.push(0);
+        let mut offset = 0;
+        for line in &doc.lines {
+            offset += line.content.len() + 1; // +1 for newline
+            line_offsets.push(offset);
+        }
+        let full_content = doc
+            .lines
+            .iter()
+            .map(|l| l.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let results = search_adaptive(pattern, case_insensitive, &line_offsets, &full_content);
+
+        // Apply invert to results
+        let matched_lines: std::collections::HashSet<usize> =
+            results.iter().map(|r| r.line_idx).collect();
+
+        let filtered: Vec<LineView> = doc
+            .lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let is_match = matched_lines.contains(&index);
+                let include = if invert { !is_match } else { is_match };
+                if include {
+                    Some(LineView {
+                        n: index + 1,
+                        hash: format_short_hash(line.short_hash),
+                        content: line.content.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        return Ok(filtered);
     }
 
     let regex = RegexBuilder::new(pattern)
