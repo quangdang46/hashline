@@ -75,6 +75,8 @@ pub struct Document {
     pub lines: Vec<LineRecord>,
     pub content_len: usize,
     pub file_meta: Option<FileMeta>,
+    #[doc(hidden)]
+    pub short_hash_index: Option<ShortHashIndex>,
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +196,7 @@ impl Document {
                 lines: Vec::new(),
                 content_len: 0,
                 file_meta: Some(FileMeta::from_metadata(&metadata)?),
+                short_hash_index: None,
             });
         }
 
@@ -219,6 +222,7 @@ impl Document {
             lines,
             content_len,
             file_meta,
+            short_hash_index: None,
         })
     }
 
@@ -233,12 +237,23 @@ impl Document {
             lines,
             content_len,
             file_meta: None,
+            short_hash_index: None,
         })
     }
 
     pub fn build_index(&self) -> ShortHashIndex {
         let counts = count_short_hashes(&self.lines);
         build_index_from_counts(&self.lines, &counts)
+    }
+
+    /// Build and cache index, returning cached reference.
+    /// Call this on a &mut Document to populate the cache for future calls.
+    pub fn build_index_cached(doc: &mut Document) -> &ShortHashIndex {
+        if doc.short_hash_index.is_none() {
+            let counts = count_short_hashes(&doc.lines);
+            doc.short_hash_index = Some(build_index_from_counts(&doc.lines, &counts));
+        }
+        doc.short_hash_index.as_ref().unwrap()
     }
 
     pub fn render(&self) -> Vec<u8> {
@@ -461,7 +476,7 @@ fn empty_index() -> ShortHashIndex {
     vec![Vec::new(); 256]
 }
 
-fn count_short_hashes(lines: &[LineRecord]) -> [usize; 256] {
+pub fn count_short_hashes(lines: &[LineRecord]) -> [usize; 256] {
     let mut counts = [0; 256];
     for line in lines {
         counts[line.short_hash as usize] += 1;
@@ -469,7 +484,7 @@ fn count_short_hashes(lines: &[LineRecord]) -> [usize; 256] {
     counts
 }
 
-fn build_index_from_counts(lines: &[LineRecord], counts: &[usize; 256]) -> ShortHashIndex {
+pub fn build_index_from_counts(lines: &[LineRecord], counts: &[usize; 256]) -> ShortHashIndex {
     let mut index = empty_index();
     for (bucket, count) in counts.iter().enumerate() {
         if *count > 0 {

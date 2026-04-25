@@ -137,15 +137,21 @@ pub fn watch_capabilities_payload() -> WatchCapabilitiesPayload {
 }
 
 pub fn resolve_read_anchors(
-    doc: &Document,
+    doc: &mut Document,
     anchors: &[String],
 ) -> Result<Vec<ResolvedLine>, LinehashError> {
-    let index = doc.build_index();
+    let index = if let Some(ref cached) = doc.short_hash_index {
+        cached
+    } else {
+        let counts = count_short_hashes(&doc.lines);
+        doc.short_hash_index = Some(build_index_from_counts(&doc.lines, &counts));
+        doc.short_hash_index.as_ref().unwrap()
+    };
     anchors
         .iter()
         .map(|anchor| {
             let parsed = parse_anchor(anchor)?;
-            resolve(&parsed, doc, &index)
+            resolve(&parsed, doc, index)
         })
         .collect()
 }

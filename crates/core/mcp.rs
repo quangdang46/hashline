@@ -54,7 +54,8 @@ impl SessionState {
         let needs_refresh = self.docs.get(&key).is_none_or(|entry| entry.meta != meta);
 
         if needs_refresh {
-            let doc = Document::load(path).map_err(command_error)?;
+            let mut doc = Document::load(path).map_err(command_error)?;
+            Document::build_index_cached(&mut doc);  // Pre-populate cache
             self.docs.insert(
                 key.clone(),
                 CacheEntry {

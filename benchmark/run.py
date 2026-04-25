@@ -18,7 +18,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import MODELS, MODES, SYSTEM_PROMPT, DEFAULT_MAX_BUDGET_USD, SYNTHETIC_REPO, RESULTS_DIR, DEFAULT_REPS, PRICING
+from config import MODELS, MODES, REPOS, SYSTEM_PROMPT, DEFAULT_MAX_BUDGET_USD, SYNTHETIC_REPO, RESULTS_DIR, DEFAULT_REPS, PRICING
 from parse import parse_stream_json, tool_call_counts
 from tasks import TASKS
 
@@ -33,6 +33,13 @@ def get_linehash_version() -> Optional[str]:
         return result.stdout.strip() if result.returncode == 0 else None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
+
+
+def get_repo_path(repo_name: str) -> Path:
+    """Resolve working directory for a task's repo."""
+    if repo_name == "synthetic":
+        return SYNTHETIC_REPO
+    return REPOS[repo_name].path
 
 
 def _compact_tool_sequence(result):
@@ -66,15 +73,12 @@ def run_single(
     Run a single benchmark iteration.
     """
     task = TASKS[task_name]
-    repo_path = SYNTHETIC_REPO
+    repo_path = get_repo_path(task.repo)
     mode = MODES[mode_name]
     model_id = MODELS[model_name]
 
     # Build system prompt based on mode
-    if mode_name == "linehash":
-        system_prompt = SYSTEM_PROMPT["linehash"]
-    else:
-        system_prompt = SYSTEM_PROMPT["baseline"]
+    system_prompt = SYSTEM_PROMPT.get(mode_name, SYSTEM_PROMPT["baseline"])
 
     # Build command
     cmd = [
@@ -90,6 +94,8 @@ def run_single(
 
     if mode.tools:
         cmd += ["--tools", ",".join(mode.tools)]
+    else:
+        cmd += ["--tools", ""]
 
     cmd += ["--", task.prompt]
 
@@ -184,7 +190,8 @@ def main():
         epilog="""
 Examples:
   python run.py --models sonnet --reps 3 --tasks all --modes all
-  python run.py --models sonnet --reps 1 --tasks line_navigation --modes baseline,linehash
+  python run.py --models sonnet --reps 1 --tasks find_definition --modes baseline,linehash
+  python run.py --models sonnet --reps 3 --tasks all --modes all --repos all
         """,
     )
 
@@ -210,6 +217,11 @@ Examples:
         help="Comma-separated mode names or 'all' (default: all)",
     )
     parser.add_argument(
+        "--repos",
+        default="synthetic",
+        help="Comma-separated repo names or 'all' (default: synthetic)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print detailed output for debugging",
@@ -225,13 +237,40 @@ Examples:
         parser.error(str(e))
         return
 
-    # Validate synthetic repo exists
-    if not SYNTHETIC_REPO.exists():
-        print("ERROR: Synthetic repo not found.")
-        print(f"Expected at: {SYNTHETIC_REPO}")
-        print("Run setup.py to create the test repository:")
-        print("  python benchmark/fixtures/setup.py")
-        sys.exit(1)
+    # Filter tasks by repo
+    if args.repos.lower() != "all":
+        requested_repos = set(r.strip() for r in args.repos.split(",") if r.strip())
+        tasks_list = [t for t in tasks_list if TASKS[t].repo in requested_repos]
+        if not tasks_list:
+            parser.error(f"No tasks found for repos: {args.repos}")
+
+    # Validate synthetic repo exists (only if synthetic tasks are selected)
+    if "synthetic" in set(TASKS[t].repo for t in tasks_list):
+        if not SYNTHETIC_REPO.exists():
+            print("ERROR: Synthetic repo not found.")
+            print(f"Expected at: {SYNTHETIC_REPO}")
+            print("Run setup.py to create the test repository:")
+            print("  python benchmark/fixtures/setup.py")
+            sys.exit(1)
+
+    # Validate real-world repos exist (for selected tasks)
+    selected_repos = set(TASKS[t].repo for t in tasks_list) - {"synthetic"}
+    for repo_name in selected_repos:
+        repo_path = REPOS[repo_name].path
+        if not repo_path.exists():
+            print(f"ERROR: Repo '{repo_name}' not found.")
+            print(f"Expected at: {repo_path}")
+            print("Run setup_repos.py to clone repositories:")
+            print("  python benchmark/fixtures/setup_repos.py --repos all")
+            sys.exit(1)
+
+    # Clean repos before starting
+    for repo_name in selected_repos:
+        repo_path = REPOS[repo_name].path
+        from fixtures.reset import ensure_repo_clean
+        ensure_repo_clean(repo_path, REPOS[repo_name].commit_sha)
+        if args.verbose:
+            print(f"Cleaned repo: {repo_name}")
 
     RESULTS_DIR.mkdir(exist_ok=True)
 
@@ -245,6 +284,8 @@ Examples:
     print(f"Models:      {', '.join(models)}")
     print(f"Tasks:       {', '.join(tasks_list)}")
     print(f"Modes:       {', '.join(modes)}")
+    repos_used = sorted(set(TASKS[t].repo for t in tasks_list))
+    print(f"Repos:       {', '.join(repos_used)}")
     print(f"Repetitions: {args.reps}")
     print(f"Output:      {output_file}")
     print("=" * 70)
@@ -264,8 +305,13 @@ Examples:
                         run_id = f"{task_name}/{mode_name}/{model_name}/rep{rep}"
 
                         # Reset repo before each run
-                        subprocess.run(["git", "checkout", "--", "."], cwd=str(SYNTHETIC_REPO), capture_output=True)
-                        subprocess.run(["git", "clean", "-fd"], cwd=str(SYNTHETIC_REPO), capture_output=True)
+                        repo_path = get_repo_path(task.repo)
+                        if task.repo == "synthetic":
+                            subprocess.run(["git", "checkout", "--", "."], cwd=str(SYNTHETIC_REPO), capture_output=True)
+                            subprocess.run(["git", "clean", "-fd"], cwd=str(SYNTHETIC_REPO), capture_output=True)
+                        else:
+                            from fixtures.reset import ensure_repo_clean
+                            ensure_repo_clean(repo_path, REPOS[task.repo].commit_sha)
 
                         print(f"[{current_run}/{total_runs}] {run_id}")
 
@@ -324,6 +370,12 @@ Examples:
                             }
                             f.write(json.dumps(error_result) + "\n")
                             f.flush()
+
+    # Clean repos after run
+    for repo_name in selected_repos:
+        repo_path = REPOS[repo_name].path
+        from fixtures.reset import ensure_repo_clean
+        ensure_repo_clean(repo_path, REPOS[repo_name].commit_sha)
 
     print()
     print("=" * 70)

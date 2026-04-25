@@ -1,5 +1,3 @@
-"""Base task class for linehash benchmarks."""
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import subprocess
@@ -8,7 +6,7 @@ from pathlib import Path
 
 @dataclass
 class Mutation:
-    """A single file mutation: replace `original` with `mutated`."""
+    """A single file mutation: replace `original` with `mutated` to introduce a bug."""
     file_path: str
     original: str
     mutated: str
@@ -21,6 +19,7 @@ class GroundTruth:
     forbidden_strings: list[str] = field(default_factory=lambda: [
         "I cannot", "I don't have access", "no such file",
     ])
+    # For forward-edit tasks only (no mutations):
     file_path: str = ""
     expected_diff_contains: list[str] = field(default_factory=list)
 
@@ -44,14 +43,26 @@ class Task(ABC):
 
     @property
     def repo(self) -> str:
+        """Repository this task targets. Default: synthetic."""
         return "synthetic"
 
     @property
     def mutations(self) -> list[Mutation]:
+        """Mutations to apply before the agent runs. Empty for non-mutation tasks."""
+        return []
+
+    @property
+    def test_command(self) -> list[str]:
+        """Command to validate the fix. Empty = no test-based validation."""
         return []
 
     def apply_mutations(self, repo_path: str) -> None:
-        """Apply all mutations to the repo and commit them."""
+        """Apply all mutations to the repo and commit them.
+
+        Committing makes the benchmark realistic — real bugs are committed code.
+        The agent can discover them via git log/diff, and after fixing, git diff
+        shows a real diff (no 'matches HEAD' confusion).
+        """
         for m in self.mutations:
             fp = Path(repo_path) / m.file_path
             content = fp.read_text()
@@ -70,6 +81,7 @@ class Task(ABC):
             "GIT_COMMITTER_NAME": "dev",
             "GIT_COMMITTER_EMAIL": "dev@test.com",
         }
+        import os
         env = {**os.environ, **git_env}
         subprocess.run(
             ["git", "add"] + mutated_files,
@@ -84,7 +96,7 @@ class Task(ABC):
         """Validate result against ground truth."""
         gt = self.ground_truth
 
-        # Mutation tasks with a test command: run the test
+        # Mutation tasks with a test command: run the test. That's the source of truth.
         if self.mutations and self.test_command:
             result = subprocess.run(
                 self.test_command,
@@ -95,7 +107,7 @@ class Task(ABC):
                 return False, f"Test failed: {self.test_command[-1]}"
             return True, "Test passed"
 
-        # Forward-edit tasks: check git diff for expected patterns
+        # Forward-edit tasks: check git diff for expected patterns.
         diff = ""
         if self.task_type == "edit" and gt.file_path:
             result = subprocess.run(
@@ -110,7 +122,7 @@ class Task(ABC):
                     if pattern not in diff:
                         return False, f"Diff missing: {pattern}"
 
-        # Read tasks / forward-edit tasks: check required_strings in response + diff
+        # Read tasks / forward-edit tasks: check required_strings in response + diff.
         combined = (result_text + "\n" + diff).replace("`", "")
         text_lower = combined.lower()
 
@@ -123,7 +135,3 @@ class Task(ABC):
                 return False, f"Contains forbidden: {forbidden}"
 
         return True, "All checks passed"
-
-    @property
-    def test_command(self) -> list[str]:
-        return []

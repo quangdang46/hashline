@@ -3,3 +3,7 @@
 
 # Rust build artifacts
 target/
+.omc/
+__pycache__/
+references/
+*.md
