@@ -55,7 +55,7 @@ impl SessionState {
 
         if needs_refresh {
             let mut doc = Document::load(path).map_err(command_error)?;
-            Document::build_index_cached(&mut doc);  // Pre-populate cache
+            Document::build_index_cached(&mut doc); // Pre-populate cache
             self.docs.insert(
                 key.clone(),
                 CacheEntry {
