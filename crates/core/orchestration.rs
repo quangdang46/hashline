@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::anchor::{ResolvedLine, parse_anchor, resolve};
 use crate::cli::Commands;
-use crate::document::{Document, FileStats, LineView, NewlineStyle, format_short_hash};
+use crate::document::{
+    Document, FileStats, LineView, NewlineStyle, ShortHashIndex, build_index_from_counts,
+    count_short_hashes, format_short_hash,
+};
 use crate::error::LinehashError;
 use crate::index::adaptive::search_adaptive;
 use crate::search::cache::SharedIndexCache;
@@ -136,16 +139,25 @@ pub fn watch_capabilities_payload() -> WatchCapabilitiesPayload {
     }
 }
 
+/// Resolve anchors against `doc`.
+///
+/// Uses the cached short-hash index on `doc` when available; otherwise
+/// builds a throwaway index for this call without mutating the document.
+/// Callers that want the index cached should populate it first via
+/// [`Document::build_index_cached`].
 pub fn resolve_read_anchors(
-    doc: &mut Document,
+    doc: &Document,
     anchors: &[String],
 ) -> Result<Vec<ResolvedLine>, LinehashError> {
-    let index = if let Some(ref cached) = doc.short_hash_index {
-        cached
-    } else {
+    let owned: Option<ShortHashIndex> = if doc.short_hash_index.is_none() {
         let counts = count_short_hashes(&doc.lines);
-        doc.short_hash_index = Some(build_index_from_counts(&doc.lines, &counts));
-        doc.short_hash_index.as_ref().unwrap()
+        Some(build_index_from_counts(&doc.lines, &counts))
+    } else {
+        None
+    };
+    let index: &ShortHashIndex = match doc.short_hash_index.as_ref() {
+        Some(cached) => cached,
+        None => owned.as_ref().expect("owned index built when cache empty"),
     };
     anchors
         .iter()
