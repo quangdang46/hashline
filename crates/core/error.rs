@@ -129,6 +129,16 @@ pub enum LinehashError {
 
     #[error("server error: {message}")]
     ServerError { message: String, kind: String },
+
+    #[error(
+        "outline input '{path}' is too large to parse safely: {actual} {unit} (limit: {limit} {unit})"
+    )]
+    OutlineInputTooLarge {
+        path: String,
+        actual: usize,
+        limit: usize,
+        unit: &'static str,
+    },
 }
 
 impl LinehashError {
@@ -179,6 +189,9 @@ impl LinehashError {
                 Some("rename the file to a supported extension or pass an explicit range instead")
             }
             LinehashError::InvalidPattern { .. } => Some("fix the pattern syntax and try again"),
+            LinehashError::OutlineInputTooLarge { .. } => Some(
+                "use `linehash read --anchor` for a focused view, or run on a smaller file region",
+            ),
             LinehashError::DiffHunkMismatch { .. } => {
                 Some("re-generate the diff from the current file and retry the command")
             }
@@ -248,6 +261,7 @@ impl LinehashError {
             | LinehashError::UnbalancedBlock { .. }
             | LinehashError::AmbiguousBlockLanguage { .. }
             | LinehashError::InvalidPattern { .. }
+            | LinehashError::OutlineInputTooLarge { .. }
             | LinehashError::DiffHunkMismatch { .. }
             | LinehashError::DiffFileMismatch { .. }
             | LinehashError::ExplodeTargetExists { .. }

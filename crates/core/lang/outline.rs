@@ -3,6 +3,26 @@ use std::path::Path;
 
 use crate::lang::detect::Lang;
 
+/// Hard limit on the input size accepted by the outline pipeline (in bytes).
+///
+/// Tree-sitter parses non-source content (binary files, plain text, files with
+/// the wrong extension, etc.) by emitting one ERROR node per byte and running
+/// error recovery, which is roughly O(N^2). A 10K-line plain-text file with a
+/// `.rs` extension used to keep the parser busy for ~91 s; this limit short-
+/// circuits that path before tree-sitter ever sees the content.
+///
+/// 5 MB is large enough to comfortably cover real-world source files (the
+/// largest file in this repo is well under 100 KB) while making the worst
+/// case complete in milliseconds.
+pub const MAX_OUTLINE_INPUT_BYTES: usize = 5 * 1024 * 1024;
+
+/// Hard limit on the input size accepted by the outline pipeline (in lines).
+///
+/// Complements [`MAX_OUTLINE_INPUT_BYTES`] for files that are line-heavy but
+/// byte-light (e.g. minified JS or generated code). 50K lines is well above
+/// the practical ceiling for human-authored source files.
+pub const MAX_OUTLINE_INPUT_LINES: usize = 50_000;
+
 /// Kind of outline entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum OutlineKind {
