@@ -678,6 +678,8 @@ mod tests {
             unique_hashes: 10,
             collision_count: 0,
             collision_pairs: vec![],
+            collision_pair_count: 0,
+            collision_pairs_truncated: false,
             estimated_read_tokens: 42,
             hash_length_advice: 2,
             suggested_context_n: 5,

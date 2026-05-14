@@ -239,6 +239,6 @@ mod tests {
     #[test]
     fn test_estimate_tokens() {
         let tokens = estimate_tokens(Path::new("test.rs"), 100);
-        assert!(tokens >= 20 && tokens <= 30);
+        assert!((20..=30).contains(&tokens));
     }
 }

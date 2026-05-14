@@ -29,7 +29,7 @@ impl ZoneMap {
 
         let total_bytes = bytes.len() as u64;
         let line_count = newline_offsets.len().saturating_sub(1);
-        let zone_count = ((total_bytes as usize + ZONE_SIZE_BYTES - 1) / ZONE_SIZE_BYTES).max(1);
+        let zone_count = (total_bytes as usize).div_ceil(ZONE_SIZE_BYTES).max(1);
 
         let mut zones = Vec::with_capacity(zone_count);
 

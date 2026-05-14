@@ -12,10 +12,6 @@ mod hash;
 mod index;
 #[path = "../lang/mod.rs"]
 mod lang;
-#[path = "../lang/detect.rs"]
-mod lang_detect;
-#[path = "../lang/outline.rs"]
-mod lang_outline;
 mod support;
 
 use index::adaptive::{PatternType, SearchResult, classify_pattern, search_adaptive};

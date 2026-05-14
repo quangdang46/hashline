@@ -1,15 +1,13 @@
+// Language-aware analysis scaffolding. Most items here are public surface
+// for the new callgraph / deps / symbol pipeline that has not yet been wired
+// into the CLI / MCP entry points. They are kept here so the benchmark
+// suite (which compiles each module via `#[path = "..."]`) can exercise
+// them and so callers can opt in incrementally.
+#![allow(dead_code)]
+
 pub mod callgraph;
 pub mod deps;
 pub mod detect;
 pub mod outline;
 pub mod signature;
 pub mod symbol;
-
-pub use callgraph::{
-    AUTO_HUB_THRESHOLD, CallEdge, CallGraphResult, SUSPICION_RATIO, search_callees_bfs,
-    search_callers_bfs,
-};
-pub use deps::{DepsResult, ImportEntry, ImportKind, extract_imports};
-pub use detect::{Lang, detect_language_from_path};
-pub use outline::{OutlineEntry, OutlineKind, get_outline_entries};
-pub use symbol::{SymbolKind, SymbolOccurrence, SymbolResult, extract_symbols};
