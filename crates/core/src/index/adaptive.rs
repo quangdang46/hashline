@@ -1,9 +1,7 @@
 use regex::bytes;
 
-use super::token::LineBitSet;
 use super::trigram::{Trigram, TrigramIndex};
 use memchr::memchr;
-use std::sync::Arc;
 
 /// Classification of a search pattern for optimal dispatch.
 #[derive(Debug, Clone)]
@@ -121,7 +119,7 @@ fn search_single_byte(b: u8, line_offsets: &[usize], content: &str) -> Vec<Searc
             results.push(SearchResult {
                 line_idx: i,
                 line_text: content[start..end]
-                    .trim_end_matches(|c| c == '\n' || c == '\r')
+                    .trim_end_matches(['\n', '\r'])
                     .to_string(),
             });
         }
@@ -149,7 +147,7 @@ fn search_literal(lit: &str, line_offsets: &[usize], content: &str) -> Vec<Searc
             results.push(SearchResult {
                 line_idx: i,
                 line_text: content[start..end]
-                    .trim_end_matches(|c| c == '\n' || c == '\r')
+                    .trim_end_matches(['\n', '\r'])
                     .to_string(),
             });
         }
@@ -178,7 +176,7 @@ fn search_multi_literal(
             results.push(SearchResult {
                 line_idx: i,
                 line_text: content[start..end]
-                    .trim_end_matches(|c| c == '\n' || c == '\r')
+                    .trim_end_matches(['\n', '\r'])
                     .to_string(),
             });
         }
@@ -220,7 +218,7 @@ fn search_regex_fallback(
             results.push(SearchResult {
                 line_idx,
                 line_text: content[start..end.min(content.len())]
-                    .trim_end_matches(|c| c == '\n' || c == '\r')
+                    .trim_end_matches(['\n', '\r'])
                     .to_string(),
             });
         }

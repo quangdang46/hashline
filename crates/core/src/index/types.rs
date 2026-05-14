@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 #[derive(Debug, Clone)]
 pub struct IndexStats {
     pub line_count: usize,

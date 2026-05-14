@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use fixedbitset::FixedBitSet;
-
 use super::token::LineBitSet;
 
 /// A trigram is 3 bytes packed into a u32.
@@ -54,7 +52,7 @@ impl TrigramIndex {
         for (line_idx, windows) in line_offsets.windows(2).enumerate() {
             let start = windows[0];
             let end = windows[1].min(content.len());
-            let line_bytes = content[start..end].as_bytes();
+            let line_bytes = &content.as_bytes()[start..end];
 
             for tri in Trigram::from_slice(line_bytes) {
                 let bs = trigrams

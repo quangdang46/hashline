@@ -3,7 +3,7 @@ use std::io::Write;
 use crate::anchor::{parse_anchor, resolve};
 use crate::cli::{MoveCmd, MoveDirection};
 use crate::commands::common::{atomic_write, check_guard};
-use crate::context::{CommandContext, SearchDocCache};
+use crate::context::CommandContext;
 use crate::document::Document;
 use crate::error::LinehashError;
 use crate::mutation::move_line;
