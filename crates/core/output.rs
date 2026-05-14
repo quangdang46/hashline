@@ -121,7 +121,7 @@ pub fn print_stats(writer: &mut impl Write, stats: &FileStats) -> io::Result<()>
     writeln!(writer, "Lines: {}", stats.line_count)?;
     writeln!(writer, "Unique hashes (2-char): {}", stats.unique_hashes)?;
     writeln!(writer, "Collisions: {}", stats.collision_count)?;
-    writeln!(writer, "Collision pairs: {}", stats.collision_pairs.len())?;
+    writeln!(writer, "Collision pairs: {}", stats.collision_pair_count)?;
     writeln!(writer, "Est. read tokens: ~{}", stats.estimated_read_tokens)?;
     writeln!(
         writer,
@@ -469,6 +469,8 @@ mod tests {
             unique_hashes: 3,
             collision_count: 0,
             collision_pairs: vec![],
+            collision_pair_count: 0,
+            collision_pairs_truncated: false,
             estimated_read_tokens: 12,
             hash_length_advice: 2,
             suggested_context_n: 5,
@@ -526,6 +528,8 @@ mod tests {
             unique_hashes: 1,
             collision_count: 0,
             collision_pairs: vec![],
+            collision_pair_count: 0,
+            collision_pairs_truncated: false,
             estimated_read_tokens: 2,
             hash_length_advice: 2,
             suggested_context_n: 5,

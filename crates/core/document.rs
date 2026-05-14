@@ -52,12 +52,31 @@ pub struct LineRecord {
     pub short_hash: ShortHash,
 }
 
+/// Hard cap on the number of collision pairs surfaced through
+/// [`FileStats::collision_pairs`]. The total pair count grows as O(N²)
+/// inside a single short-hash bucket, so on files with many duplicate lines
+/// it can balloon into the billions and dominate `stats` latency for no
+/// downstream benefit. The total count is always reported via
+/// [`FileStats::collision_pair_count`].
+pub const COLLISION_PAIRS_SAMPLE_CAP: usize = 1024;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct FileStats {
     pub line_count: usize,
     pub unique_hashes: usize,
     pub collision_count: usize,
+    /// A bounded sample of collision pairs (1-indexed line numbers) suitable
+    /// for surfacing examples to the user. Capped at
+    /// [`COLLISION_PAIRS_SAMPLE_CAP`] entries; see
+    /// [`FileStats::collision_pair_count`] for the true total.
     pub collision_pairs: Vec<(usize, usize)>,
+    /// True total number of unordered collision pairs across all short-hash
+    /// buckets, computed in closed form (Σ |b|*(|b|-1)/2). May exceed
+    /// `collision_pairs.len()`.
+    pub collision_pair_count: u64,
+    /// Set to `true` when [`FileStats::collision_pairs`] is a truncated
+    /// sample (i.e. there are more collision pairs than the sample cap).
+    pub collision_pairs_truncated: bool,
     pub estimated_read_tokens: usize,
     pub hash_length_advice: u8,
     pub suggested_context_n: usize,
@@ -285,8 +304,10 @@ impl Document {
     pub fn compute_stats(&self) -> FileStats {
         let bucket_counts = count_short_hashes(&self.lines);
         let index = build_index_from_counts(&self.lines, &bucket_counts);
-        let mut collision_pairs = collect_collision_pairs(&index);
+        let (mut collision_pairs, collision_pair_count) =
+            collect_collision_pairs_sample(&index, COLLISION_PAIRS_SAMPLE_CAP);
         collision_pairs.sort_unstable();
+        let collision_pairs_truncated = collision_pair_count > collision_pairs.len() as u64;
         let (unique_hashes, collision_count) = summarize_bucket_counts(&bucket_counts);
 
         let estimated_read_tokens = estimate_read_tokens(self);
@@ -308,6 +329,8 @@ impl Document {
             unique_hashes,
             collision_count,
             collision_pairs,
+            collision_pair_count,
+            collision_pairs_truncated,
             estimated_read_tokens,
             hash_length_advice,
             suggested_context_n,
@@ -516,23 +539,43 @@ fn summarize_bucket_counts(counts: &[usize; 256]) -> (usize, usize) {
     (unique_hashes, collision_count)
 }
 
-fn collect_collision_pairs(index: &ShortHashIndex) -> Vec<(usize, usize)> {
-    let capacity = index
-        .iter()
-        .filter(|positions| positions.len() >= 2)
-        .map(|positions| positions.len() * (positions.len() - 1) / 2)
-        .sum();
-    let mut pairs = Vec::with_capacity(capacity);
+/// Walk the short-hash index and return:
+///
+/// * the **true total** number of unordered collision pairs, computed via the
+///   closed-form sum `Σ |b| * (|b| - 1) / 2` over each bucket. This is
+///   `O(unique buckets)` and never materialises the cross-product.
+/// * a bounded **sample** of those pairs (capped at `sample_cap`) for
+///   surfacing examples to the user.
+///
+/// The previous implementation materialised every pair just to call `.len()`
+/// on the result, which is O(N²) in the worst case (one bucket with all
+/// lines) and made `stats` unusable on files with many duplicate lines
+/// (e.g. a 500K-line file of repeated blanks took ~24 s; with this change
+/// it returns in tens of milliseconds).
+fn collect_collision_pairs_sample(
+    index: &ShortHashIndex,
+    sample_cap: usize,
+) -> (Vec<(usize, usize)>, u64) {
+    let mut total: u64 = 0;
+    let mut sample: Vec<(usize, usize)> = Vec::new();
 
     for positions in index.iter().filter(|positions| positions.len() >= 2) {
-        for left in 0..positions.len() {
-            for right in left + 1..positions.len() {
-                pairs.push((positions[left] + 1, positions[right] + 1));
+        let n = positions.len() as u64;
+        total = total.saturating_add(n * (n - 1) / 2);
+
+        if sample.len() < sample_cap {
+            'outer: for left in 0..positions.len() {
+                for right in left + 1..positions.len() {
+                    sample.push((positions[left] + 1, positions[right] + 1));
+                    if sample.len() >= sample_cap {
+                        break 'outer;
+                    }
+                }
             }
         }
     }
 
-    pairs
+    (sample, total)
 }
 
 fn estimate_read_tokens(doc: &Document) -> usize {
@@ -862,6 +905,8 @@ mod tests {
                 unique_hashes: 0,
                 collision_count: 0,
                 collision_pairs: vec![],
+                collision_pair_count: 0,
+                collision_pairs_truncated: false,
                 estimated_read_tokens: 0,
                 hash_length_advice: 2,
                 suggested_context_n: 5,
