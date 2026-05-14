@@ -1,7 +1,7 @@
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::lang::detect::{Lang, detect_language_from_path};
+use crate::lang::detect::Lang;
 
 /// Kind of symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -81,7 +81,7 @@ pub fn extract_symbols(text: &str, lang: Lang, path: &Path) -> Vec<SymbolOccurre
                     .unwrap_or(def);
                 if !name.is_empty() {
                     symbols.push(SymbolOccurrence {
-                        kind: kind.clone(),
+                        kind: *kind,
                         name: name.to_string(),
                         file: path.to_string_lossy().into_owned(),
                         line: line_idx + 1,

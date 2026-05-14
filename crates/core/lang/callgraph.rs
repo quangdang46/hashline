@@ -155,8 +155,8 @@ fn extract_function_definitions(root: tree_sitter::Node) -> Vec<FuncDef> {
 
 fn collect_fn_defs(
     node: tree_sitter::Node,
-    cursor: &mut tree_sitter::TreeCursor,
-    depth: usize,
+    _cursor: &mut tree_sitter::TreeCursor,
+    _depth: usize,
     funcs: &mut Vec<FuncDef>,
 ) {
     let kind = node.kind();
@@ -182,7 +182,7 @@ fn collect_fn_defs(
 
     // Search children for nested functions
     for child in node.children(&mut node.walk()) {
-        collect_fn_defs(child, &mut node.walk(), depth + 1, funcs);
+        collect_fn_defs(child, &mut node.walk(), _depth + 1, funcs);
     }
 }
 
@@ -203,7 +203,7 @@ fn find_call_sites(root: tree_sitter::Node, target: &str) -> Vec<CallSite> {
 
 fn find_calls(
     node: tree_sitter::Node,
-    cursor: &mut tree_sitter::TreeCursor,
+    _cursor: &mut tree_sitter::TreeCursor,
     target: &str,
     calls: &mut Vec<CallSite>,
 ) {
@@ -392,7 +392,7 @@ fn find_calls_in_function(
 
 fn find_calls_in_range(
     node: tree_sitter::Node,
-    cursor: &mut tree_sitter::TreeCursor,
+    _cursor: &mut tree_sitter::TreeCursor,
     start: usize,
     end: usize,
     calls: &mut Vec<CallSite>,
@@ -494,7 +494,7 @@ fn extract_function_call_naive(line: &str) -> Option<String> {
         let before = &trimmed[..i];
         let name = before
             .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .last()
+            .next_back()
             .unwrap_or("");
         if !name.is_empty() && name.len() > 1 {
             let keywords = [

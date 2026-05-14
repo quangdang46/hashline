@@ -35,9 +35,9 @@ pub fn run<W: Write, E: Write>(
         let file_meta = fs::metadata(&cmd.file)?;
         let mtime = file_meta
             .modified()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            .map_err(std::io::Error::other)?
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+            .map_err(std::io::Error::other)?
             .as_secs();
         let size = file_meta.len();
         let content_bytes = fs::read(&cmd.file)?;

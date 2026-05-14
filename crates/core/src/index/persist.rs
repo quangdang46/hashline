@@ -98,8 +98,8 @@ pub fn read_index(path: &std::path::Path) -> std::io::Result<(TokenIndex, Trigra
 
         let word_count = read_u32(&mut reader)? as usize;
         let mut words = vec![0u32; word_count];
-        for i in 0..word_count {
-            words[i] = read_u32(&mut reader)?;
+        for slot in words.iter_mut() {
+            *slot = read_u32(&mut reader)?;
         }
         let bitset = FixedBitSet::with_capacity_and_blocks(line_count, words.clone());
         tokens.insert(token_str, Arc::new(bitset));
@@ -115,8 +115,8 @@ pub fn read_index(path: &std::path::Path) -> std::io::Result<(TokenIndex, Trigra
         reader.read_exact(&mut tri_bytes)?;
 
         let mut words = vec![0u32; word_count];
-        for i in 0..word_count {
-            words[i] = read_u32(&mut reader)?;
+        for slot in words.iter_mut() {
+            *slot = read_u32(&mut reader)?;
         }
         let bitset = FixedBitSet::with_capacity_and_blocks(line_count, words.clone());
         trigrams.insert(Trigram(tri_bytes), Arc::new(bitset));

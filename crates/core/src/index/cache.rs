@@ -1,6 +1,6 @@
 use lru::LruCache;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::token::TokenIndex;
 use super::trigram::TrigramIndex;
@@ -38,9 +38,7 @@ impl IndexCache {
         size: u64,
         content_hash: u64,
     ) -> Option<IndexCacheEntry> {
-        let Some(entry) = self.inner.get(path) else {
-            return None;
-        };
+        let entry = self.inner.get(path)?;
 
         if entry.mtime != mtime || entry.size != size || entry.content_hash != content_hash {
             self.inner.pop(&path.to_string());
