@@ -94,6 +94,132 @@ pub fn print_read_json(
     serialize_json(writer, payload, style)
 }
 
+/// Borrowed counterpart of [`LineView`] for zero-clone serialization paths.
+///
+/// `LineView` owns `String`s for `hash` and `content`, which forces a
+/// per-line allocation when building [`ReadPayload`] from a [`Document`].
+/// On large files this allocation dominates the `read --json` and
+/// `read --ndjson` paths. This struct lets us serialize directly from
+/// `&LineRecord` slices.
+#[derive(Serialize)]
+struct LineViewRef<'a> {
+    n: usize,
+    hash: &'a str,
+    content: &'a str,
+}
+
+/// Streaming variant of [`print_read_json`] used when the caller wants the
+/// entire document (no anchor filter, no context window). Bypasses
+/// `ReadPayload`'s `Vec<LineView>` allocation by serializing each line
+/// straight from `&doc.lines`, which is the dominant cost on large files.
+///
+/// Only the compact JSON style is streamed; the pretty path falls back to
+/// the buffered serializer since pretty output is only requested for human
+/// inspection of small files.
+pub fn print_read_json_streaming(
+    writer: &mut impl Write,
+    doc: &Document,
+    style: JsonStyle,
+) -> io::Result<()> {
+    if style == JsonStyle::Pretty {
+        // Pretty output is requested only for human inspection. Build a
+        // full payload and let serde_json::to_writer_pretty do the work.
+        let payload = crate::orchestration::read_payload(doc, &[], 0)
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        return serialize_json(writer, &payload, style);
+    }
+
+    let file = doc.path.display().to_string();
+    let newline = newline_name(doc.newline);
+    let (mtime, mtime_nanos, inode) = doc
+        .file_meta
+        .as_ref()
+        .map(|meta| (meta.mtime_secs, meta.mtime_nanos, meta.inode))
+        .unwrap_or((0, 0, 0));
+
+    write!(
+        writer,
+        "{{\"file\":{file},\"newline\":\"{newline}\",\"trailing_newline\":{trailing},\"mtime\":{mtime},\"mtime_nanos\":{mtime_nanos},\"inode\":{inode},\"lines\":[",
+        file = serde_json::to_string(&file).map_err(io::Error::other)?,
+        newline = newline,
+        trailing = doc.trailing_newline,
+    )?;
+
+    let mut hash_buf = [0u8; 2];
+    for (index, line) in doc.lines.iter().enumerate() {
+        if index > 0 {
+            writer.write_all(b",")?;
+        }
+        write_short_hash(&mut hash_buf, line.short_hash);
+        let hash_str = std::str::from_utf8(&hash_buf).expect("short hash is ASCII hex");
+        let view = LineViewRef {
+            n: index + 1,
+            hash: hash_str,
+            content: &line.content,
+        };
+        serde_json::to_writer(&mut *writer, &view)?;
+    }
+
+    writer.write_all(b"]}")?;
+    writeln!(writer)
+}
+
+/// Streaming variant of [`print_read_ndjson`] used when emitting the entire
+/// document. Same zero-clone strategy as `print_read_json_streaming`.
+pub fn print_read_ndjson_streaming(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
+    #[derive(Serialize)]
+    struct ReadHeader<'a> {
+        event: &'static str,
+        file: &'a str,
+        newline: &'a str,
+        trailing_newline: bool,
+        mtime: i64,
+        mtime_nanos: u32,
+        inode: u64,
+        total_lines: usize,
+    }
+
+    let file = doc.path.display().to_string();
+    let (mtime, mtime_nanos, inode) = doc
+        .file_meta
+        .as_ref()
+        .map(|meta| (meta.mtime_secs, meta.mtime_nanos, meta.inode))
+        .unwrap_or((0, 0, 0));
+    let header = ReadHeader {
+        event: "header",
+        file: &file,
+        newline: newline_name(doc.newline),
+        trailing_newline: doc.trailing_newline,
+        mtime,
+        mtime_nanos,
+        inode,
+        total_lines: doc.lines.len(),
+    };
+    serde_json::to_writer(&mut *writer, &header)?;
+    writeln!(writer)?;
+
+    let mut hash_buf = [0u8; 2];
+    for (index, line) in doc.lines.iter().enumerate() {
+        write_short_hash(&mut hash_buf, line.short_hash);
+        let hash_str = std::str::from_utf8(&hash_buf).expect("short hash is ASCII hex");
+        let view = LineViewRef {
+            n: index + 1,
+            hash: hash_str,
+            content: &line.content,
+        };
+        serde_json::to_writer(&mut *writer, &view)?;
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+/// Write `short` as 2-character lowercase hex into `buf`.
+fn write_short_hash(buf: &mut [u8; 2], short: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    buf[0] = HEX[(short >> 4) as usize];
+    buf[1] = HEX[(short & 0x0f) as usize];
+}
+
 pub fn print_read_context(
     writer: &mut impl Write,
     doc: &Document,
@@ -688,6 +814,64 @@ mod tests {
             .join("\n")
             + "\n";
         Document::from_str(Path::new("demo.txt"), &content).unwrap()
+    }
+
+    #[test]
+    fn streaming_read_json_matches_payload_json() {
+        // The streaming path bypasses ReadPayload's Vec<LineView> allocation
+        // and emits JSON byte-by-byte. It must produce semantically identical
+        // JSON to the existing payload-based path or downstream consumers
+        // (MCP clients, jq pipelines, ...) will break silently.
+        use super::print_read_json_streaming;
+
+        let doc = numbered_doc(7);
+
+        let mut streamed = Vec::new();
+        print_read_json_streaming(&mut streamed, &doc, JsonStyle::Compact).unwrap();
+        let streamed_val: serde_json::Value = serde_json::from_slice(&streamed).unwrap();
+
+        let payload = read_payload(&doc, &[], 0).unwrap();
+        let mut payload_bytes = Vec::new();
+        print_read_json(&mut payload_bytes, &payload, JsonStyle::Compact).unwrap();
+        let payload_val: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+
+        assert_eq!(streamed_val, payload_val);
+    }
+
+    #[test]
+    fn streaming_read_json_escapes_special_characters() {
+        // Quote, backslash, newline and unicode in line content must be
+        // escaped per JSON, even though we hand-write the surrounding
+        // wrapper instead of going through serde_json::to_writer for it.
+        use super::print_read_json_streaming;
+
+        let content = "plain\nwith \"quote\" and \\ backslash\ntab\there and é\n";
+        let doc = Document::from_str(Path::new("special.txt"), content).unwrap();
+
+        let mut streamed = Vec::new();
+        print_read_json_streaming(&mut streamed, &doc, JsonStyle::Compact).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&streamed).unwrap();
+        let lines = val["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["content"], "plain");
+        assert_eq!(lines[1]["content"], "with \"quote\" and \\ backslash");
+        assert_eq!(lines[2]["content"], "tab\there and é");
+    }
+
+    #[test]
+    fn streaming_read_ndjson_matches_payload_ndjson() {
+        use super::{print_read_ndjson, print_read_ndjson_streaming};
+
+        let doc = numbered_doc(5);
+
+        let mut streamed = Vec::new();
+        print_read_ndjson_streaming(&mut streamed, &doc).unwrap();
+
+        let payload = read_payload(&doc, &[], 0).unwrap();
+        let mut payload_bytes = Vec::new();
+        print_read_ndjson(&mut payload_bytes, &payload).unwrap();
+
+        assert_eq!(streamed, payload_bytes);
     }
 }
 

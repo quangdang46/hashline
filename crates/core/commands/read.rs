@@ -31,14 +31,25 @@ pub fn run<W: Write, E: Write>(
     match ctx.output_mode() {
         OutputMode::Ndjson => {
             // Tier 1 NDJSON: one header + one object per line, no wrapper.
-            let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
-            output::print_read_ndjson(ctx.stdout(), &payload)?;
+            // When no anchor filter is set we serialize straight from the
+            // Document to skip the Vec<LineView> allocation that would
+            // otherwise clone every line's content + hash into owned strings.
+            if cmd.anchor.is_empty() && cmd.context == 0 {
+                output::print_read_ndjson_streaming(ctx.stdout(), &doc)?;
+            } else {
+                let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+                output::print_read_ndjson(ctx.stdout(), &payload)?;
+            }
             return Ok(());
         }
         OutputMode::Json => {
-            let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
             let style = output::JsonStyle::from_pretty(ctx.json_pretty());
-            output::print_read_json(ctx.stdout(), &payload, style)?;
+            if cmd.anchor.is_empty() && cmd.context == 0 {
+                output::print_read_json_streaming(ctx.stdout(), &doc, style)?;
+            } else {
+                let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+                output::print_read_json(ctx.stdout(), &payload, style)?;
+            }
             return Ok(());
         }
         OutputMode::Pretty => {}
