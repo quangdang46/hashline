@@ -7,7 +7,6 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
 use crate::mutation::insert_line;
-use crate::orchestration::read_payload;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -37,7 +36,7 @@ pub fn run<W: Write, E: Write>(
     };
 
     if cmd.dry_run {
-        return write_dry_run(ctx, &doc, &summary);
+        return write_dry_run(ctx, &cmd.file, &summary);
     }
 
     let after_bytes = doc.render();
@@ -66,7 +65,7 @@ pub fn run<W: Write, E: Write>(
     }
 
     match ctx.output_mode() {
-        OutputMode::Json => Ok(()),
+        OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => {
             output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
         }
@@ -75,13 +74,19 @@ pub fn run<W: Write, E: Write>(
 
 fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
-    doc: &Document,
+    file: &std::path::Path,
     summary: &InsertSummary,
 ) -> Result<(), LinehashError> {
     match ctx.output_mode() {
-        OutputMode::Json => {
-            let payload = read_payload(doc, &[], 0)?;
-            output::print_read_json(ctx.stdout(), &payload).map_err(LinehashError::from)
+        OutputMode::Json | OutputMode::Ndjson => {
+            // PR-D: emit a compact mutation receipt instead of the proposed document.
+            let receipt = receipt::build_dry_run_receipt(
+                "insert",
+                file,
+                summary.dry_run_summary(),
+                summary.line_changes(),
+            );
+            receipt::write_dry_run_receipt(ctx, &receipt)
         }
         OutputMode::Pretty => {
             let relation = if summary.before { "before" } else { "after" };
@@ -108,6 +113,14 @@ struct InsertSummary {
 impl InsertSummary {
     fn success_message(&self) -> String {
         format!("Inserted line {}.", self.inserted_line)
+    }
+
+    fn dry_run_summary(&self) -> String {
+        let relation = if self.before { "before" } else { "after" };
+        format!(
+            "Would insert line {} {relation} line {}.",
+            self.inserted_line, self.anchor_line
+        )
     }
 
     fn line_changes(&self) -> Vec<LineChange> {

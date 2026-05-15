@@ -29,8 +29,9 @@ where
                 imports,
                 imported_by: Vec::new(),
             };
-            serde_json::to_writer_pretty(ctx.stdout(), &result).map_err(LinehashError::Json)?;
-            writeln!(ctx.stdout()).map_err(LinehashError::Io)?;
+            let style = crate::output::JsonStyle::from_pretty(ctx.json_pretty());
+            crate::output::serialize_json(ctx.stdout(), &result, style)
+                .map_err(LinehashError::Io)?;
         } else {
             writeln!(ctx.stdout(), "# Dependencies for {}", file.display())
                 .map_err(LinehashError::Io)?;

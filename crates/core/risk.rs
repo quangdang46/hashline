@@ -159,6 +159,7 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             json: false,
+            pretty: false,
         }))
         .unwrap();
 
@@ -196,6 +197,7 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             json: false,
+            pretty: false,
         }))
         .unwrap();
 

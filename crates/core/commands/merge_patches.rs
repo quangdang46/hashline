@@ -45,7 +45,7 @@ pub fn run<W: Write, E: Write>(
             },
         )
         .map_err(LinehashError::from),
-        OutputMode::Pretty => write_pretty(ctx, &merged_patch, &conflicts),
+        OutputMode::Pretty | OutputMode::Ndjson => write_pretty(ctx, &merged_patch, &conflicts),
     }
 }
 
@@ -248,6 +248,8 @@ fn write_pretty<W: Write, E: Write>(
     merged_patch: &PatchFile,
     conflicts: &[ConflictRecord],
 ) -> Result<(), LinehashError> {
+    // Pretty (text) mode embeds the merged patch JSON as a human-readable block,
+    // so the embedded JSON stays pretty-printed regardless of the global style.
     if conflicts.is_empty() {
         serde_json::to_writer_pretty(ctx.stdout(), merged_patch)?;
         writeln!(ctx.stdout()).map_err(LinehashError::from)

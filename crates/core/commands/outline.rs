@@ -46,8 +46,8 @@ where
     let entries = get_outline_entries(&content, lang);
 
     if cmd.json {
-        let payload = serde_json::to_string_pretty(&entries).map_err(LinehashError::Json)?;
-        writeln!(ctx.stdout(), "{}", payload).map_err(LinehashError::Io)?;
+        let style = crate::output::JsonStyle::from_pretty(ctx.json_pretty());
+        crate::output::serialize_json(ctx.stdout(), &entries, style).map_err(LinehashError::Io)?;
     } else {
         for entry in &entries {
             writeln!(
@@ -79,7 +79,14 @@ mod tests {
             OutputMode::Pretty,
             SearchDocCache::new(1),
         );
-        run(&mut ctx, OutlineCmd { file, json: false })?;
+        run(
+            &mut ctx,
+            OutlineCmd {
+                file,
+                json: false,
+                pretty: false,
+            },
+        )?;
         drop(ctx);
         Ok((stdout, stderr))
     }

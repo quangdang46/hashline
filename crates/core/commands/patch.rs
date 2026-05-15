@@ -12,7 +12,6 @@ use crate::document::{Document, LineRecord};
 use crate::error::LinehashError;
 use crate::hash;
 use crate::mutation::validate_single_line_content;
-use crate::orchestration::read_payload;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -32,7 +31,7 @@ pub fn run<W: Write, E: Write>(
     let result = apply_plan(&original, &plan)?;
 
     if cmd.dry_run {
-        return write_dry_run(ctx, &result.document, &result.summary);
+        return write_dry_run(ctx, &cmd.file, &result.summary, &result.changes);
     }
 
     let after_bytes = result.document.render();
@@ -61,7 +60,7 @@ pub fn run<W: Write, E: Write>(
     }
 
     match ctx.output_mode() {
-        OutputMode::Json => Ok(()),
+        OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => output::write_success_line(ctx, &result.summary.success_message())
             .map_err(LinehashError::from),
     }
@@ -520,13 +519,20 @@ fn build_lines(contents: &[String]) -> Vec<LineRecord> {
 
 fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
-    doc: &Document,
+    file: &std::path::Path,
     summary: &PatchSummary,
+    changes: &[LineChange],
 ) -> Result<(), LinehashError> {
     match ctx.output_mode() {
-        OutputMode::Json => {
-            let payload = read_payload(doc, &[], 0)?;
-            output::print_read_json(ctx.stdout(), &payload).map_err(LinehashError::from)
+        OutputMode::Json | OutputMode::Ndjson => {
+            // PR-D: emit a compact mutation receipt instead of dumping the
+            // entire proposed document.
+            let dry_run_summary = summary
+                .success_message()
+                .replacen("Applied", "Would apply", 1);
+            let receipt =
+                receipt::build_dry_run_receipt("patch", file, dry_run_summary, changes.to_vec());
+            receipt::write_dry_run_receipt(ctx, &receipt)
         }
         OutputMode::Pretty => {
             let dry_run_message = summary

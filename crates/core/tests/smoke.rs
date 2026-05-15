@@ -407,13 +407,25 @@ fn edit_dry_run_reports_change_without_writing_file() {
 }
 
 #[test]
-fn edit_json_dry_run_returns_proposed_document() {
+fn edit_json_dry_run_returns_mutation_receipt() {
+    // PR-D: --dry-run --json now returns a compact mutation receipt, not the
+    // entire proposed document.
     let file = tmpfile("alpha\nbeta\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
     let parsed = parse_json(&["edit", &file_arg, &anchor, "gamma", "--dry-run", "--json"]);
 
-    assert_eq!(parsed["lines"][1]["content"], "gamma");
+    assert_eq!(parsed["op"], "edit");
+    assert_eq!(parsed["dry_run"], true);
+    assert_eq!(parsed["file"], file_arg);
+    let changes = parsed["changes"].as_array().expect("changes is array");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["line_no"], 2);
+    assert_eq!(changes[0]["kind"], "Modified");
+    assert_eq!(changes[0]["before"], "beta");
+    assert_eq!(changes[0]["after"], "gamma");
+    // The full document should NOT be embedded in the receipt.
+    assert!(parsed.get("lines").is_none());
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nbeta\n");
 }
 
@@ -557,13 +569,20 @@ fn insert_dry_run_reports_change_without_writing_file() {
 }
 
 #[test]
-fn insert_json_dry_run_returns_proposed_document() {
+fn insert_json_dry_run_returns_mutation_receipt() {
     let file = tmpfile("alpha\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 1);
     let parsed = parse_json(&["insert", &file_arg, &anchor, "beta", "--dry-run", "--json"]);
 
-    assert_eq!(parsed["lines"][1]["content"], "beta");
+    assert_eq!(parsed["op"], "insert");
+    assert_eq!(parsed["dry_run"], true);
+    let changes = parsed["changes"].as_array().expect("changes is array");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["line_no"], 2);
+    assert_eq!(changes[0]["kind"], "Inserted");
+    assert_eq!(changes[0]["after"], "beta");
+    assert!(parsed.get("lines").is_none());
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\ngamma\n");
 }
 
@@ -675,14 +694,20 @@ fn delete_dry_run_reports_change_without_writing_file() {
 }
 
 #[test]
-fn delete_json_dry_run_returns_proposed_document() {
+fn delete_json_dry_run_returns_mutation_receipt() {
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
     let parsed = parse_json(&["delete", &file_arg, &anchor, "--dry-run", "--json"]);
 
-    assert_eq!(parsed["lines"].as_array().unwrap().len(), 2);
-    assert_eq!(parsed["lines"][1]["content"], "gamma");
+    assert_eq!(parsed["op"], "delete");
+    assert_eq!(parsed["dry_run"], true);
+    let changes = parsed["changes"].as_array().expect("changes is array");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["line_no"], 2);
+    assert_eq!(changes[0]["kind"], "Deleted");
+    assert_eq!(changes[0]["before"], "beta");
+    assert!(parsed.get("lines").is_none());
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nbeta\ngamma\n");
 }
 
@@ -950,7 +975,7 @@ fn patch_dry_run_does_not_modify_file() {
 }
 
 #[test]
-fn patch_json_dry_run_returns_proposed_document() {
+fn patch_json_dry_run_returns_mutation_receipt() {
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let edit_anchor = anchor_from_file(&file_arg, 2);
@@ -961,7 +986,15 @@ fn patch_json_dry_run_returns_proposed_document() {
     let patch_arg = patch_file.to_string_lossy().into_owned();
     let parsed = parse_json(&["patch", &file_arg, &patch_arg, "--dry-run", "--json"]);
 
-    assert_eq!(parsed["lines"][1]["content"], "BETA");
+    assert_eq!(parsed["op"], "patch");
+    assert_eq!(parsed["dry_run"], true);
+    let changes = parsed["changes"].as_array().expect("changes is array");
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["line_no"], 2);
+    assert_eq!(changes[0]["kind"], "Modified");
+    assert_eq!(changes[0]["before"], "beta");
+    assert_eq!(changes[0]["after"], "BETA");
+    assert!(parsed.get("lines").is_none());
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nbeta\ngamma\n");
 }
 
@@ -1437,7 +1470,7 @@ fn indent_dry_run_reports_change_without_writing_file() {
 }
 
 #[test]
-fn indent_json_dry_run_returns_proposed_document() {
+fn indent_json_dry_run_returns_mutation_receipt() {
     let file = tmpfile("alpha\n  beta\n  gamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let start = anchor_from_file(&file_arg, 2);
@@ -1451,8 +1484,13 @@ fn indent_json_dry_run_returns_proposed_document() {
         "--json",
     ]);
 
-    assert_eq!(parsed["lines"][1]["content"], "    beta");
-    assert_eq!(parsed["lines"][2]["content"], "    gamma");
+    assert_eq!(parsed["op"], "indent");
+    assert_eq!(parsed["dry_run"], true);
+    let changes = parsed["changes"].as_array().expect("changes is array");
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0]["after"], "    beta");
+    assert_eq!(changes[1]["after"], "    gamma");
+    assert!(parsed.get("lines").is_none());
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
         "alpha\n  beta\n  gamma\n"
@@ -1800,4 +1838,200 @@ fn anchor_from_file(file_arg: &str, line_no: usize) -> String {
 
 fn find_collision_pair() -> (String, String) {
     ("line-1612".to_owned(), "line-2126".to_owned())
+}
+
+// ============================================================================
+// PR-C: --json defaults to compact, --pretty opts in to pretty-printed JSON
+// ============================================================================
+
+#[test]
+fn read_json_default_is_compact() {
+    // PR-C: --json without --pretty produces compact (single-line) JSON.
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg, "--json"]);
+
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty());
+    let trimmed = stdout.trim_end_matches('\n');
+    // Compact JSON has no embedded newlines.
+    assert!(
+        !trimmed.contains('\n'),
+        "compact JSON should be a single line, got {} newlines",
+        trimmed.matches('\n').count()
+    );
+    // And no two-space pretty-printed indentation.
+    assert!(!stdout.contains("\n  \""));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(parsed["lines"].is_array());
+}
+
+#[test]
+fn read_json_pretty_flag_enables_pretty_printing() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg, "--json", "--pretty"]);
+
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty());
+    // Pretty JSON spans multiple lines with two-space indentation on top-level keys.
+    assert!(stdout.contains("\n  \"file\""));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(parsed["lines"].is_array());
+}
+
+#[test]
+fn index_json_default_is_compact() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, _stderr, code) = run_linehash(&["index", &fixture_arg, "--json"]);
+    assert_eq!(code, 0);
+    let trimmed = stdout.trim_end_matches('\n');
+    assert!(!trimmed.contains('\n'));
+}
+
+#[test]
+fn stats_json_default_is_compact() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, _stderr, code) = run_linehash(&["stats", &fixture_arg, "--json"]);
+    assert_eq!(code, 0);
+    let trimmed = stdout.trim_end_matches('\n');
+    assert!(!trimmed.contains('\n'));
+}
+
+// ============================================================================
+// PR-D: --dry-run --json returns compact mutation receipt, not full document
+// ============================================================================
+
+#[test]
+fn dry_run_json_does_not_dump_full_file() {
+    // PR-D: dry-run JSON output should be O(edit size), not O(file size).
+    // Build a 200-line file and verify the dry-run JSON for a single-line edit
+    // is dramatically smaller than the file content.
+    let mut content = String::new();
+    for i in 1..=200 {
+        content.push_str(&format!("line {}\n", i));
+    }
+    let file = tmpfile(&content);
+    let file_arg = file.to_string_lossy().into_owned();
+    let anchor = anchor_from_file(&file_arg, 100);
+    let (stdout, _stderr, code) = run_linehash(&[
+        "edit",
+        &file_arg,
+        &anchor,
+        "REPLACED",
+        "--dry-run",
+        "--json",
+    ]);
+
+    assert_eq!(code, 0);
+    // Receipt for a 1-line edit should be much smaller than the original file.
+    assert!(
+        stdout.len() < content.len() / 2,
+        "dry-run receipt ({} bytes) should be much smaller than file ({} bytes)",
+        stdout.len(),
+        content.len()
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["op"], "edit");
+    assert_eq!(parsed["dry_run"], true);
+    assert!(parsed.get("lines").is_none());
+    let changes = parsed["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["after"], "REPLACED");
+}
+
+// ============================================================================
+// Tier 1 NDJSON: read/index/grep/annotate streaming output
+// ============================================================================
+
+#[test]
+fn read_ndjson_emits_header_and_line_per_line() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg, "--ndjson"]);
+
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty());
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() > 1);
+    let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(header["event"], "header");
+    assert!(header["total_lines"].as_u64().unwrap() > 0);
+    assert!(header["file"].is_string());
+
+    // Every subsequent line is its own valid JSON object with n/hash/content.
+    for raw in &lines[1..] {
+        let line: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert!(line["n"].is_number(), "line missing 'n' field: {raw}");
+        assert!(line["hash"].is_string(), "line missing 'hash' field: {raw}");
+        assert!(line["content"].is_string(), "line missing 'content': {raw}");
+    }
+}
+
+#[test]
+fn index_ndjson_emits_header_and_anchors_only() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, _stderr, code) = run_linehash(&["index", &fixture_arg, "--ndjson"]);
+
+    assert_eq!(code, 0);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(header["event"], "header");
+
+    // Index NDJSON does not include line content.
+    for raw in &lines[1..] {
+        let line: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert!(line.get("content").is_none());
+        assert!(line["n"].is_number());
+        assert!(line["hash"].is_string());
+    }
+}
+
+#[test]
+fn grep_ndjson_emits_one_match_per_line_no_header() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, _stderr, code) = run_linehash(&["grep", &fixture_arg, "function", "--ndjson"]);
+
+    assert_eq!(code, 0);
+    assert!(!stdout.is_empty());
+    // No header for grep; every line is a match record.
+    for raw in stdout.lines() {
+        let line: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert!(line["n"].is_number());
+        assert!(line["hash"].is_string());
+        assert!(line["content"].as_str().unwrap().contains("function"));
+    }
+}
+
+#[test]
+fn annotate_ndjson_emits_one_match_per_line() {
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, _stderr, code) = run_linehash(&["annotate", &fixture_arg, "function", "--ndjson"]);
+
+    assert_eq!(code, 0);
+    for raw in stdout.lines() {
+        let line: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert!(line["content"].as_str().unwrap().contains("function"));
+    }
+}
+
+#[test]
+fn ndjson_takes_precedence_over_json() {
+    // When both --json and --ndjson are passed, --ndjson wins.
+    let fixture = fixture_path("simple_lf.js");
+    let fixture_arg = fixture.to_string_lossy().into_owned();
+    let (stdout, _stderr, code) =
+        run_linehash(&["read", &fixture_arg, "--json", "--pretty", "--ndjson"]);
+
+    assert_eq!(code, 0);
+    // First line should parse as a JSON object (NDJSON header), not a fragment
+    // of a pretty document.
+    let first_line = stdout.lines().next().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(first_line).unwrap();
+    assert_eq!(parsed["event"], "header");
 }

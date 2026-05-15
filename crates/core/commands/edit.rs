@@ -7,7 +7,6 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
 use crate::mutation::{replace_line, replace_range, split_content_lines};
-use crate::orchestration::read_payload;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -52,7 +51,7 @@ pub fn run<W: Write, E: Write>(
     };
 
     if cmd.dry_run {
-        return write_dry_run(ctx, &doc, &summary);
+        return write_dry_run(ctx, &cmd.file, &summary);
     }
 
     let after_bytes = doc.render();
@@ -82,7 +81,7 @@ pub fn run<W: Write, E: Write>(
     }
 
     match ctx.output_mode() {
-        OutputMode::Json => Ok(()),
+        OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => {
             output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
         }
@@ -91,13 +90,20 @@ pub fn run<W: Write, E: Write>(
 
 fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
-    doc: &Document,
+    file: &std::path::Path,
     summary: &EditSummary,
 ) -> Result<(), LinehashError> {
     match ctx.output_mode() {
-        OutputMode::Json => {
-            let payload = read_payload(doc, &[], 0)?;
-            output::print_read_json(ctx.stdout(), &payload).map_err(LinehashError::from)
+        OutputMode::Json | OutputMode::Ndjson => {
+            // PR-D: emit a compact mutation receipt instead of dumping the
+            // entire proposed document.
+            let receipt = receipt::build_dry_run_receipt(
+                "edit",
+                file,
+                summary.dry_run_summary(),
+                summary.line_changes(),
+            );
+            receipt::write_dry_run_receipt(ctx, &receipt)
         }
         OutputMode::Pretty => {
             match summary {
@@ -156,6 +162,17 @@ impl EditSummary {
                 end_line,
                 ..
             } => format!("Edited lines {start_line}-{end_line}."),
+        }
+    }
+
+    fn dry_run_summary(&self) -> String {
+        match self {
+            EditSummary::Single { line_no, .. } => format!("Would edit line {line_no}."),
+            EditSummary::Range {
+                start_line,
+                end_line,
+                ..
+            } => format!("Would edit lines {start_line}-{end_line}."),
         }
     }
 

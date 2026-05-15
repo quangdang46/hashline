@@ -38,7 +38,7 @@ pub fn run<W: Write, E: Write>(
             ),
         )
         .map_err(LinehashError::from),
-        OutputMode::Json => output::write_json_success(
+        OutputMode::Json | OutputMode::Ndjson => output::write_json_success(
             ctx,
             &BlockPayload {
                 start: format!(

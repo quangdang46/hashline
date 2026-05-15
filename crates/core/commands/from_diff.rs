@@ -8,6 +8,7 @@ use crate::cli::FromDiffCmd;
 use crate::context::CommandContext;
 use crate::document::Document;
 use crate::error::LinehashError;
+use crate::output::{JsonStyle, serialize_json};
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
@@ -16,8 +17,8 @@ pub fn run<W: Write, E: Write>(
     let doc = Document::load(&cmd.file)?;
     let diff = read_diff(&cmd.diff)?;
     let patch = compile_patch(&diff, &cmd.file, &doc)?;
-    serde_json::to_writer_pretty(ctx.stdout(), &patch)?;
-    writeln!(ctx.stdout())?;
+    let style = JsonStyle::from_pretty(ctx.json_pretty());
+    serialize_json(ctx.stdout(), &patch, style)?;
     Ok(())
 }
 

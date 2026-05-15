@@ -20,6 +20,24 @@ pub struct Receipt {
     pub file_hash_after: u32,
 }
 
+/// A small JSON payload describing what a mutation *would* change.
+///
+/// Replaces the historic behavior of emitting the entire proposed document
+/// when `--dry-run --json` was set. Keeps the response O(edit size) instead
+/// of O(file size). See PR-D / linehash-analysis.md §3.2 P4.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DryRunReceipt {
+    pub op: String,
+    pub file: String,
+    /// Always `true` for dry-run output. Lets agents distinguish from a real
+    /// receipt without having to inspect status codes.
+    pub dry_run: bool,
+    /// Human-readable preview message ("Would change line 42:", etc.).
+    pub summary: String,
+    /// Per-line before/after preview, identical schema to [`Receipt::changes`].
+    pub changes: Vec<LineChange>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LineChange {
     pub line_no: usize,
@@ -55,6 +73,30 @@ pub fn build_receipt(
         file_hash_before: hash::full_hash_bytes(bytes_before),
         file_hash_after: hash::full_hash_bytes(bytes_after),
     }
+}
+
+/// Build a compact dry-run receipt describing the would-be mutation.
+pub fn build_dry_run_receipt(
+    op: &str,
+    file: &Path,
+    summary: String,
+    changes: Vec<LineChange>,
+) -> DryRunReceipt {
+    DryRunReceipt {
+        op: op.to_owned(),
+        file: file.display().to_string(),
+        dry_run: true,
+        summary,
+        changes,
+    }
+}
+
+/// Write a dry-run receipt to stdout using the context's JSON style.
+pub fn write_dry_run_receipt<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    receipt: &DryRunReceipt,
+) -> Result<(), LinehashError> {
+    output::write_json_success(ctx, receipt).map_err(LinehashError::from)
 }
 
 pub fn write_receipt<W: Write, E: Write>(

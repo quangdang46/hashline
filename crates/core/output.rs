@@ -12,6 +12,37 @@ use crate::error::LinehashError;
 use crate::orchestration::{IndexPayload, ReadPayload};
 use crate::risk::blocked_assessment;
 
+/// Whether to emit JSON in compact (default) or pretty form.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JsonStyle {
+    Compact,
+    Pretty,
+}
+
+impl JsonStyle {
+    pub fn from_pretty(pretty: bool) -> Self {
+        if pretty {
+            JsonStyle::Pretty
+        } else {
+            JsonStyle::Compact
+        }
+    }
+}
+
+/// Serialize `value` to `writer` followed by a single newline, using the
+/// requested JSON style (compact by default, pretty when explicitly opted in).
+pub fn serialize_json<W: Write, T: Serialize + ?Sized>(
+    writer: &mut W,
+    value: &T,
+    style: JsonStyle,
+) -> io::Result<()> {
+    match style {
+        JsonStyle::Compact => serde_json::to_writer(&mut *writer, value)?,
+        JsonStyle::Pretty => serde_json::to_writer_pretty(&mut *writer, value)?,
+    }
+    writeln!(writer)
+}
+
 #[derive(Serialize)]
 struct ErrorPayload<'a> {
     error: String,
@@ -29,13 +60,15 @@ pub fn write_success_line<W: Write, E: Write>(
     writeln!(ctx.stdout(), "{line}")
 }
 
+/// Emit `value` as JSON to stdout, using the context's JSON style
+/// (compact by default; pretty when the caller passed `--pretty`).
 #[allow(dead_code)]
 pub fn write_json_success<W: Write, E: Write, T: Serialize + ?Sized>(
     ctx: &mut CommandContext<'_, W, E>,
     value: &T,
 ) -> io::Result<()> {
-    serde_json::to_writer_pretty(ctx.stdout(), value)?;
-    writeln!(ctx.stdout())
+    let style = JsonStyle::from_pretty(ctx.json_pretty());
+    serialize_json(ctx.stdout(), value, style)
 }
 
 pub fn print_read(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
@@ -53,9 +86,12 @@ pub fn print_read(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
     Ok(())
 }
 
-pub fn print_read_json(writer: &mut impl Write, payload: &ReadPayload) -> io::Result<()> {
-    serde_json::to_writer_pretty(&mut *writer, &payload)?;
-    writeln!(writer)
+pub fn print_read_json(
+    writer: &mut impl Write,
+    payload: &ReadPayload,
+    style: JsonStyle,
+) -> io::Result<()> {
+    serialize_json(writer, payload, style)
 }
 
 pub fn print_read_context(
@@ -112,9 +148,82 @@ pub fn print_index(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
     Ok(())
 }
 
-pub fn print_index_json(writer: &mut impl Write, payload: &IndexPayload) -> io::Result<()> {
-    serde_json::to_writer_pretty(&mut *writer, &payload)?;
-    writeln!(writer)
+pub fn print_index_json(
+    writer: &mut impl Write,
+    payload: &IndexPayload,
+    style: JsonStyle,
+) -> io::Result<()> {
+    serialize_json(writer, payload, style)
+}
+
+/// Emit `payload` as NDJSON: one header line, then one object per line in
+/// `payload.lines`. Each object is compact JSON terminated by `\n`, so a
+/// downstream agent can stream-parse the response without buffering the whole
+/// document.
+pub fn print_read_ndjson(writer: &mut impl Write, payload: &ReadPayload) -> io::Result<()> {
+    #[derive(Serialize)]
+    struct ReadHeader<'a> {
+        event: &'static str,
+        file: &'a str,
+        newline: &'a str,
+        trailing_newline: bool,
+        mtime: i64,
+        mtime_nanos: u32,
+        inode: u64,
+        total_lines: usize,
+    }
+
+    let header = ReadHeader {
+        event: "header",
+        file: &payload.file,
+        newline: payload.newline,
+        trailing_newline: payload.trailing_newline,
+        mtime: payload.mtime,
+        mtime_nanos: payload.mtime_nanos,
+        inode: payload.inode,
+        total_lines: payload.lines.len(),
+    };
+    serde_json::to_writer(&mut *writer, &header)?;
+    writeln!(writer)?;
+    for line in &payload.lines {
+        serde_json::to_writer(&mut *writer, line)?;
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+/// Emit an [`IndexPayload`] as NDJSON: one header line then one
+/// `{"n":..,"hash":..}` object per line.
+pub fn print_index_ndjson(writer: &mut impl Write, payload: &IndexPayload) -> io::Result<()> {
+    #[derive(Serialize)]
+    struct IndexHeader<'a> {
+        event: &'static str,
+        file: &'a str,
+        total_lines: usize,
+    }
+
+    let header = IndexHeader {
+        event: "header",
+        file: &payload.file,
+        total_lines: payload.lines.len(),
+    };
+    serde_json::to_writer(&mut *writer, &header)?;
+    writeln!(writer)?;
+    for entry in &payload.lines {
+        serde_json::to_writer(&mut *writer, entry)?;
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+/// Emit a slice of [`LineView`]s as NDJSON: one match per line, no wrapper or
+/// header. Suitable for grep/annotate where 0 results is valid output.
+pub fn print_line_views_ndjson(writer: &mut impl Write, lines: &[LineView]) -> io::Result<()> {
+    for line in lines {
+        serde_json::to_writer(&mut *writer, line)?;
+        writeln!(writer)?;
+    }
+    Ok(())
 }
 
 pub fn print_stats(writer: &mut impl Write, stats: &FileStats) -> io::Result<()> {
@@ -155,9 +264,12 @@ pub fn print_stats(writer: &mut impl Write, stats: &FileStats) -> io::Result<()>
     writeln!(writer, "Note: v1 anchors still use fixed 2-char hashes.")
 }
 
-pub fn print_stats_json(writer: &mut impl Write, stats: &FileStats) -> io::Result<()> {
-    serde_json::to_writer_pretty(&mut *writer, stats)?;
-    writeln!(writer)
+pub fn print_stats_json(
+    writer: &mut impl Write,
+    stats: &FileStats,
+    style: JsonStyle,
+) -> io::Result<()> {
+    serialize_json(writer, stats, style)
 }
 
 pub fn print_map(
@@ -259,7 +371,7 @@ pub fn write_error<W: Write, E: Write>(
             }
             Ok(())
         }
-        OutputMode::Json => {
+        OutputMode::Json | OutputMode::Ndjson => {
             let risk = blocked_assessment(error);
             let payload = ErrorPayload {
                 error: error.to_string(),
@@ -272,8 +384,14 @@ pub fn write_error<W: Write, E: Write>(
                 }),
                 risk,
             };
-            serde_json::to_writer_pretty(ctx.stderr(), &payload)?;
-            writeln!(ctx.stderr())
+            // Errors are always one-shot objects, even in NDJSON mode.
+            // Honor --pretty only for the single-document JSON mode; NDJSON is always compact.
+            let style = if matches!(ctx.output_mode(), OutputMode::Json) && ctx.json_pretty() {
+                JsonStyle::Pretty
+            } else {
+                JsonStyle::Compact
+            };
+            serialize_json(ctx.stderr(), &payload, style)
         }
     }
 }
@@ -306,7 +424,7 @@ fn collect_context_indexes(doc: &Document, anchors: &[ResolvedLine], context: us
 #[cfg(test)]
 mod tests {
     use super::{
-        print_index, print_index_json, print_read, print_read_context, print_read_json,
+        JsonStyle, print_index, print_index_json, print_read, print_read_context, print_read_json,
         print_stats, print_stats_json,
     };
     use crate::anchor::ResolvedLine;
@@ -494,7 +612,7 @@ mod tests {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
         let mut out = Vec::new();
         let payload = read_payload(&doc, &[], 0).unwrap();
-        print_read_json(&mut out, &payload).unwrap();
+        print_read_json(&mut out, &payload, JsonStyle::Compact).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed["file"], "demo.txt");
         assert_eq!(parsed["newline"], "lf");
@@ -503,6 +621,24 @@ mod tests {
             parsed["lines"][1]["hash"],
             format_short_hash(doc.lines[1].short_hash)
         );
+        // Compact JSON contains no indentation/newlines except the trailing one.
+        let rendered = String::from_utf8(out).unwrap();
+        let trimmed = rendered.trim_end_matches('\n');
+        assert!(
+            !trimmed.contains('\n'),
+            "compact JSON should be single line, got: {trimmed:?}"
+        );
+    }
+
+    #[test]
+    fn test_read_json_pretty_emits_multiline() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
+        let mut out = Vec::new();
+        let payload = read_payload(&doc, &[], 0).unwrap();
+        print_read_json(&mut out, &payload, JsonStyle::Pretty).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        // Pretty-printed JSON spans multiple lines with two-space indentation.
+        assert!(rendered.contains("\n  \"file\""));
     }
 
     #[test]
@@ -510,7 +646,7 @@ mod tests {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\n").unwrap();
         let mut out = Vec::new();
         let payload = index_payload(&doc);
-        print_index_json(&mut out, &payload).unwrap();
+        print_index_json(&mut out, &payload, JsonStyle::Compact).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed["file"], "demo.txt");
         assert_eq!(parsed["lines"][0]["n"], 1);
@@ -539,7 +675,7 @@ mod tests {
             warnings: vec![],
         };
         let mut out = Vec::new();
-        print_stats_json(&mut out, &stats).unwrap();
+        print_stats_json(&mut out, &stats, JsonStyle::Compact).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed["line_count"], 1);
         assert_eq!(parsed["hash_length_advice"], 2);

@@ -70,6 +70,14 @@ pub struct ReadCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+    /// Emit newline-delimited JSON (one object per line, no wrapper). Overrides --json.
+    #[serde(default)]
+    #[arg(long)]
+    pub ndjson: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -78,6 +86,14 @@ pub struct IndexCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+    /// Emit newline-delimited JSON (one object per line, no wrapper). Overrides --json.
+    #[serde(default)]
+    #[arg(long)]
+    pub ndjson: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -100,6 +116,10 @@ pub struct EditCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -125,6 +145,10 @@ pub struct InsertCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -146,6 +170,10 @@ pub struct DeleteCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -160,6 +188,10 @@ pub struct VerifyCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -173,6 +205,14 @@ pub struct GrepCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+    /// Emit newline-delimited JSON (one object per line, no wrapper). Overrides --json.
+    #[serde(default)]
+    #[arg(long)]
+    pub ndjson: bool,
     #[serde(default)]
     #[arg(long)]
     pub invert: bool,
@@ -204,6 +244,14 @@ pub struct AnnotateCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+    /// Emit newline-delimited JSON (one object per line, no wrapper). Overrides --json.
+    #[serde(default)]
+    #[arg(long)]
+    pub ndjson: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -229,6 +277,10 @@ pub struct PatchCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -298,6 +350,10 @@ pub struct IndentCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -311,6 +367,10 @@ pub struct FindBlockCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -323,6 +383,10 @@ pub struct StatsCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -335,6 +399,10 @@ pub struct DoctorCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -348,6 +416,10 @@ pub struct WorkflowsCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -357,6 +429,10 @@ pub struct FromDiffCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (defaults to compact).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -368,6 +444,10 @@ pub struct MergePatchesCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -382,6 +462,10 @@ pub struct WatchCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -393,6 +477,10 @@ pub struct WatchCapabilitiesCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -454,6 +542,10 @@ pub struct MapCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -466,6 +558,10 @@ pub struct OutlineCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -487,6 +583,10 @@ pub struct SymbolCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -504,6 +604,10 @@ pub struct CallersCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -521,6 +625,10 @@ pub struct CalleesCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -538,4 +646,8 @@ pub struct DepsCmd {
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
 }

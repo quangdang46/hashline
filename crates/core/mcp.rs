@@ -346,7 +346,10 @@ fn dispatch_tool(
             invoke_command(Commands::Workflows(cmd))
         }
         "linehash_watch_capabilities" => {
-            let cmd = WatchCapabilitiesCmd { json: true };
+            let cmd = WatchCapabilitiesCmd {
+                json: true,
+                pretty: false,
+            };
             invoke_command(Commands::WatchCapabilities(cmd))
         }
         "linehash_stats" => tool_stats(arguments, session),

@@ -3,7 +3,7 @@ use std::io::Write;
 use std::time::UNIX_EPOCH;
 
 use crate::cli::GrepCmd;
-use crate::context::CommandContext;
+use crate::context::{CommandContext, OutputMode};
 #[cfg(unix)]
 use crate::document::LineView;
 use crate::document::{Document, SearchDocument};
@@ -61,10 +61,10 @@ pub fn run<W: Write, E: Write>(
         grep_lines(&doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)?
     };
 
-    if cmd.json {
-        output::write_grep_json(ctx, &lines)?;
-    } else {
-        output::print_line_views(ctx.stdout(), &lines)?;
+    match ctx.output_mode() {
+        OutputMode::Ndjson => output::print_line_views_ndjson(ctx.stdout(), &lines)?,
+        OutputMode::Json => output::write_grep_json(ctx, &lines)?,
+        OutputMode::Pretty => output::print_line_views(ctx.stdout(), &lines)?,
     }
 
     Ok(())
@@ -100,10 +100,10 @@ fn run_via_daemon<W: Write, E: Write>(
             kind: "parse_error".to_string(),
         })?;
 
-    if cmd.json {
-        output::write_grep_json(ctx, &lines)?;
-    } else {
-        output::print_line_views(ctx.stdout(), &lines)?;
+    match ctx.output_mode() {
+        OutputMode::Ndjson => output::print_line_views_ndjson(ctx.stdout(), &lines)?,
+        OutputMode::Json => output::write_grep_json(ctx, &lines)?,
+        OutputMode::Pretty => output::print_line_views(ctx.stdout(), &lines)?,
     }
 
     Ok(())

@@ -7,10 +7,16 @@ use std::sync::Arc;
 use crate::cli::Commands;
 use crate::document::SearchDocument;
 
+/// Coarse output mode. JSON style (compact vs pretty) is tracked separately on
+/// [`CommandContext`] via [`CommandContext::json_pretty`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputMode {
+    /// Human-readable text output (default).
     Pretty,
+    /// Single JSON document (compact by default; pretty when `--pretty` is set).
     Json,
+    /// Newline-delimited JSON stream (one JSON object per line, no wrapper).
+    Ndjson,
 }
 
 /// Cache entry for SearchDocument with validation metadata.
@@ -82,6 +88,7 @@ pub struct CommandContext<'a, W: Write, E: Write> {
     stdout: &'a mut W,
     stderr: &'a mut E,
     output_mode: OutputMode,
+    json_pretty: bool,
     pub search_doc_cache: SearchDocCache,
 }
 
@@ -96,8 +103,16 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
             stdout,
             stderr,
             output_mode,
+            json_pretty: false,
             search_doc_cache,
         }
+    }
+
+    /// Builder helper: enable pretty-printing for JSON output.
+    /// Has no effect on `OutputMode::Pretty` (text) or `OutputMode::Ndjson`.
+    pub fn with_json_pretty(mut self, pretty: bool) -> Self {
+        self.json_pretty = pretty;
+        self
     }
 
     pub fn stdout(&mut self) -> &mut W {
@@ -111,16 +126,21 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
     pub fn output_mode(&self) -> OutputMode {
         self.output_mode
     }
+
+    /// Whether JSON output should be pretty-printed. Compact by default.
+    pub fn json_pretty(&self) -> bool {
+        self.json_pretty
+    }
 }
 
 pub fn output_mode_for(command: &Commands) -> OutputMode {
     match command {
-        Commands::Read(cmd) => flag_mode(cmd.json),
-        Commands::Index(cmd) => flag_mode(cmd.json),
+        Commands::Read(cmd) => format_mode(cmd.json, cmd.ndjson),
+        Commands::Index(cmd) => format_mode(cmd.json, cmd.ndjson),
         Commands::Edit(cmd) => flag_mode(cmd.json),
         Commands::Verify(cmd) => flag_mode(cmd.json),
-        Commands::Grep(cmd) => flag_mode(cmd.json),
-        Commands::Annotate(cmd) => flag_mode(cmd.json),
+        Commands::Grep(cmd) => format_mode(cmd.json, cmd.ndjson),
+        Commands::Annotate(cmd) => format_mode(cmd.json, cmd.ndjson),
         Commands::Insert(cmd) => flag_mode(cmd.json),
         Commands::Delete(cmd) => flag_mode(cmd.json),
         Commands::Patch(cmd) => flag_mode(cmd.json),
@@ -149,6 +169,44 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
     }
 }
 
+/// Returns whether JSON output for `command` should be pretty-printed.
+/// `--ndjson` and text-mode commands always return `false`.
+pub fn json_pretty_for(command: &Commands) -> bool {
+    match command {
+        Commands::Read(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
+        Commands::Index(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
+        Commands::Edit(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Verify(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Grep(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
+        Commands::Annotate(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
+        Commands::Insert(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Delete(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Patch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Indent(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::FindBlock(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Stats(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Doctor(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Workflows(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::FromDiff(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::MergePatches(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Watch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::WatchCapabilities(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Map(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Outline(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Symbol(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Callers(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Callees(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Deps(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Swap(_)
+        | Commands::Move(_)
+        | Commands::Explode(_)
+        | Commands::Implode(_)
+        | Commands::InstallMcp(_)
+        | Commands::Mcp(_)
+        | Commands::Daemon => false,
+    }
+}
+
 fn flag_mode(json: bool) -> OutputMode {
     if json {
         OutputMode::Json
@@ -157,9 +215,25 @@ fn flag_mode(json: bool) -> OutputMode {
     }
 }
 
+/// `--ndjson` wins over `--json`. Otherwise `--json` selects single-document JSON.
+fn format_mode(json: bool, ndjson: bool) -> OutputMode {
+    if ndjson {
+        OutputMode::Ndjson
+    } else if json {
+        OutputMode::Json
+    } else {
+        OutputMode::Pretty
+    }
+}
+
+/// Compute json_pretty: only meaningful when JSON mode is selected (not ndjson, not text).
+fn json_pretty_flag(json: bool, pretty: bool, ndjson: bool) -> bool {
+    json && pretty && !ndjson
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{OutputMode, output_mode_for};
+    use super::{OutputMode, json_pretty_for, output_mode_for};
     use crate::cli::{
         Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
         ReadCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
@@ -173,9 +247,12 @@ mod tests {
             anchor: Vec::new(),
             context: 5,
             json: true,
+            pretty: false,
+            ndjson: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
+        assert!(!json_pretty_for(&command));
     }
 
     #[test]
@@ -190,6 +267,7 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             json: false,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
@@ -224,6 +302,7 @@ mod tests {
             once: false,
             continuous: true,
             json: true,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -231,7 +310,10 @@ mod tests {
 
     #[test]
     fn supports_json_mode_for_watch_capabilities() {
-        let command = Commands::WatchCapabilities(WatchCapabilitiesCmd { json: true });
+        let command = Commands::WatchCapabilities(WatchCapabilitiesCmd {
+            json: true,
+            pretty: false,
+        });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
     }
@@ -241,6 +323,7 @@ mod tests {
         let command = Commands::Workflows(WorkflowsCmd {
             root: Some(PathBuf::from(".")),
             json: true,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -259,6 +342,7 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             json: true,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -276,6 +360,7 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             json: true,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -292,6 +377,7 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             json: true,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -302,8 +388,55 @@ mod tests {
         let command = Commands::Doctor(DoctorCmd {
             file: PathBuf::from("demo.txt"),
             json: true,
+            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
+    }
+
+    #[test]
+    fn pretty_flag_enables_pretty_json() {
+        let command = Commands::Read(ReadCmd {
+            file: PathBuf::from("demo.txt"),
+            anchor: Vec::new(),
+            context: 5,
+            json: true,
+            pretty: true,
+            ndjson: false,
+        });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Json);
+        assert!(json_pretty_for(&command));
+    }
+
+    #[test]
+    fn pretty_flag_without_json_has_no_effect() {
+        let command = Commands::Read(ReadCmd {
+            file: PathBuf::from("demo.txt"),
+            anchor: Vec::new(),
+            context: 5,
+            json: false,
+            pretty: true,
+            ndjson: false,
+        });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
+        assert!(!json_pretty_for(&command));
+    }
+
+    #[test]
+    fn ndjson_flag_overrides_json() {
+        let command = Commands::Read(ReadCmd {
+            file: PathBuf::from("demo.txt"),
+            anchor: Vec::new(),
+            context: 5,
+            json: true,
+            pretty: true,
+            ndjson: true,
+        });
+
+        // ndjson wins over json/pretty
+        assert_eq!(output_mode_for(&command), OutputMode::Ndjson);
+        assert!(!json_pretty_for(&command));
     }
 }

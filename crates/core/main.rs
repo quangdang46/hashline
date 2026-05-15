@@ -30,7 +30,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
 use crate::cli::{Cli, Commands};
-use crate::context::{CommandContext, SearchDocCache, output_mode_for};
+use crate::context::{CommandContext, SearchDocCache, json_pretty_for, output_mode_for};
 use crate::error::LinehashError;
 use crate::orchestration::command_name;
 use crate::risk::assess_command;
@@ -72,6 +72,7 @@ fn main() {
     }
 
     let output_mode = output_mode_for(&cli.command);
+    let json_pretty = json_pretty_for(&cli.command);
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
 
@@ -91,7 +92,8 @@ fn main() {
                 &mut stderr,
                 output_mode,
                 SearchDocCache::new(64),
-            );
+            )
+            .with_json_pretty(json_pretty);
             let _ = output::write_error(&mut context, &error);
             1
         }
@@ -232,6 +234,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
     stderr: &mut E,
 ) -> Result<i32, LinehashError> {
     let output_mode = output_mode_for(&command);
+    let json_pretty = json_pretty_for(&command);
     let risk = assess_command(&command);
     debug!(
         command = command_name(&command),
@@ -246,7 +249,8 @@ pub(crate) fn run_command<W: Write, E: Write>(
             "destructive command risk assessed"
         );
     }
-    let mut context = CommandContext::new(stdout, stderr, output_mode, SearchDocCache::new(64));
+    let mut context = CommandContext::new(stdout, stderr, output_mode, SearchDocCache::new(64))
+        .with_json_pretty(json_pretty);
 
     match command {
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
@@ -315,6 +319,8 @@ mod tests {
                 anchor: Vec::new(),
                 context: 5,
                 json: false,
+                pretty: false,
+                ndjson: false,
             }),
         };
         let mut stdout = Vec::new();
@@ -355,6 +361,7 @@ mod tests {
                 expect_mtime: None,
                 expect_inode: None,
                 json: true,
+                pretty: false,
             }),
         };
         let mut stdout = Vec::new();
@@ -391,6 +398,7 @@ mod tests {
             command: Commands::Doctor(DoctorCmd {
                 file: PathBuf::from("demo.txt"),
                 json: true,
+                pretty: false,
             }),
         };
 

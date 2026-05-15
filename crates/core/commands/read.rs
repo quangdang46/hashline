@@ -2,7 +2,7 @@ use std::io::Write;
 use std::thread;
 
 use crate::cli::ReadCmd;
-use crate::context::CommandContext;
+use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
 use crate::orchestration::{read_payload, resolve_read_anchors};
@@ -28,10 +28,20 @@ pub fn run<W: Write, E: Write>(
         });
     }
 
-    if cmd.json {
-        let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
-        output::print_read_json(ctx.stdout(), &payload)?;
-        return Ok(());
+    match ctx.output_mode() {
+        OutputMode::Ndjson => {
+            // Tier 1 NDJSON: one header + one object per line, no wrapper.
+            let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+            output::print_read_ndjson(ctx.stdout(), &payload)?;
+            return Ok(());
+        }
+        OutputMode::Json => {
+            let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+            let style = output::JsonStyle::from_pretty(ctx.json_pretty());
+            output::print_read_json(ctx.stdout(), &payload, style)?;
+            return Ok(());
+        }
+        OutputMode::Pretty => {}
     }
 
     if cmd.anchor.is_empty() {
