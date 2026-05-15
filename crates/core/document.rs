@@ -6,10 +6,21 @@ use std::time::UNIX_EPOCH;
 
 use memchr::{memchr, memchr2};
 use memmap2::Mmap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LinehashError;
 use crate::hash::{self, ShortHash};
+
+/// Files with at least this many lines hash their lines in parallel
+/// via rayon. Below this threshold the sequential single-pass path
+/// is faster because rayon's scheduling overhead dominates.
+const PARALLEL_HASH_LINE_THRESHOLD: usize = 20_000;
+
+/// When hashing in parallel, group lines into chunks of this size before
+/// dispatching to rayon. Per-task overhead is ~tens of microseconds, so
+/// we amortize it by keeping each rayon task busy for ~milliseconds.
+const PARALLEL_HASH_CHUNK_SIZE: usize = 2_048;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LineView {
@@ -384,6 +395,9 @@ fn parse_document_content(
         return Ok((NewlineStyle::Lf, false, Vec::new(), 0));
     }
 
+    // Phase 1: scan for line boundaries (sequential, memchr-only — very fast).
+    // We collect `(start, end)` byte offsets so the hashing phase below can
+    // run either sequentially or in parallel with no mutable shared state.
     let bytes = content.as_bytes();
     let mut saw_lf = false;
     let mut saw_crlf = false;
@@ -391,10 +405,10 @@ fn parse_document_content(
     let mut newline = NewlineStyle::Lf;
     let trailing_newline = content.ends_with('\n');
     let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
-    let mut lines = Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
-    let mut start = 0;
-    let mut search_from = 0;
-    let mut content_len = 0;
+    let mut ranges: Vec<(usize, usize)> =
+        Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
+    let mut start = 0usize;
+    let mut search_from = 0usize;
 
     while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
         let index = search_from + relative;
@@ -403,9 +417,7 @@ fn parse_document_content(
                 if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
                     saw_crlf = true;
                     newline = NewlineStyle::Crlf;
-                    let line = &content[start..index];
-                    content_len += line.len();
-                    lines.push(build_line_record(line));
+                    ranges.push((start, index));
                     search_from = index + 2;
                     start = search_from;
                 } else {
@@ -415,9 +427,7 @@ fn parse_document_content(
             }
             b'\n' => {
                 saw_lf = true;
-                let line = &content[start..index];
-                content_len += line.len();
-                lines.push(build_line_record(line));
+                ranges.push((start, index));
                 search_from = index + 1;
                 start = search_from;
             }
@@ -432,10 +442,32 @@ fn parse_document_content(
     }
 
     if !trailing_newline && start < content.len() {
-        let line = &content[start..];
-        content_len += line.len();
-        lines.push(build_line_record(line));
+        ranges.push((start, content.len()));
     }
+
+    // Phase 2: build LineRecords (and hash each line) from the collected
+    // ranges. For files at or above `PARALLEL_HASH_LINE_THRESHOLD` we
+    // parallelize via rayon; below the threshold rayon's scheduling
+    // overhead dominates the win, so we stay sequential. We dispatch in
+    // chunks of `PARALLEL_HASH_CHUNK_SIZE` lines to amortize per-task
+    // overhead — per-line parallelism is too fine-grained for xxh32.
+    let content_len: usize = ranges.iter().map(|(s, e)| e - s).sum();
+    let lines: Vec<LineRecord> = if ranges.len() >= PARALLEL_HASH_LINE_THRESHOLD {
+        ranges
+            .par_chunks(PARALLEL_HASH_CHUNK_SIZE)
+            .flat_map_iter(|chunk| {
+                chunk
+                    .iter()
+                    .map(|&(s, e)| build_line_record(&content[s..e]))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    } else {
+        ranges
+            .iter()
+            .map(|&(s, e)| build_line_record(&content[s..e]))
+            .collect()
+    };
 
     Ok((newline, trailing_newline, lines, content_len))
 }
