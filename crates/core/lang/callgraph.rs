@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::lang::detect::Lang;
+use crate::lang::parser_pool;
 
 /// Maximum number of hubs before switching to parallel mode.
 pub const AUTO_HUB_THRESHOLD: usize = 200;
@@ -36,21 +37,6 @@ impl CallGraphResult {
             visited: 0,
         }
     }
-}
-
-/// Get tree-sitter language for a given Lang.
-fn callgraph_language(lang: Lang) -> Option<tree_sitter::Language> {
-    let lang = match lang {
-        Lang::Rust => tree_sitter_rust::LANGUAGE,
-        Lang::JavaScript => tree_sitter_javascript::LANGUAGE,
-        Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        Lang::Python => tree_sitter_python::LANGUAGE,
-        Lang::Go => tree_sitter_go::LANGUAGE,
-        Lang::C => tree_sitter_c::LANGUAGE,
-        Lang::Cpp => tree_sitter_cpp::LANGUAGE,
-        _ => return None,
-    };
-    Some(lang.into())
 }
 
 /// A function definition found by tree-sitter.
@@ -89,32 +75,28 @@ pub fn search_callers_bfs(target: &str, scope: &Path, _depth: usize) -> CallGrap
 
         let file_str = path.to_string_lossy().to_string();
 
-        // Use tree-sitter if available
-        if let Some(language) = callgraph_language(lang) {
-            let mut parser = tree_sitter::Parser::new();
-            if parser.set_language(&language).is_ok() {
-                if let Some(tree) = parser.parse(&content, None) {
-                    let funcs = extract_function_definitions(tree.root_node());
-                    let calls = find_call_sites(tree.root_node(), target);
+        // Use tree-sitter if available (parser is cached per-thread via parser_pool).
+        let tree = parser_pool::with_parser(lang, |parser| parser.parse(&content, None)).flatten();
+        if let Some(tree) = tree {
+            let funcs = extract_function_definitions(tree.root_node());
+            let calls = find_call_sites(tree.root_node(), target);
 
-                    for call in calls {
-                        // Find which function this call belongs to
-                        if let Some(enclosing) = find_enclosing_func(call.line, &funcs) {
-                            let key = format!("{}:{}", enclosing.name, enclosing.start_line);
-                            if !result_set.contains(&key) {
-                                result_set.insert(key);
-                                result.edges.push(CallEdge {
-                                    from: enclosing.name,
-                                    from_file: file_str.clone(),
-                                    from_line: enclosing.start_line,
-                                    to: target.to_string(),
-                                });
-                            }
-                        }
+            for call in calls {
+                // Find which function this call belongs to
+                if let Some(enclosing) = find_enclosing_func(call.line, &funcs) {
+                    let key = format!("{}:{}", enclosing.name, enclosing.start_line);
+                    if !result_set.contains(&key) {
+                        result_set.insert(key);
+                        result.edges.push(CallEdge {
+                            from: enclosing.name,
+                            from_file: file_str.clone(),
+                            from_line: enclosing.start_line,
+                            to: target.to_string(),
+                        });
                     }
-                    continue;
                 }
             }
+            continue;
         }
 
         // Fallback to naive pattern matching
@@ -289,45 +271,40 @@ pub fn search_callees_bfs(target: &str, scope: &Path, depth: usize) -> CallGraph
                 };
                 let file_str = path.to_string_lossy().to_string();
 
-                // Use tree-sitter if available
-                if let Some(language) = callgraph_language(lang) {
-                    let mut parser = tree_sitter::Parser::new();
-                    if parser.set_language(&language).is_ok() {
-                        if let Some(tree) = parser.parse(&content, None) {
-                            let funcs = extract_function_definitions(tree.root_node());
+                // Use tree-sitter if available (parser is cached per-thread via parser_pool).
+                let tree =
+                    parser_pool::with_parser(lang, |parser| parser.parse(&content, None)).flatten();
+                if let Some(tree) = tree {
+                    let funcs = extract_function_definitions(tree.root_node());
 
-                            // Find the target function
-                            if let Some(target_func) = funcs.iter().find(|f| f.name == sym) {
-                                // Find all calls within the target function body
-                                let calls = find_calls_in_function(
-                                    tree.root_node(),
-                                    target_func.start_line,
-                                    target_func.end_line,
-                                );
+                    // Find the target function
+                    if let Some(target_func) = funcs.iter().find(|f| f.name == sym) {
+                        // Find all calls within the target function body
+                        let calls = find_calls_in_function(
+                            tree.root_node(),
+                            target_func.start_line,
+                            target_func.end_line,
+                        );
 
-                                for call in calls {
-                                    if !result
-                                        .edges
-                                        .iter()
-                                        .any(|e| e.from == *sym && e.to == call.name)
-                                    {
-                                        result.edges.push(CallEdge {
-                                            from: sym.clone(),
-                                            from_file: file_str.clone(),
-                                            from_line: target_func.start_line,
-                                            to: call.name.clone(),
-                                        });
-                                        if !visited.contains(&call.name)
-                                            && current_depth + 1 < depth
-                                        {
-                                            next_queue.push(call.name.clone());
-                                        }
-                                    }
+                        for call in calls {
+                            if !result
+                                .edges
+                                .iter()
+                                .any(|e| e.from == *sym && e.to == call.name)
+                            {
+                                result.edges.push(CallEdge {
+                                    from: sym.clone(),
+                                    from_file: file_str.clone(),
+                                    from_line: target_func.start_line,
+                                    to: call.name.clone(),
+                                });
+                                if !visited.contains(&call.name) && current_depth + 1 < depth {
+                                    next_queue.push(call.name.clone());
                                 }
                             }
-                            continue;
                         }
                     }
+                    continue;
                 }
 
                 // Fallback to naive
