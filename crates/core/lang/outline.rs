@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::lang::detect::Lang;
+use crate::lang::parser_pool;
 
 /// Hard limit on the input size accepted by the outline pipeline (in bytes).
 ///
@@ -82,33 +83,16 @@ impl OutlineEntry {
     }
 }
 
-/// Get the tree-sitter Language for a given Lang variant.
-fn outline_language(lang: Lang) -> Option<tree_sitter::Language> {
-    let lang = match lang {
-        Lang::Rust => tree_sitter_rust::LANGUAGE,
-        Lang::JavaScript => tree_sitter_javascript::LANGUAGE,
-        Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        Lang::Python => tree_sitter_python::LANGUAGE,
-        Lang::Go => tree_sitter_go::LANGUAGE,
-        Lang::C => tree_sitter_c::LANGUAGE,
-        Lang::Cpp => tree_sitter_cpp::LANGUAGE,
-        _ => return None,
-    };
-    Some(lang.into())
-}
-
 /// Get structured outline entries for file content.
+///
+/// Uses a thread-local parser cache (see `lang::parser_pool`) so repeated
+/// calls within a single process (CLI batch, MCP server) skip the cost of
+/// constructing a fresh `tree_sitter::Parser` and re-binding the grammar
+/// on every call.
 pub fn get_outline_entries(text: &str, lang: Lang) -> Vec<OutlineEntry> {
-    let Some(ts_lang) = outline_language(lang) else {
-        return get_outline_entries_fallback(text, lang);
-    };
+    let parsed = parser_pool::with_parser(lang, |parser| parser.parse(text, None));
 
-    let mut parser = tree_sitter::Parser::new();
-    if parser.set_language(&ts_lang).is_err() {
-        return get_outline_entries_fallback(text, lang);
-    }
-
-    let Some(tree) = parser.parse(text, None) else {
+    let Some(Some(tree)) = parsed else {
         return get_outline_entries_fallback(text, lang);
     };
 

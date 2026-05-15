@@ -9,5 +9,6 @@ pub mod callgraph;
 pub mod deps;
 pub mod detect;
 pub mod outline;
+pub mod parser_pool;
 pub mod signature;
 pub mod symbol;
