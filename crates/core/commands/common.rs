@@ -28,7 +28,15 @@ pub fn check_guard(
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), LinehashError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    // For a bare relative path like "sample.js", `path.parent()` returns
+    // `Some(Path::new(""))` rather than `None`, so the `unwrap_or` fallback to
+    // "." never fires. The empty path then fails when we try to open it for
+    // fsync. Normalize empty parents to "." so we always have a directory we
+    // can `fs::File::open` for `sync_all`.
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
     let existing_permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
 
     let mut temp = NamedTempFile::new_in(parent)?;

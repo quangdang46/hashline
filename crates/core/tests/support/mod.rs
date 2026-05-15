@@ -48,6 +48,19 @@ pub fn run_linehash(args: &[&str]) -> (String, String, i32) {
     (stdout, stderr, code)
 }
 
+pub fn run_linehash_in(cwd: &Path, args: &[&str]) -> (String, String, i32) {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("linehash"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run linehash");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    let code = output.status.code().unwrap_or(-1);
+    (stdout, stderr, code)
+}
+
 pub fn assert_ok_contains(args: &[&str], expected: &str) {
     let (stdout, stderr, code) = run_linehash(args);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");

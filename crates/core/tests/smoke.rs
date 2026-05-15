@@ -3,7 +3,9 @@ mod support;
 use std::fs;
 use tempfile::TempDir;
 
-use support::{assert_err_contains, do_edit, fixture_path, parse_json, run_linehash, tmpfile};
+use support::{
+    assert_err_contains, do_edit, fixture_path, parse_json, run_linehash, run_linehash_in, tmpfile,
+};
 #[cfg(unix)]
 use support::{chmod, mode};
 
@@ -1838,6 +1840,79 @@ fn anchor_from_file(file_arg: &str, line_no: usize) -> String {
 
 fn find_collision_pair() -> (String, String) {
     ("line-1612".to_owned(), "line-2126".to_owned())
+}
+
+// ============================================================================
+// Regression: atomic_write must succeed when called with a bare relative path
+// (no directory component). `Path::new("sample.js").parent()` returns
+// `Some(Path::new(""))`, not `None`, so the previous `unwrap_or` fallback to
+// "." never fired and the post-write `sync_parent_directory("")` failed with
+// ENOENT — even though the file had already been written.
+// ============================================================================
+
+#[test]
+fn edit_succeeds_with_bare_relative_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("sample.txt");
+    fs::write(&path, "alpha\ngamma\n").unwrap();
+
+    let parsed = parse_json(&["read", path.to_str().unwrap(), "--json"]);
+    let anchor = format!("1:{}", parsed["lines"][0]["hash"].as_str().unwrap());
+
+    let (stdout, stderr, code) =
+        run_linehash_in(dir.path(), &["edit", "sample.txt", &anchor, "beta"]);
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty(), "expected no stderr, got: {stderr:?}");
+    assert!(
+        stdout.contains("Edited line"),
+        "expected success message, got: {stdout:?}"
+    );
+
+    let contents = fs::read_to_string(&path).unwrap();
+    assert_eq!(contents, "beta\ngamma\n");
+}
+
+#[test]
+fn insert_succeeds_with_bare_relative_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("sample.txt");
+    fs::write(&path, "alpha\ngamma\n").unwrap();
+
+    let parsed = parse_json(&["read", path.to_str().unwrap(), "--json"]);
+    let anchor = format!("1:{}", parsed["lines"][0]["hash"].as_str().unwrap());
+
+    let (stdout, stderr, code) =
+        run_linehash_in(dir.path(), &["insert", "sample.txt", &anchor, "beta"]);
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty(), "expected no stderr, got: {stderr:?}");
+    assert!(
+        stdout.contains("Inserted line"),
+        "expected success message, got: {stdout:?}"
+    );
+
+    let contents = fs::read_to_string(&path).unwrap();
+    assert_eq!(contents, "alpha\nbeta\ngamma\n");
+}
+
+#[test]
+fn delete_succeeds_with_bare_relative_path() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("sample.txt");
+    fs::write(&path, "alpha\nbeta\ngamma\n").unwrap();
+
+    let parsed = parse_json(&["read", path.to_str().unwrap(), "--json"]);
+    let anchor = format!("2:{}", parsed["lines"][1]["hash"].as_str().unwrap());
+
+    let (stdout, stderr, code) = run_linehash_in(dir.path(), &["delete", "sample.txt", &anchor]);
+    assert_eq!(code, 0, "expected success, got stderr: {stderr}");
+    assert!(stderr.is_empty(), "expected no stderr, got: {stderr:?}");
+    assert!(
+        stdout.contains("Deleted line"),
+        "expected success message, got: {stdout:?}"
+    );
+
+    let contents = fs::read_to_string(&path).unwrap();
+    assert_eq!(contents, "alpha\ngamma\n");
 }
 
 // ============================================================================
