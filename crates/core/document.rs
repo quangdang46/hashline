@@ -395,16 +395,111 @@ fn parse_document_content(
         return Ok((NewlineStyle::Lf, false, Vec::new(), 0));
     }
 
-    // Phase 1: scan for line boundaries (sequential, memchr-only — very fast).
-    // We collect `(start, end)` byte offsets so the hashing phase below can
-    // run either sequentially or in parallel with no mutable shared state.
     let bytes = content.as_bytes();
+    let trailing_newline = content.ends_with('\n');
+    let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
+
+    if estimated_line_count >= PARALLEL_HASH_LINE_THRESHOLD {
+        // Large file: scan line boundaries first, then hash chunks in
+        // parallel via rayon. The (start, end) range vec adds an extra
+        // allocation, but rayon parallelism on a non-trivial CPU workload
+        // amortizes it many times over.
+        parse_document_content_parallel(
+            content,
+            bytes,
+            path,
+            trailing_newline,
+            estimated_line_count,
+        )
+    } else {
+        // Small file: single sequential pass builds LineRecords inline,
+        // avoiding the intermediate ranges Vec entirely. This path matches
+        // the historical single-pass implementation and is the fastest
+        // option when there is not enough work to parallelize.
+        parse_document_content_sequential(
+            content,
+            bytes,
+            path,
+            trailing_newline,
+            estimated_line_count,
+        )
+    }
+}
+
+fn parse_document_content_sequential(
+    content: &str,
+    bytes: &[u8],
+    path: &Path,
+    trailing_newline: bool,
+    estimated_line_count: usize,
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
     let mut saw_lf = false;
     let mut saw_crlf = false;
     let mut saw_bare_cr = false;
     let mut newline = NewlineStyle::Lf;
-    let trailing_newline = content.ends_with('\n');
-    let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
+    let mut lines = Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
+    let mut start = 0usize;
+    let mut search_from = 0usize;
+    let mut content_len = 0usize;
+
+    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
+        let index = search_from + relative;
+        match bytes[index] {
+            b'\r' => {
+                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                    saw_crlf = true;
+                    newline = NewlineStyle::Crlf;
+                    let line = &content[start..index];
+                    content_len += line.len();
+                    lines.push(build_line_record(line));
+                    search_from = index + 2;
+                    start = search_from;
+                } else {
+                    saw_bare_cr = true;
+                    search_from = index + 1;
+                }
+            }
+            b'\n' => {
+                saw_lf = true;
+                let line = &content[start..index];
+                content_len += line.len();
+                lines.push(build_line_record(line));
+                search_from = index + 1;
+                start = search_from;
+            }
+            _ => unreachable!("memchr2 only returns requested bytes"),
+        }
+    }
+
+    if saw_bare_cr || (saw_crlf && saw_lf) {
+        return Err(LinehashError::MixedNewlines {
+            path: path.display().to_string(),
+        });
+    }
+
+    if !trailing_newline && start < content.len() {
+        let line = &content[start..];
+        content_len += line.len();
+        lines.push(build_line_record(line));
+    }
+
+    Ok((newline, trailing_newline, lines, content_len))
+}
+
+fn parse_document_content_parallel(
+    content: &str,
+    bytes: &[u8],
+    path: &Path,
+    trailing_newline: bool,
+    estimated_line_count: usize,
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
+    // Phase 1: scan for line boundaries with memchr — fast, single pass,
+    // no hashing here. We record (start, end) byte ranges so the hashing
+    // phase can run in parallel without mutating shared state.
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+    let mut saw_bare_cr = false;
+    let mut newline = NewlineStyle::Lf;
     let mut ranges: Vec<(usize, usize)> =
         Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
     let mut start = 0usize;
@@ -445,29 +540,19 @@ fn parse_document_content(
         ranges.push((start, content.len()));
     }
 
-    // Phase 2: build LineRecords (and hash each line) from the collected
-    // ranges. For files at or above `PARALLEL_HASH_LINE_THRESHOLD` we
-    // parallelize via rayon; below the threshold rayon's scheduling
-    // overhead dominates the win, so we stay sequential. We dispatch in
-    // chunks of `PARALLEL_HASH_CHUNK_SIZE` lines to amortize per-task
-    // overhead — per-line parallelism is too fine-grained for xxh32.
+    // Phase 2: hash each line in parallel. We dispatch in chunks of
+    // PARALLEL_HASH_CHUNK_SIZE so per-task overhead is amortized — per-line
+    // parallelism is too fine-grained for xxh32 to be worthwhile.
     let content_len: usize = ranges.iter().map(|(s, e)| e - s).sum();
-    let lines: Vec<LineRecord> = if ranges.len() >= PARALLEL_HASH_LINE_THRESHOLD {
-        ranges
-            .par_chunks(PARALLEL_HASH_CHUNK_SIZE)
-            .flat_map_iter(|chunk| {
-                chunk
-                    .iter()
-                    .map(|&(s, e)| build_line_record(&content[s..e]))
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    } else {
-        ranges
-            .iter()
-            .map(|&(s, e)| build_line_record(&content[s..e]))
-            .collect()
-    };
+    let lines: Vec<LineRecord> = ranges
+        .par_chunks(PARALLEL_HASH_CHUNK_SIZE)
+        .flat_map_iter(|chunk| {
+            chunk
+                .iter()
+                .map(|&(s, e)| build_line_record(&content[s..e]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
 
     Ok((newline, trailing_newline, lines, content_len))
 }
