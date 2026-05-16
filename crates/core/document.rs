@@ -316,9 +316,10 @@ impl Document {
                     && sidecar.size == metadata.len()
                     && sidecar.content_hash == content_hash
                 {
-                    let content = std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
-                        path: path_string.clone(),
-                    })?;
+                    let content =
+                        std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+                            path: path_string.clone(),
+                        })?;
                     let (newline, trailing_newline, _, content_len) =
                         parse_document_content(content, path)?;
                     let lines = build_lines_from_hashes(&sidecar.short_hashes, content);

@@ -55,7 +55,7 @@ pub fn verify_candidates(
         if !matches.is_empty() {
             results.push(VerifyResult {
                 line_idx,
-                content: Arc::from(content.clone()),
+                content: content.clone(),
                 matches,
             });
         }

@@ -8,6 +8,8 @@ mod document;
 mod error;
 #[path = "../hash.rs"]
 mod hash;
+#[path = "../hash_cache.rs"]
+mod hash_cache;
 #[path = "../index.rs"]
 mod index;
 #[path = "../lang/mod.rs"]

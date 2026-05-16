@@ -12,6 +12,8 @@ mod document;
 mod error;
 #[path = "../hash.rs"]
 mod hash;
+#[path = "../hash_cache.rs"]
+mod hash_cache;
 mod support;
 
 use anchor::{parse_anchor, resolve};

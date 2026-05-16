@@ -34,9 +34,7 @@ impl HashSidecar {
         Self::ensure_dir(root, source)?;
         let path = Self::store_path(root, source);
 
-        let mut temp = NamedTempFile::new_in(
-            path.parent().unwrap_or(Path::new(".")),
-        )?;
+        let mut temp = NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
 
         let mut buf = Vec::with_capacity(29 + self.short_hashes.len());
         buf.extend_from_slice(MAGIC);

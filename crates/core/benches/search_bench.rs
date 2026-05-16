@@ -9,6 +9,8 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 mod document;
 #[path = "../error.rs"]
 mod error;
+#[path = "../hash_cache.rs"]
+mod hash_cache;
 #[path = "../search/mod.rs"]
 mod search;
 mod support;
