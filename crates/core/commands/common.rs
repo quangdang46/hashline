@@ -90,7 +90,7 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Lineha
                     // Last resort: read temp file contents and write directly.
                     // This loses atomicity but avoids the rename race.
                     let mut buf = Vec::new();
-                    temp.as_file_mut().rewind()?;
+                    temp.as_file_mut().seek(std::io::SeekFrom::Start(0))?;
                     temp.as_file_mut().read_to_end(&mut buf)?;
                     drop(temp);
                     // Retry direct write a few times too
