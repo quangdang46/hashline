@@ -71,6 +71,7 @@ where
 #[cfg(windows)]
 fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), LinehashError> {
     use std::io::Read;
+    use std::io::Seek;
     use std::thread;
     use std::time::Duration;
 
