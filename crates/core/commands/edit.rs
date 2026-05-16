@@ -2,7 +2,11 @@ use std::io::Write;
 
 use crate::anchor::{looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range};
 use crate::cli::EditCmd;
-use crate::commands::common::{atomic_write, check_guard};
+use memmap2::Mmap;
+
+use crate::commands::common::{
+    atomic_write, atomic_write_document, atomic_write_with, check_guard,
+};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
@@ -54,19 +58,38 @@ pub fn run<W: Write, E: Write>(
         return write_dry_run(ctx, &cmd.file, &summary);
     }
 
-    let after_bytes = doc.render();
-    atomic_write(&cmd.file, &after_bytes)?;
+    let after_bytes = if needs_receipt {
+        let bytes = doc.render();
+        atomic_write(&cmd.file, &bytes)?;
+        Some(bytes)
+    } else if let EditSummary::Single {
+        line_no,
+        before,
+        after,
+    } = &summary
+    {
+        if !atomic_write_single_line_edit(&cmd.file, &doc, line_no - 1, before, after)? {
+            atomic_write_document(&cmd.file, &doc)?;
+        }
+        None
+    } else {
+        atomic_write_document(&cmd.file, &doc)?;
+        None
+    };
 
     if needs_receipt {
         let before_bytes = before_bytes.as_deref().ok_or_else(|| {
             std::io::Error::other("before bytes should exist when receipt is needed")
+        })?;
+        let after_bytes = after_bytes.as_deref().ok_or_else(|| {
+            std::io::Error::other("after bytes should exist when receipt is needed")
         })?;
         let receipt = receipt::build_receipt(
             "edit",
             &cmd.file,
             summary.line_changes(),
             before_bytes,
-            &after_bytes,
+            after_bytes,
         );
 
         if let Some(log_path) = &cmd.audit_log {
@@ -86,6 +109,53 @@ pub fn run<W: Write, E: Write>(
             output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
         }
     }
+}
+
+fn atomic_write_single_line_edit(
+    path: &std::path::Path,
+    doc: &Document,
+    line_index: usize,
+    before: &str,
+    after: &str,
+) -> Result<bool, LinehashError> {
+    let file = std::fs::File::open(path)?;
+    let mmap = unsafe { Mmap::map(&file) }?;
+    let Some((start, end)) = original_line_byte_span(doc, line_index, before.len()) else {
+        return Ok(false);
+    };
+
+    if end > mmap.len() || &mmap[start..end] != before.as_bytes() {
+        return Ok(false);
+    }
+
+    atomic_write_with(path, |writer| {
+        writer.write_all(&mmap[..start])?;
+        writer.write_all(after.as_bytes())?;
+        writer.write_all(&mmap[end..])?;
+        Ok(())
+    })?;
+    Ok(true)
+}
+
+fn original_line_byte_span(
+    doc: &Document,
+    line_index: usize,
+    original_line_len: usize,
+) -> Option<(usize, usize)> {
+    if line_index >= doc.lines.len() {
+        return None;
+    }
+
+    let separator_len = match doc.newline {
+        crate::document::NewlineStyle::Lf => 1,
+        crate::document::NewlineStyle::Crlf => 2,
+    };
+    let start = doc.lines[..line_index]
+        .iter()
+        .map(|line| line.content.len() + separator_len)
+        .sum::<usize>();
+
+    Some((start, start + original_line_len))
 }
 
 fn write_dry_run<W: Write, E: Write>(

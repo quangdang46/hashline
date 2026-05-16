@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::anchor::{parse_range, resolve_range};
 use crate::cli::IndentCmd;
-use crate::commands::common::{atomic_write, check_guard};
+use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
@@ -15,7 +15,8 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), LinehashError> {
     let mut doc = Document::load(&cmd.file)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
-    let before_bytes = doc.render();
+    let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
+    let before_bytes = needs_receipt.then(|| doc.render());
     let range = parse_range(&cmd.range)?;
     let index = doc.build_index();
     let (start, end) = resolve_range(&range, &doc, &index)?;
@@ -37,8 +38,7 @@ pub fn run<W: Write, E: Write>(
 
     for idx in start.index..=end.index {
         let line = &mut doc.lines[idx];
-        line.full_hash = crate::hash::full_hash(&line.content);
-        line.short_hash = crate::hash::short_from_full(line.full_hash);
+        line.short_hash = crate::hash::short_from_full(crate::hash::full_hash(&line.content));
     }
 
     let summary = IndentSummary {
@@ -52,25 +52,37 @@ pub fn run<W: Write, E: Write>(
         return write_dry_run(ctx, &cmd.file, &summary);
     }
 
-    let after_bytes = doc.render();
-    atomic_write(&cmd.file, &after_bytes)?;
+    let after_bytes = if needs_receipt {
+        let bytes = doc.render();
+        atomic_write(&cmd.file, &bytes)?;
+        Some(bytes)
+    } else {
+        atomic_write_document(&cmd.file, &doc)?;
+        None
+    };
 
-    let receipt = receipt::build_receipt(
-        "indent",
-        &cmd.file,
-        summary.changes.clone(),
-        &before_bytes,
-        &after_bytes,
-    );
+    if needs_receipt {
+        let receipt = receipt::build_receipt(
+            "indent",
+            &cmd.file,
+            summary.changes.clone(),
+            before_bytes
+                .as_deref()
+                .expect("before bytes should exist when receipt is needed"),
+            after_bytes
+                .as_deref()
+                .expect("after bytes should exist when receipt is needed"),
+        );
 
-    if let Some(log_path) = &cmd.audit_log {
-        if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-            receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+        if let Some(log_path) = &cmd.audit_log {
+            if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+            }
         }
-    }
 
-    if cmd.receipt {
-        return receipt::write_receipt(ctx, &receipt);
+        if cmd.receipt {
+            return receipt::write_receipt(ctx, &receipt);
+        }
     }
 
     match ctx.output_mode() {

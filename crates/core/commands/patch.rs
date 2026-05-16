@@ -510,7 +510,6 @@ fn build_lines(contents: &[String]) -> Vec<LineRecord> {
             let full_hash = hash::full_hash(content);
             LineRecord {
                 content: content.clone(),
-                full_hash,
                 short_hash: hash::short_from_full(full_hash),
             }
         })

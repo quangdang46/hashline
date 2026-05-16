@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 
 use tempfile::NamedTempFile;
@@ -28,6 +28,17 @@ pub fn check_guard(
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), LinehashError> {
+    atomic_write_with(path, |file| file.write_all(bytes))
+}
+
+pub fn atomic_write_document(path: &Path, doc: &Document) -> Result<(), LinehashError> {
+    atomic_write_with(path, |file| doc.write_to(file))
+}
+
+pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), LinehashError>
+where
+    F: FnOnce(&mut fs::File) -> io::Result<()>,
+{
     // For a bare relative path like "sample.js", `path.parent()` returns
     // `Some(Path::new(""))` rather than `None`, so the `unwrap_or` fallback to
     // "." never fires. The empty path then fails when we try to open it for
@@ -44,7 +55,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), LinehashError> {
         temp.as_file().set_permissions(permissions)?;
     }
 
-    temp.write_all(bytes)?;
+    write_contents(temp.as_file_mut())?;
     temp.flush()?;
     temp.as_file().sync_all()?;
 

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-05-16T10:26:21+07:00",
+  "source_results": "bench-results/bench-cli-results-2026-05-16-10-26-21.json",
+  "source_harness": "bench-results/bench-cli-harness-2026-05-16-10-26-21.py",
+  "criterion_log": "bench-results/bench-cargo-criterion-2026-05-16-10-26-21.log",
+  "machine_notes": "Initial latency-roadmap baseline captured on the same workstation as LATENCY-PLAN.md.",
+  "targets": {
+    "p0_edit_100k_median_ms": 18.0,
+    "p1_read_100k_median_ms": 18.0,
+    "p2_grep_regex_100k_median_ms": 8.0
+  },
+  "gate_rules": {
+    "cli_key_metric_regression_percent": 10,
+    "criterion_regression_percent": 5,
+    "required_before_commit": [
+      "cargo test --release",
+      "cargo bench --bench edit_bench",
+      "cargo bench --bench stats_bench",
+      "cargo bench --bench verify_bench",
+      "cargo bench --bench outline_bench",
+      "python3 bench-results/bench-cli-harness-2026-05-16-10-26-21.py",
+      "ubs $(git diff --name-only --cached)"
+    ],
+    "pr_artifact_pattern": "bench-results/pr-<id-or-date>-results.json"
+  },
+  "metrics": [
+    {
+      "label": "linehash read 100k",
+      "best_ms": 29.967,
+      "median_ms": 34.778,
+      "mean_ms": 39.49,
+      "stdev_ms": 9.473,
+      "iters": 7,
+      "stdout_bytes": 6986157
+    },
+    {
+      "label": "linehash read 100k --json",
+      "best_ms": 60.243,
+      "median_ms": 69.884,
+      "mean_ms": 90.457,
+      "stdev_ms": 32.134,
+      "iters": 7,
+      "stdout_bytes": 9475198
+    },
+    {
+      "label": "cat 100k (baseline raw read)",
+      "best_ms": 10.486,
+      "median_ms": 12.821,
+      "mean_ms": 19.581,
+      "stdev_ms": 19.374,
+      "iters": 7,
+      "stdout_bytes": 5886157
+    },
+    {
+      "label": "linehash grep 100k (regex, --no-index)",
+      "best_ms": 22.991,
+      "median_ms": 30.34,
+      "mean_ms": 28.512,
+      "stdev_ms": 4.18,
+      "iters": 7,
+      "stdout_bytes": 0
+    },
+    {
+      "label": "rg 100k (regex)",
+      "best_ms": 3.583,
+      "median_ms": 4.584,
+      "mean_ms": 5.743,
+      "stdev_ms": 1.868,
+      "iters": 7,
+      "stdout_bytes": 0
+    },
+    {
+      "label": "linehash edit 100k (line 1)",
+      "best_ms": 34.475,
+      "median_ms": 49.736,
+      "mean_ms": 48.428,
+      "stdev_ms": 10.114,
+      "iters": 7,
+      "stdout_bytes": 0
+    },
+    {
+      "label": "sed -i 1c 100k (baseline)",
+      "best_ms": 13.516,
+      "median_ms": 17.5,
+      "mean_ms": 17.893,
+      "stdev_ms": 3.689,
+      "iters": 7,
+      "stdout_bytes": 0
+    }
+  ]
+}

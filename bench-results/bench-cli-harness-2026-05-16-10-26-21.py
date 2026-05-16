@@ -101,6 +101,7 @@ PATTERN = "function"
 for s in sizes:
     add(bench(f"linehash grep {s} '{PATTERN}' (indexed)",      [LH, "grep", files[s], PATTERN]))
     add(bench(f"linehash grep {s} '{PATTERN}' --no-index",     [LH, "grep", files[s], PATTERN, "--no-index"]))
+    add(bench(f"linehash grep {s} '{PATTERN}' --daemon",       [LH, "grep", files[s], PATTERN, "--daemon"]))
     if RG:
         add(bench(f"rg {s} '{PATTERN}' (no anchors)",          [RG, "-n", PATTERN, files[s]]))
     add(bench(f"grep {s} -n '{PATTERN}' (no anchors)",         ["grep", "-n", PATTERN, files[s]]))

@@ -755,6 +755,7 @@ dependencies = [
  "fixedbitset",
  "ignore",
  "insta",
+ "itoa",
  "lru",
  "memchr",
  "memmap2",

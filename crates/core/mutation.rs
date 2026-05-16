@@ -150,15 +150,13 @@ pub fn move_line(
 }
 
 fn refresh_line_metadata(line: &mut LineRecord) {
-    line.full_hash = hash::full_hash(&line.content);
-    line.short_hash = hash::short_from_full(line.full_hash);
+    line.short_hash = hash::short_from_full(hash::full_hash(&line.content));
 }
 
 fn new_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
         content: content.to_owned(),
-        full_hash,
         short_hash: hash::short_from_full(full_hash),
     }
 }

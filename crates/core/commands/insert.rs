@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::anchor::{parse_anchor, resolve};
 use crate::cli::InsertCmd;
-use crate::commands::common::{atomic_write, check_guard};
+use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
@@ -39,10 +39,19 @@ pub fn run<W: Write, E: Write>(
         return write_dry_run(ctx, &cmd.file, &summary);
     }
 
-    let after_bytes = doc.render();
-    atomic_write(&cmd.file, &after_bytes)?;
+    let after_bytes = if needs_receipt {
+        let bytes = doc.render();
+        atomic_write(&cmd.file, &bytes)?;
+        Some(bytes)
+    } else {
+        atomic_write_document(&cmd.file, &doc)?;
+        None
+    };
 
     if needs_receipt {
+        let after_bytes = after_bytes
+            .as_deref()
+            .expect("after bytes should exist when receipt is needed");
         let receipt = receipt::build_receipt(
             "insert",
             &cmd.file,
@@ -50,7 +59,7 @@ pub fn run<W: Write, E: Write>(
             before_bytes
                 .as_deref()
                 .expect("before bytes should exist when receipt is needed"),
-            &after_bytes,
+            after_bytes,
         );
 
         if let Some(log_path) = &cmd.audit_log {

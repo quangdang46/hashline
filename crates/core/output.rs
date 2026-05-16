@@ -73,15 +73,20 @@ pub fn write_json_success<W: Write, E: Write, T: Serialize + ?Sized>(
 
 pub fn print_read(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
     let width = line_number_width(doc);
+    let mut number_buf = itoa::Buffer::new();
+    let mut hash_buf = [0u8; 2];
     for (index, line) in doc.lines.iter().enumerate() {
-        writeln!(
-            writer,
-            "{number:>width$}:{hash}| {content}",
-            number = index + 1,
-            hash = format_short_hash(line.short_hash),
-            content = line.content,
-            width = width
-        )?;
+        let number = number_buf.format(index + 1);
+        for _ in number.len()..width {
+            writer.write_all(b" ")?;
+        }
+        writer.write_all(number.as_bytes())?;
+        writer.write_all(b":")?;
+        write_short_hash(&mut hash_buf, line.short_hash);
+        writer.write_all(&hash_buf)?;
+        writer.write_all(b"| ")?;
+        writer.write_all(line.content.as_bytes())?;
+        writer.write_all(b"\n")?;
     }
     Ok(())
 }
@@ -137,13 +142,25 @@ pub fn print_read_json_streaming(
         .map(|meta| (meta.mtime_secs, meta.mtime_nanos, meta.inode))
         .unwrap_or((0, 0, 0));
 
-    write!(
-        writer,
-        "{{\"file\":{file},\"newline\":\"{newline}\",\"trailing_newline\":{trailing},\"mtime\":{mtime},\"mtime_nanos\":{mtime_nanos},\"inode\":{inode},\"lines\":[",
-        file = serde_json::to_string(&file).map_err(io::Error::other)?,
-        newline = newline,
-        trailing = doc.trailing_newline,
-    )?;
+    writer.write_all(b"{\"file\":")?;
+    serde_json::to_writer(&mut *writer, &file)?;
+    writer.write_all(b",\"newline\":\"")?;
+    writer.write_all(newline.as_bytes())?;
+    writer.write_all(b"\",\"trailing_newline\":")?;
+    writer.write_all(if doc.trailing_newline {
+        b"true"
+    } else {
+        b"false"
+    })?;
+
+    let mut number_buf = itoa::Buffer::new();
+    writer.write_all(b",\"mtime\":")?;
+    writer.write_all(number_buf.format(mtime).as_bytes())?;
+    writer.write_all(b",\"mtime_nanos\":")?;
+    writer.write_all(number_buf.format(mtime_nanos).as_bytes())?;
+    writer.write_all(b",\"inode\":")?;
+    writer.write_all(number_buf.format(inode).as_bytes())?;
+    writer.write_all(b",\"lines\":[")?;
 
     let mut hash_buf = [0u8; 2];
     for (index, line) in doc.lines.iter().enumerate() {
@@ -151,13 +168,13 @@ pub fn print_read_json_streaming(
             writer.write_all(b",")?;
         }
         write_short_hash(&mut hash_buf, line.short_hash);
-        let hash_str = std::str::from_utf8(&hash_buf).expect("short hash is ASCII hex");
-        let view = LineViewRef {
-            n: index + 1,
-            hash: hash_str,
-            content: &line.content,
-        };
-        serde_json::to_writer(&mut *writer, &view)?;
+        writer.write_all(b"{\"n\":")?;
+        writer.write_all(number_buf.format(index + 1).as_bytes())?;
+        writer.write_all(b",\"hash\":\"")?;
+        writer.write_all(&hash_buf)?;
+        writer.write_all(b"\",\"content\":")?;
+        serde_json::to_writer(&mut *writer, &line.content)?;
+        writer.write_all(b"}")?;
     }
 
     writer.write_all(b"]}")?;
@@ -551,7 +568,7 @@ fn collect_context_indexes(doc: &Document, anchors: &[ResolvedLine], context: us
 mod tests {
     use super::{
         JsonStyle, print_index, print_index_json, print_read, print_read_context, print_read_json,
-        print_stats, print_stats_json,
+        print_read_json_streaming, print_stats, print_stats_json,
     };
     use crate::anchor::ResolvedLine;
     use crate::document::{Document, FileStats, format_short_hash};
@@ -822,8 +839,6 @@ mod tests {
         // and emits JSON byte-by-byte. It must produce semantically identical
         // JSON to the existing payload-based path or downstream consumers
         // (MCP clients, jq pipelines, ...) will break silently.
-        use super::print_read_json_streaming;
-
         let doc = numbered_doc(7);
 
         let mut streamed = Vec::new();
@@ -843,8 +858,6 @@ mod tests {
         // Quote, backslash, newline and unicode in line content must be
         // escaped per JSON, even though we hand-write the surrounding
         // wrapper instead of going through serde_json::to_writer for it.
-        use super::print_read_json_streaming;
-
         let content = "plain\nwith \"quote\" and \\ backslash\ntab\there and é\n";
         let doc = Document::from_str(Path::new("special.txt"), content).unwrap();
 

@@ -78,7 +78,7 @@ fn main() {
     // emits many small writes per record, and a fresh `io::stdout()` handle
     // is not block-buffered when piped.
     let stdout_lock = io::stdout().lock();
-    let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout_lock);
+    let mut stdout = io::BufWriter::with_capacity(1024 * 1024, stdout_lock);
     let stderr_lock = io::stderr().lock();
     let mut stderr = io::BufWriter::with_capacity(8 * 1024, stderr_lock);
 

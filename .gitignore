@@ -7,3 +7,4 @@ target/
 __pycache__/
 references/
 *.md
+bench-results/.linehash/

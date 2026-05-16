@@ -377,6 +377,106 @@ fn edit_single_line_updates_file_contents() {
 }
 
 #[test]
+fn edit_single_line_preserves_newline_edges() {
+    for (name, input, line, expected) in [
+        (
+            "lf trailing first",
+            "alpha\nbeta\ngamma\n",
+            1,
+            "ALPHA\nbeta\ngamma\n",
+        ),
+        (
+            "lf trailing middle",
+            "alpha\nbeta\ngamma\n",
+            2,
+            "alpha\nBETA\ngamma\n",
+        ),
+        (
+            "lf trailing last",
+            "alpha\nbeta\ngamma\n",
+            3,
+            "alpha\nbeta\nGAMMA\n",
+        ),
+        (
+            "lf no trailing first",
+            "alpha\nbeta\ngamma",
+            1,
+            "ALPHA\nbeta\ngamma",
+        ),
+        (
+            "lf no trailing middle",
+            "alpha\nbeta\ngamma",
+            2,
+            "alpha\nBETA\ngamma",
+        ),
+        (
+            "lf no trailing last",
+            "alpha\nbeta\ngamma",
+            3,
+            "alpha\nbeta\nGAMMA",
+        ),
+        (
+            "crlf trailing first",
+            "alpha\r\nbeta\r\ngamma\r\n",
+            1,
+            "ALPHA\r\nbeta\r\ngamma\r\n",
+        ),
+        (
+            "crlf trailing middle",
+            "alpha\r\nbeta\r\ngamma\r\n",
+            2,
+            "alpha\r\nBETA\r\ngamma\r\n",
+        ),
+        (
+            "crlf trailing last",
+            "alpha\r\nbeta\r\ngamma\r\n",
+            3,
+            "alpha\r\nbeta\r\nGAMMA\r\n",
+        ),
+        (
+            "crlf no trailing first",
+            "alpha\r\nbeta\r\ngamma",
+            1,
+            "ALPHA\r\nbeta\r\ngamma",
+        ),
+        (
+            "crlf no trailing middle",
+            "alpha\r\nbeta\r\ngamma",
+            2,
+            "alpha\r\nBETA\r\ngamma",
+        ),
+        (
+            "crlf no trailing last",
+            "alpha\r\nbeta\r\ngamma",
+            3,
+            "alpha\r\nbeta\r\nGAMMA",
+        ),
+    ] {
+        let file = tmpfile(input);
+        let file_arg = file.to_string_lossy().into_owned();
+        let anchor = anchor_from_file(&file_arg, line);
+        let replacement = match line {
+            1 => "ALPHA",
+            2 => "BETA",
+            3 => "GAMMA",
+            _ => unreachable!(),
+        };
+        let (stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, replacement]);
+
+        assert_eq!(code, 0, "{name}: expected success, stderr: {stderr}");
+        assert!(
+            stdout.contains(&format!("Edited line {line}.")),
+            "{name}: unexpected stdout {stdout:?}"
+        );
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            expected.as_bytes(),
+            "{name}: edited bytes changed unexpectedly"
+        );
+    }
+}
+
+#[test]
 fn edit_range_replaces_lines_with_single_line() {
     let content = "alpha\nbeta\ngamma\ndelta\n";
     let start = anchor_for_line(content, 2);

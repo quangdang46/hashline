@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -59,7 +60,6 @@ pub struct FileMeta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineRecord {
     pub content: String,
-    pub full_hash: u32,
     pub short_hash: ShortHash,
 }
 
@@ -310,6 +310,26 @@ impl Document {
         }
 
         rendered
+    }
+
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        if self.lines.is_empty() {
+            return Ok(());
+        }
+
+        let separator = self.newline.separator().as_bytes();
+        for (index, line) in self.lines.iter().enumerate() {
+            if index > 0 {
+                writer.write_all(separator)?;
+            }
+            writer.write_all(line.content.as_bytes())?;
+        }
+
+        if self.trailing_newline {
+            writer.write_all(separator)?;
+        }
+
+        Ok(())
     }
 
     pub fn compute_stats(&self) -> FileStats {
@@ -607,7 +627,6 @@ fn build_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
         content: content.to_owned(),
-        full_hash,
         short_hash: hash::short_from_full(full_hash),
     }
 }
@@ -982,6 +1001,27 @@ mod tests {
     fn test_render_empty_document_is_empty_bytes() {
         let doc = Document::from_str(Path::new("demo.txt"), "").unwrap();
         assert!(doc.render().is_empty());
+    }
+
+    #[test]
+    fn test_write_to_matches_render_for_newline_shapes() {
+        for content in [
+            "",
+            "alpha\n",
+            "alpha\nbeta",
+            "alpha\nbeta\n",
+            "alpha\r\nbeta",
+            "alpha\r\nbeta\r\n",
+        ] {
+            let doc = Document::from_str(Path::new("demo.txt"), content).unwrap();
+            let mut streamed = Vec::new();
+            doc.write_to(&mut streamed).unwrap();
+            assert_eq!(
+                streamed,
+                doc.render(),
+                "streamed render mismatch for {content:?}"
+            );
+        }
     }
 
     #[test]

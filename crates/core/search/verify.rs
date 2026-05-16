@@ -72,7 +72,6 @@ mod tests {
     fn make_line(idx: u32, content: &str) -> LineRecord {
         LineRecord {
             content: content.to_string(),
-            full_hash: 0,
             short_hash: idx as u8,
         }
     }

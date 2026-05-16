@@ -24,6 +24,7 @@ notify = { workspace = true }
 walkdir = { workspace = true }
 memchr = { workspace = true }
 memmap2 = { workspace = true }
+itoa = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 toml = "0.8"

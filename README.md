@@ -152,6 +152,22 @@ For small files or one-off searches:
 linehash grep --no-index file.txt "pattern"
 ```
 
+### Hot-loop grep with the daemon
+
+For repeated searches over the same files, keep the Unix daemon warm and route
+grep through it:
+
+```bash
+linehash daemon >/tmp/linehash-daemon.log 2>&1 &
+linehash grep src/auth.rs "verify_token" --daemon
+```
+
+`grep --daemon` auto-starts the daemon when it is not already running on Unix.
+The daemon caches file contents in memory and verifies the same regex semantics
+as the normal grep path before returning anchor-addressed matches. Other
+commands still use the regular CLI paths today; do not document or script
+daemon-backed read/edit unless those flags are added.
+
 ### Architecture
 
 | Component | Purpose |
