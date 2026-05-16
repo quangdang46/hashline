@@ -70,18 +70,40 @@ where
 
 #[cfg(windows)]
 fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), LinehashError> {
+    use std::io::Read;
     use std::thread;
     use std::time::Duration;
 
-    for attempt in 0..5 {
+    // Retry persist up to 5 times with increasing backoff.
+    // On Windows, antivirus/Defender may briefly lock the target file after
+    // it was created/written, causing MoveFileExW to fail with ACCESS_DENIED.
+    for attempt in 0..10 {
         match temp.persist(path) {
             Ok(_) => return Ok(()),
             Err(err) => {
                 temp = err.file;
-                if attempt < 4 {
-                    thread::sleep(Duration::from_millis(50 * (attempt as u64 + 1)));
+                if attempt < 9 {
+                    thread::sleep(Duration::from_millis(
+                        10 * 2u64.saturating_pow(attempt as u32),
+                    ));
                 } else {
-                    return Err(LinehashError::Io(err.error));
+                    // Last resort: read temp file contents and write directly.
+                    // This loses atomicity but avoids the rename race.
+                    let mut buf = Vec::new();
+                    temp.as_file_mut().rewind()?;
+                    temp.as_file_mut().read_to_end(&mut buf)?;
+                    drop(temp);
+                    // Retry direct write a few times too
+                    for write_attempt in 0..5 {
+                        match fs::write(path, &buf) {
+                            Ok(()) => return Ok(()),
+                            Err(e) if write_attempt < 4 => {
+                                thread::sleep(Duration::from_millis(50));
+                            }
+                            Err(e) => return Err(LinehashError::Io(e)),
+                        }
+                    }
+                    unreachable!()
                 }
             }
         }
