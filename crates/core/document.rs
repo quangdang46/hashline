@@ -6,10 +6,21 @@ use std::time::UNIX_EPOCH;
 
 use memchr::{memchr, memchr2};
 use memmap2::Mmap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LinehashError;
 use crate::hash::{self, ShortHash};
+
+/// Files with at least this many lines hash their lines in parallel
+/// via rayon. Below this threshold the sequential single-pass path
+/// is faster because rayon's scheduling overhead dominates.
+const PARALLEL_HASH_LINE_THRESHOLD: usize = 20_000;
+
+/// When hashing in parallel, group lines into chunks of this size before
+/// dispatching to rayon. Per-task overhead is ~tens of microseconds, so
+/// we amortize it by keeping each rayon task busy for ~milliseconds.
+const PARALLEL_HASH_CHUNK_SIZE: usize = 2_048;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LineView {
@@ -385,16 +396,51 @@ fn parse_document_content(
     }
 
     let bytes = content.as_bytes();
+    let trailing_newline = content.ends_with('\n');
+    let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
+
+    if estimated_line_count >= PARALLEL_HASH_LINE_THRESHOLD {
+        // Large file: scan line boundaries first, then hash chunks in
+        // parallel via rayon. The (start, end) range vec adds an extra
+        // allocation, but rayon parallelism on a non-trivial CPU workload
+        // amortizes it many times over.
+        parse_document_content_parallel(
+            content,
+            bytes,
+            path,
+            trailing_newline,
+            estimated_line_count,
+        )
+    } else {
+        // Small file: single sequential pass builds LineRecords inline,
+        // avoiding the intermediate ranges Vec entirely. This path matches
+        // the historical single-pass implementation and is the fastest
+        // option when there is not enough work to parallelize.
+        parse_document_content_sequential(
+            content,
+            bytes,
+            path,
+            trailing_newline,
+            estimated_line_count,
+        )
+    }
+}
+
+fn parse_document_content_sequential(
+    content: &str,
+    bytes: &[u8],
+    path: &Path,
+    trailing_newline: bool,
+    estimated_line_count: usize,
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
     let mut saw_lf = false;
     let mut saw_crlf = false;
     let mut saw_bare_cr = false;
     let mut newline = NewlineStyle::Lf;
-    let trailing_newline = content.ends_with('\n');
-    let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
     let mut lines = Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
-    let mut start = 0;
-    let mut search_from = 0;
-    let mut content_len = 0;
+    let mut start = 0usize;
+    let mut search_from = 0usize;
+    let mut content_len = 0usize;
 
     while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
         let index = search_from + relative;
@@ -436,6 +482,77 @@ fn parse_document_content(
         content_len += line.len();
         lines.push(build_line_record(line));
     }
+
+    Ok((newline, trailing_newline, lines, content_len))
+}
+
+fn parse_document_content_parallel(
+    content: &str,
+    bytes: &[u8],
+    path: &Path,
+    trailing_newline: bool,
+    estimated_line_count: usize,
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
+    // Phase 1: scan for line boundaries with memchr — fast, single pass,
+    // no hashing here. We record (start, end) byte ranges so the hashing
+    // phase can run in parallel without mutating shared state.
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+    let mut saw_bare_cr = false;
+    let mut newline = NewlineStyle::Lf;
+    let mut ranges: Vec<(usize, usize)> =
+        Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
+    let mut start = 0usize;
+    let mut search_from = 0usize;
+
+    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
+        let index = search_from + relative;
+        match bytes[index] {
+            b'\r' => {
+                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                    saw_crlf = true;
+                    newline = NewlineStyle::Crlf;
+                    ranges.push((start, index));
+                    search_from = index + 2;
+                    start = search_from;
+                } else {
+                    saw_bare_cr = true;
+                    search_from = index + 1;
+                }
+            }
+            b'\n' => {
+                saw_lf = true;
+                ranges.push((start, index));
+                search_from = index + 1;
+                start = search_from;
+            }
+            _ => unreachable!("memchr2 only returns requested bytes"),
+        }
+    }
+
+    if saw_bare_cr || (saw_crlf && saw_lf) {
+        return Err(LinehashError::MixedNewlines {
+            path: path.display().to_string(),
+        });
+    }
+
+    if !trailing_newline && start < content.len() {
+        ranges.push((start, content.len()));
+    }
+
+    // Phase 2: hash each line in parallel. We dispatch in chunks of
+    // PARALLEL_HASH_CHUNK_SIZE so per-task overhead is amortized — per-line
+    // parallelism is too fine-grained for xxh32 to be worthwhile.
+    let content_len: usize = ranges.iter().map(|(s, e)| e - s).sum();
+    let lines: Vec<LineRecord> = ranges
+        .par_chunks(PARALLEL_HASH_CHUNK_SIZE)
+        .flat_map_iter(|chunk| {
+            chunk
+                .iter()
+                .map(|&(s, e)| build_line_record(&content[s..e]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
 
     Ok((newline, trailing_newline, lines, content_len))
 }

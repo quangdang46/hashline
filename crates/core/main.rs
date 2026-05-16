@@ -73,8 +73,14 @@ fn main() {
 
     let output_mode = output_mode_for(&cli.command);
     let json_pretty = json_pretty_for(&cli.command);
-    let mut stdout = io::stdout();
-    let mut stderr = io::stderr();
+    // Wrap stdout/stderr in BufWriter so large outputs (e.g. `read --json`
+    // on a 200k-line file) don't take one syscall per write — serde_json
+    // emits many small writes per record, and a fresh `io::stdout()` handle
+    // is not block-buffered when piped.
+    let stdout_lock = io::stdout().lock();
+    let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout_lock);
+    let stderr_lock = io::stderr().lock();
+    let mut stderr = io::BufWriter::with_capacity(8 * 1024, stderr_lock);
 
     let exit_code = match run(cli, &mut stdout, &mut stderr) {
         Ok(code) => {
@@ -98,6 +104,13 @@ fn main() {
             1
         }
     };
+
+    // `process::exit` skips destructors, so the BufWriters above must be
+    // explicitly flushed or buffered output is silently dropped. We ignore
+    // flush errors — there is no useful action to take if writing to a
+    // closed pipe fails at process exit.
+    let _ = stdout.flush();
+    let _ = stderr.flush();
 
     std::process::exit(exit_code);
 }
