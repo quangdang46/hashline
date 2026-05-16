@@ -98,7 +98,7 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Lineha
                     for write_attempt in 0..5 {
                         match fs::write(path, &buf) {
                             Ok(()) => return Ok(()),
-                            Err(e) if write_attempt < 4 => {
+                            Err(_) if write_attempt < 4 => {
                                 thread::sleep(Duration::from_millis(50));
                             }
                             Err(e) => return Err(LinehashError::Io(e)),
