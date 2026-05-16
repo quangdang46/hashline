@@ -59,10 +59,40 @@ where
     temp.flush()?;
     temp.as_file().sync_all()?;
 
-    temp.persist(path)
-        .map_err(|error| LinehashError::Io(error.error))?;
+    // On Windows, antivirus or the OS may briefly hold a lock on the target
+    // file after a previous write. Retry the persist a few times to work
+    // around transient ACCESS_DENIED errors.
+    persist_with_retry(temp, path)?;
 
     sync_parent_directory(parent)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), LinehashError> {
+    use std::thread;
+    use std::time::Duration;
+
+    for attempt in 0..5 {
+        match temp.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                temp = err.file;
+                if attempt < 4 {
+                    thread::sleep(Duration::from_millis(50 * (attempt as u64 + 1)));
+                } else {
+                    return Err(LinehashError::Io(err.error));
+                }
+            }
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(not(windows))]
+fn persist_with_retry(temp: NamedTempFile, path: &Path) -> Result<(), LinehashError> {
+    temp.persist(path)
+        .map_err(|error| LinehashError::Io(error.error))?;
     Ok(())
 }
 
