@@ -187,7 +187,7 @@ pub fn diff_documents(old_doc: &Document, new_doc: &Document) -> Vec<HashDiff> {
                     kind: DiffKind::Changed,
                     old_hash: Some(format_short_hash(old_line.short_hash)),
                     new_hash: Some(format_short_hash(new_line.short_hash)),
-                    content: new_line.content.clone(),
+                    content: new_line.content.to_string(),
                 });
             }
             (None, Some(new_line)) => {
@@ -196,7 +196,7 @@ pub fn diff_documents(old_doc: &Document, new_doc: &Document) -> Vec<HashDiff> {
                     kind: DiffKind::Added,
                     old_hash: None,
                     new_hash: Some(format_short_hash(new_line.short_hash)),
-                    content: new_line.content.clone(),
+                    content: new_line.content.to_string(),
                 });
             }
             (Some(old_line), None) => {
@@ -205,7 +205,7 @@ pub fn diff_documents(old_doc: &Document, new_doc: &Document) -> Vec<HashDiff> {
                     kind: DiffKind::Removed,
                     old_hash: Some(format_short_hash(old_line.short_hash)),
                     new_hash: None,
-                    content: old_line.content.clone(),
+                    content: old_line.content.to_string(),
                 });
             }
             _ => {}

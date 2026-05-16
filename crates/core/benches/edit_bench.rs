@@ -114,7 +114,7 @@ fn assert_exact_match_scenario(scenario: &EditScenario, expected_lines: usize) {
     replace_line(&mut doc, resolved.index, &scenario.replacement_line)
         .expect("replace target line");
     assert_eq!(
-        doc.lines[scenario.target_line_number - 1].content,
+        doc.lines[scenario.target_line_number - 1].content.as_ref(),
         scenario.expected_target_line
     );
     assert!(
@@ -134,7 +134,7 @@ fn assert_surrounding_drift_scenario(scenario: &EditScenario) {
     replace_line(&mut doc, resolved.index, &scenario.replacement_line)
         .expect("replace target line");
     assert_eq!(
-        doc.lines[scenario.target_line_number - 1].content,
+        doc.lines[scenario.target_line_number - 1].content.as_ref(),
         scenario.expected_target_line
     );
 
@@ -185,7 +185,7 @@ fn assert_duplicate_target_scenario(scenario: &EditScenario) {
     replace_line(&mut doc, resolved.index, &scenario.replacement_line)
         .expect("replace target line");
     assert_eq!(
-        doc.lines[target_index].content,
+        doc.lines[target_index].content.as_ref(),
         scenario.expected_target_line
     );
 

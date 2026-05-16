@@ -180,7 +180,7 @@ pub fn read_payload(
             .map(|(index, line)| LineView {
                 n: index + 1,
                 hash: format_short_hash(line.short_hash),
-                content: line.content.clone(),
+                content: line.content.to_string(),
             })
             .collect()
     } else {
@@ -193,7 +193,7 @@ pub fn read_payload(
                 LineView {
                     n: index + 1,
                     hash: format_short_hash(line.short_hash),
-                    content: line.content.clone(),
+                    content: line.content.to_string(),
                 }
             })
             .collect()
@@ -251,7 +251,7 @@ pub fn grep_lines(
         let full_content = doc
             .lines
             .iter()
-            .map(|l| l.content.as_str())
+            .map(|l| l.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -272,7 +272,7 @@ pub fn grep_lines(
                     Some(LineView {
                         n: index + 1,
                         hash: format_short_hash(line.short_hash),
-                        content: line.content.clone(),
+                        content: line.content.to_string(),
                     })
                 } else {
                     None
@@ -301,7 +301,7 @@ pub fn grep_lines(
             include.then_some(LineView {
                 n: index + 1,
                 hash: format_short_hash(line.short_hash),
-                content: line.content.clone(),
+                content: line.content.to_string(),
             })
         })
         .collect())
@@ -315,6 +315,12 @@ fn grep_lines_fast(
     let pattern_bytes = pattern.as_bytes();
     let mut results = Vec::new();
 
+    let finder = if pattern_bytes.len() >= 2 {
+        Some(memchr::memmem::Finder::new(pattern_bytes))
+    } else {
+        None
+    };
+
     if pattern_bytes.len() == 1 {
         let byte = pattern_bytes[0];
         for (index, line) in doc.lines.iter().enumerate() {
@@ -324,26 +330,19 @@ fn grep_lines_fast(
                 results.push(LineView {
                     n: index + 1,
                     hash: format_short_hash(line.short_hash),
-                    content: line.content.clone(),
+                    content: line.content.to_string(),
                 });
             }
         }
-    } else {
+    } else if let Some(ref f) = finder {
         for (index, line) in doc.lines.iter().enumerate() {
-            let is_match = if pattern_bytes.len() <= line.content.len() {
-                line.content
-                    .as_bytes()
-                    .windows(pattern_bytes.len())
-                    .any(|w| w == pattern_bytes)
-            } else {
-                false
-            };
+            let is_match = f.find(line.content.as_bytes()).is_some();
             let include = if invert { !is_match } else { is_match };
             if include {
                 results.push(LineView {
                     n: index + 1,
                     hash: format_short_hash(line.short_hash),
-                    content: line.content.clone(),
+                    content: line.content.to_string(),
                 });
             }
         }
@@ -472,7 +471,7 @@ pub fn annotate_lines(
                 regex.is_match(&line.content).then_some(LineView {
                     n: index + 1,
                     hash: format_short_hash(line.short_hash),
-                    content: line.content.clone(),
+                    content: line.content.to_string(),
                 })
             })
             .collect()
@@ -484,7 +483,7 @@ pub fn annotate_lines(
                 line.content.contains(query).then_some(LineView {
                     n: index + 1,
                     hash: format_short_hash(line.short_hash),
-                    content: line.content.clone(),
+                    content: line.content.to_string(),
                 })
             })
             .collect()
@@ -508,7 +507,7 @@ pub fn verify_report(doc: &Document, anchors: &[String]) -> VerifyReport {
                     anchor: anchor_str.clone(),
                     status: "ok",
                     line_no: Some(resolved.line_no),
-                    content: Some(doc.lines[resolved.index].content.clone()),
+                    content: Some(doc.lines[resolved.index].content.to_string()),
                     error: None,
                 }),
                 Err(error) => {

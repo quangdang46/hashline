@@ -5,6 +5,7 @@ mod context;
 mod document;
 mod error;
 mod hash;
+mod hash_cache;
 mod index;
 mod install;
 mod lang;

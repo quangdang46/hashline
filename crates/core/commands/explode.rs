@@ -46,7 +46,7 @@ pub fn explode(source: &Path, out_dir: &Path, force: bool) -> Result<ExplodeRepo
 
     for (index, line) in doc.lines.iter().enumerate() {
         let path = out_dir.join(format_filename(index + 1, line.short_hash));
-        fs::write(path, &line.content)?;
+        fs::write(path, line.content.as_bytes())?;
     }
 
     let meta = ExplodeMeta {

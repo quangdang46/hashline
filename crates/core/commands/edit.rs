@@ -30,7 +30,7 @@ pub fn run<W: Write, E: Write>(
             let (start, end) = resolve_range(&range, &doc, &index)?;
             let before = doc.lines[start.index..=end.index]
                 .iter()
-                .map(|line| line.content.clone())
+                .map(|line| line.content.to_string())
                 .collect::<Vec<_>>();
             let after = split_content_lines(&cmd.content);
             replace_range(&mut doc, start.index, end.index, &cmd.content)?;
@@ -38,13 +38,13 @@ pub fn run<W: Write, E: Write>(
                 start_line: start.line_no,
                 end_line: end.line_no,
                 before,
-                after,
+                after: after.iter().map(|s| s.to_string()).collect(),
             }
         }
         false => {
             let anchor = parse_anchor(&cmd.anchor)?;
             let resolved = resolve(&anchor, &doc, &index)?;
-            let before = doc.lines[resolved.index].content.clone();
+            let before = doc.lines[resolved.index].content.to_string();
             replace_line(&mut doc, resolved.index, &cmd.content)?;
             EditSummary::Single {
                 line_no: resolved.line_no,

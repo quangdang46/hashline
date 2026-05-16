@@ -25,9 +25,9 @@ pub fn run<W: Write, E: Write>(
 
     let mut changes = Vec::new();
     for idx in start.index..=end.index {
-        let before = doc.lines[idx].content.clone();
+        let before = doc.lines[idx].content.to_string();
         let after = apply_indent(&before, change, idx + 1)?;
-        doc.lines[idx].content = after.clone();
+        doc.lines[idx].content = std::sync::Arc::from(after.as_str());
         changes.push(LineChange {
             line_no: idx + 1,
             kind: ChangeKind::Modified,

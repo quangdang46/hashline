@@ -26,7 +26,7 @@ pub fn run<W: Write, E: Write>(
             let (start, end) = resolve_range(&range, &doc, &index)?;
             let deleted = doc.lines[start.index..=end.index]
                 .iter()
-                .map(|line| line.content.clone())
+                .map(|line| line.content.to_string())
                 .collect::<Vec<_>>();
             delete_range(&mut doc, start.index, end.index)?;
             DeleteSummary::range(start.line_no, end.line_no, deleted)
@@ -35,7 +35,7 @@ pub fn run<W: Write, E: Write>(
             let index = doc.build_index();
             let anchor = parse_anchor(&cmd.anchor)?;
             let resolved = resolve(&anchor, &doc, &index)?;
-            let deleted = doc.lines[resolved.index].content.clone();
+            let deleted = doc.lines[resolved.index].content.to_string();
             delete_line(&mut doc, resolved.index)?;
             DeleteSummary::single(resolved.line_no, deleted)
         }

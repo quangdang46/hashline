@@ -232,7 +232,7 @@ fn resolve_edit(
         mark_occupied(occupied, start.index..=end.index, Occupancy::Edit, op_index)?;
         let before = original.lines[start.index..=end.index]
             .iter()
-            .map(|line| line.content.clone())
+            .map(|line| line.content.to_string())
             .collect();
         return Ok(PlannedOp::EditRange {
             op_index,
@@ -255,7 +255,7 @@ fn resolve_edit(
         op_index,
         line: resolved.index,
         content: edit.content.clone(),
-        before: original.lines[resolved.index].content.clone(),
+        before: original.lines[resolved.index].content.to_string(),
     })
 }
 
@@ -303,7 +303,7 @@ fn resolve_delete(
     Ok(PlannedOp::Delete {
         op_index,
         line: resolved.index,
-        deleted: original.lines[resolved.index].content.clone(),
+        deleted: original.lines[resolved.index].content.to_string(),
     })
 }
 
@@ -486,7 +486,7 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Li
         if let Some(replacement) = &replacement_at[boundary] {
             new_contents.push(replacement.clone());
         } else {
-            new_contents.push(original.lines[boundary].content.clone());
+            new_contents.push(original.lines[boundary].content.to_string());
         }
     }
 
@@ -509,7 +509,7 @@ fn build_lines(contents: &[String]) -> Vec<LineRecord> {
         .map(|content| {
             let full_hash = hash::full_hash(content);
             LineRecord {
-                content: content.clone(),
+                content: std::sync::Arc::from(content.as_str()),
                 short_hash: hash::short_from_full(full_hash),
             }
         })

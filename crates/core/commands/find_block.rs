@@ -114,7 +114,7 @@ fn detect_language(doc: &Document, anchor_index: usize) -> Result<BlockLanguage,
     let mut saw_brace = false;
     let mut saw_indent = false;
     for index in 0..doc.lines.len() {
-        let line = doc.lines[index].content.as_str();
+        let line = &doc.lines[index].content;
         if line.contains('{') || line.contains('}') {
             saw_brace = true;
         }
@@ -141,7 +141,7 @@ fn find_brace_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, L
     let mut state = BraceScanState::default();
 
     for (line_index, line) in doc.lines.iter().enumerate() {
-        for brace in code_braces(line.content.as_str(), &mut state) {
+        for brace in code_braces(&line.content, &mut state) {
             match brace {
                 BraceToken::Open => stack.push(line_index),
                 BraceToken::Close => {
@@ -397,7 +397,7 @@ fn is_probable_single_quoted_literal(bytes: &[u8], index: usize) -> bool {
 fn find_indent_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, LinehashError> {
     let mut candidate = None;
     for index in 0..=anchor_index {
-        let line = doc.lines[index].content.as_str();
+        let line = &doc.lines[index].content;
         if is_blank(line) || !looks_like_indent_block_header(line) {
             continue;
         }
@@ -427,7 +427,7 @@ fn find_indent_block(doc: &Document, anchor_index: usize) -> Result<BlockRange, 
 fn indent_block_end(doc: &Document, header_index: usize, header_indent: usize) -> usize {
     let mut end_index = header_index;
     for index in header_index + 1..doc.lines.len() {
-        let line = doc.lines[index].content.as_str();
+        let line = &doc.lines[index].content;
         if is_blank(line) {
             end_index = index;
             continue;
@@ -444,7 +444,7 @@ fn next_nonblank_indent(doc: &Document, from_index: usize) -> Option<usize> {
     doc.lines
         .iter()
         .skip(from_index + 1)
-        .map(|line| line.content.as_str())
+        .map(|line| line.content.as_ref())
         .find(|line| !is_blank(line))
         .map(leading_indent_width)
 }

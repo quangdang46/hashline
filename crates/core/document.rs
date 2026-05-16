@@ -3,6 +3,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use memchr::{memchr, memchr2};
@@ -59,7 +60,7 @@ pub struct FileMeta {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineRecord {
-    pub content: String,
+    pub content: Arc<str>,
     pub short_hash: ShortHash,
 }
 
@@ -167,6 +168,13 @@ impl SearchDocument {
         let pat_len = pattern_bytes.len();
         let mut results = Vec::new();
 
+        // Pre-build memmem finder for multi-byte patterns (SIMD-optimized).
+        let finder = if pat_len >= 2 {
+            Some(memchr::memmem::Finder::new(pattern_bytes))
+        } else {
+            None
+        };
+
         for (line_idx, &start) in self.line_offsets.iter().enumerate() {
             let end = if line_idx + 1 < self.line_offsets.len() {
                 self.line_offsets[line_idx + 1]
@@ -187,11 +195,8 @@ impl SearchDocument {
 
             let is_match = if pat_len == 1 {
                 memchr(pattern_bytes[0], line_content.as_bytes()).is_some()
-            } else if pat_len <= line_content.len() {
-                line_content
-                    .as_bytes()
-                    .windows(pat_len)
-                    .any(|w| w == pattern_bytes)
+            } else if let Some(ref f) = finder {
+                f.find(line_content.as_bytes()).is_some()
             } else {
                 false
             };
@@ -267,6 +272,93 @@ impl Document {
             lines,
             content_len,
             file_meta: None,
+            short_hash_index: None,
+        })
+    }
+
+    pub fn load_with_hash_cache(path: &Path, root: &Path) -> Result<Document, LinehashError> {
+        use crate::hash_cache::HashSidecar;
+
+        let file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        let path_string = path.display().to_string();
+
+        if metadata.len() == 0 {
+            return Ok(Document {
+                path: path.to_path_buf(),
+                newline: NewlineStyle::Lf,
+                trailing_newline: false,
+                lines: Vec::new(),
+                content_len: 0,
+                file_meta: Some(FileMeta::from_metadata(&metadata)?),
+                short_hash_index: None,
+            });
+        }
+
+        let mmap = unsafe { memmap2::Mmap::map(&file) }?;
+        let bytes = &mmap[..];
+
+        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
+            return Err(LinehashError::BinaryFile { path: path_string });
+        }
+
+        let content_hash = crate::hash::full_hash_bytes(bytes);
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if HashSidecar::exists(root, path) {
+            if let Ok(sidecar) = HashSidecar::read(root, path) {
+                if sidecar.mtime_secs == mtime
+                    && sidecar.size == metadata.len()
+                    && sidecar.content_hash == content_hash
+                {
+                    let content = std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+                        path: path_string.clone(),
+                    })?;
+                    let (newline, trailing_newline, _, content_len) =
+                        parse_document_content(content, path)?;
+                    let lines = build_lines_from_hashes(&sidecar.short_hashes, content);
+                    let file_meta = Some(FileMeta::from_metadata(&metadata)?);
+
+                    return Ok(Document {
+                        path: path.to_path_buf(),
+                        newline,
+                        trailing_newline,
+                        lines,
+                        content_len,
+                        file_meta,
+                        short_hash_index: None,
+                    });
+                }
+            }
+        }
+
+        let content = std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+            path: path_string.clone(),
+        })?;
+        let file_meta = Some(FileMeta::from_metadata(&metadata)?);
+        let (newline, trailing_newline, lines, content_len) =
+            parse_document_content(content, path)?;
+
+        let sidecar = HashSidecar {
+            mtime_secs: mtime,
+            size: metadata.len(),
+            content_hash,
+            short_hashes: lines.iter().map(|l| l.short_hash).collect(),
+        };
+        let _ = sidecar.write(root, path);
+
+        Ok(Document {
+            path: path.to_path_buf(),
+            newline,
+            trailing_newline,
+            lines,
+            content_len,
+            file_meta,
             short_hash_index: None,
         })
     }
@@ -626,9 +718,52 @@ fn parse_line_offsets(content: &str) -> (NewlineStyle, bool, Vec<usize>) {
 fn build_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
-        content: content.to_owned(),
+        content: Arc::from(content),
         short_hash: hash::short_from_full(full_hash),
     }
+}
+
+fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord> {
+    let bytes = content.as_bytes();
+    let mut lines = Vec::with_capacity(short_hashes.len());
+    let mut start = 0usize;
+    let mut search_from = 0usize;
+    let mut hash_idx = 0usize;
+    let mut content_len = 0usize;
+
+    while let Some(relative) = memchr::memchr(b'\n', &bytes[search_from..]) {
+        let index = search_from + relative;
+        let line = &content[start..index];
+        content_len += line.len();
+        let sh = if hash_idx < short_hashes.len() {
+            short_hashes[hash_idx]
+        } else {
+            hash::short_from_full(hash::full_hash(line))
+        };
+        lines.push(LineRecord {
+            content: Arc::from(line),
+            short_hash: sh,
+        });
+        hash_idx += 1;
+        search_from = index + 1;
+        start = search_from;
+    }
+
+    if start < content.len() {
+        let line = &content[start..];
+        content_len += line.len();
+        let sh = if hash_idx < short_hashes.len() {
+            short_hashes[hash_idx]
+        } else {
+            hash::short_from_full(hash::full_hash(line))
+        };
+        lines.push(LineRecord {
+            content: Arc::from(line),
+            short_hash: sh,
+        });
+    }
+
+    lines
 }
 
 fn empty_index() -> ShortHashIndex {
@@ -743,7 +878,7 @@ fn suggest_context_n(doc: &Document) -> usize {
     let markers = doc
         .lines
         .iter()
-        .map(|line| line.content.as_str())
+        .map(|line| line.content.as_ref())
         .enumerate()
         .filter_map(|(index, content)| is_structure_marker(content).then_some(index + 1))
         .collect::<Vec<_>>();
@@ -869,8 +1004,8 @@ mod tests {
         assert_eq!(document.newline, NewlineStyle::Lf);
         assert!(document.trailing_newline);
         assert_eq!(document.lines.len(), 2);
-        assert_eq!(document.lines[0].content, "alpha");
-        assert_eq!(document.lines[1].content, "beta");
+        assert_eq!(document.lines[0].content.as_ref(), "alpha");
+        assert_eq!(document.lines[1].content.as_ref(), "beta");
     }
 
     #[test]
@@ -881,7 +1016,7 @@ mod tests {
         assert_eq!(document.newline, NewlineStyle::Crlf);
         assert!(document.trailing_newline);
         assert_eq!(document.lines.len(), 2);
-        assert_eq!(document.lines[1].content, "beta");
+        assert_eq!(document.lines[1].content.as_ref(), "beta");
     }
 
     #[test]
@@ -890,7 +1025,7 @@ mod tests {
         let document = Document::load(&path).unwrap();
 
         assert_eq!(document.lines.len(), 1);
-        assert_eq!(document.lines[0].content, "alpha");
+        assert_eq!(document.lines[0].content.as_ref(), "alpha");
         assert!(!document.trailing_newline);
     }
 
@@ -900,7 +1035,7 @@ mod tests {
         let document = Document::load(&path).unwrap();
 
         assert_eq!(document.lines.len(), 1);
-        assert_eq!(document.lines[0].content, "alpha");
+        assert_eq!(document.lines[0].content.as_ref(), "alpha");
         assert!(document.trailing_newline);
     }
 
@@ -919,8 +1054,8 @@ mod tests {
         let document = Document::load(&path).unwrap();
 
         assert_eq!(document.lines.len(), 2);
-        assert_eq!(document.lines[0].content, "  ");
-        assert_eq!(document.lines[1].content, "\t");
+        assert_eq!(document.lines[0].content.as_ref(), "  ");
+        assert_eq!(document.lines[1].content.as_ref(), "\t");
     }
 
     #[test]
@@ -1027,8 +1162,8 @@ mod tests {
     #[test]
     fn test_line_order_matches_vector_positions() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "beta");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "beta");
     }
 
     #[test]

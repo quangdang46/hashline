@@ -32,8 +32,8 @@ pub fn run<W: Write, E: Write>(
         });
     }
 
-    let line_a = doc.lines[resolved_a.index].content.clone();
-    let line_b = doc.lines[resolved_b.index].content.clone();
+    let line_a = doc.lines[resolved_a.index].content.to_string();
+    let line_b = doc.lines[resolved_b.index].content.to_string();
     swap_lines(&mut doc, resolved_a.index, resolved_b.index)?;
 
     let summary = SwapSummary {

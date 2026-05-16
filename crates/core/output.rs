@@ -173,7 +173,7 @@ pub fn print_read_json_streaming(
         writer.write_all(b",\"hash\":\"")?;
         writer.write_all(&hash_buf)?;
         writer.write_all(b"\",\"content\":")?;
-        serde_json::to_writer(&mut *writer, &line.content)?;
+        serde_json::to_writer(&mut *writer, line.content.as_ref())?;
         writer.write_all(b"}")?;
     }
 

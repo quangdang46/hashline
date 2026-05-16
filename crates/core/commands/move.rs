@@ -24,7 +24,7 @@ pub fn run<W: Write, E: Write>(
     let target_anchor = parse_anchor(&cmd.target)?;
     let source = resolve(&source_anchor, &doc, &index)?;
     let target = resolve(&target_anchor, &doc, &index)?;
-    let moved_content = doc.lines[source.index].content.clone();
+    let moved_content = doc.lines[source.index].content.to_string();
     let place_before = matches!(cmd.direction, MoveDirection::Before);
     let inserted_index = move_line(&mut doc, source.index, target.index, place_before)?;
 

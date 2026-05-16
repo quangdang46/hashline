@@ -66,12 +66,14 @@ pub fn verify_candidates(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::document::LineRecord;
 
     fn make_line(idx: u32, content: &str) -> LineRecord {
         LineRecord {
-            content: content.to_string(),
+            content: Arc::from(content),
             short_hash: idx as u8,
         }
     }

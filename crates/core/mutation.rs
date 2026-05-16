@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use crate::document::{Document, LineRecord};
 use crate::error::LinehashError;
 use crate::hash;
@@ -12,14 +14,14 @@ pub fn validate_single_line_content(content: &str) -> Result<(), LinehashError> 
     }
 }
 
-pub fn split_content_lines(content: &str) -> Vec<String> {
+pub fn split_content_lines(content: &str) -> Vec<Arc<str>> {
     if content.is_empty() {
-        return vec![String::new()];
+        return vec![Arc::from("")];
     }
 
-    let lines = content.lines().map(str::to_owned).collect::<Vec<_>>();
+    let lines = content.lines().map(Arc::from).collect::<Vec<_>>();
     if lines.is_empty() {
-        vec![String::new()]
+        vec![Arc::from("")]
     } else {
         lines
     }
@@ -30,8 +32,8 @@ pub fn replace_line(doc: &mut Document, index: usize, content: &str) -> Result<(
     ensure_index(doc, index)?;
 
     let old_len = doc.lines[index].content.len();
-    if doc.lines[index].content != content {
-        doc.lines[index].content = content.to_owned();
+    if doc.lines[index].content.as_ref() != content {
+        doc.lines[index].content = Arc::from(content);
         refresh_line_metadata(&mut doc.lines[index]);
     }
     doc.content_len = doc.content_len + doc.lines[index].content.len() - old_len;
@@ -156,7 +158,7 @@ fn refresh_line_metadata(line: &mut LineRecord) {
 fn new_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
-        content: content.to_owned(),
+        content: Arc::from(content),
         short_hash: hash::short_from_full(full_hash),
     }
 }
@@ -197,6 +199,8 @@ fn ensure_range(doc: &Document, start: usize, end: usize) -> Result<(), Linehash
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         delete_line, delete_range, insert_line, move_line, replace_line, replace_range,
         replace_range_with_line, split_content_lines, swap_lines, validate_single_line_content,
@@ -213,7 +217,7 @@ mod tests {
 
         replace_line(&mut doc, 1, "gamma").unwrap();
 
-        assert_eq!(doc.lines[1].content, "gamma");
+        assert_eq!(doc.lines[1].content.as_ref(), "gamma");
         assert_eq!(doc.newline, original_newline);
         assert_eq!(doc.trailing_newline, original_trailing_newline);
         assert_eq!(doc.render(), b"alpha\ngamma\n");
@@ -227,9 +231,9 @@ mod tests {
         replace_range_with_line(&mut doc, 1, 2, "merged").unwrap();
 
         assert_eq!(doc.lines.len(), 3);
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "merged");
-        assert_eq!(doc.lines[2].content, "delta");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "merged");
+        assert_eq!(doc.lines[2].content.as_ref(), "delta");
         assert_eq!(doc.render(), b"alpha\nmerged\ndelta\n");
     }
 
@@ -241,11 +245,11 @@ mod tests {
         replace_range(&mut doc, 1, 2, "left\nmiddle\nright").unwrap();
 
         assert_eq!(doc.lines.len(), 5);
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "left");
-        assert_eq!(doc.lines[2].content, "middle");
-        assert_eq!(doc.lines[3].content, "right");
-        assert_eq!(doc.lines[4].content, "delta");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "left");
+        assert_eq!(doc.lines[2].content.as_ref(), "middle");
+        assert_eq!(doc.lines[3].content.as_ref(), "right");
+        assert_eq!(doc.lines[4].content.as_ref(), "delta");
         assert_eq!(doc.render(), b"alpha\nleft\nmiddle\nright\ndelta\n");
     }
 
@@ -257,8 +261,8 @@ mod tests {
         insert_line(&mut doc, 1, "beta").unwrap();
 
         assert_eq!(doc.lines.len(), 3);
-        assert_eq!(doc.lines[1].content, "beta");
-        assert_eq!(doc.lines[2].content, "gamma");
+        assert_eq!(doc.lines[1].content.as_ref(), "beta");
+        assert_eq!(doc.lines[2].content.as_ref(), "gamma");
         assert_eq!(doc.lines[2].short_hash, original_hash);
         assert_eq!(doc.render(), b"alpha\nbeta\ngamma\n");
     }
@@ -279,10 +283,10 @@ mod tests {
         insert_line(&mut doc, 1, "beta\ngamma").unwrap();
 
         assert_eq!(doc.lines.len(), 4);
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "beta");
-        assert_eq!(doc.lines[2].content, "gamma");
-        assert_eq!(doc.lines[3].content, "delta");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "beta");
+        assert_eq!(doc.lines[2].content.as_ref(), "gamma");
+        assert_eq!(doc.lines[3].content.as_ref(), "delta");
         assert_eq!(doc.render(), b"alpha\nbeta\ngamma\ndelta\n");
     }
 
@@ -293,10 +297,10 @@ mod tests {
         insert_line(&mut doc, 1, "beta\ngamma").unwrap();
 
         assert_eq!(doc.lines.len(), 4);
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "beta");
-        assert_eq!(doc.lines[2].content, "gamma");
-        assert_eq!(doc.lines[3].content, "epsilon");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "beta");
+        assert_eq!(doc.lines[2].content.as_ref(), "gamma");
+        assert_eq!(doc.lines[3].content.as_ref(), "epsilon");
         assert_eq!(doc.render(), b"alpha\nbeta\ngamma\nepsilon\n");
     }
 
@@ -308,8 +312,8 @@ mod tests {
         delete_line(&mut doc, 1).unwrap();
 
         assert_eq!(doc.lines.len(), 2);
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "gamma");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "gamma");
         assert_eq!(doc.lines[1].short_hash, original_hash);
         assert_eq!(doc.render(), b"alpha\ngamma\n");
     }
@@ -334,8 +338,8 @@ mod tests {
         delete_range(&mut doc, 1, 2).unwrap();
 
         assert_eq!(doc.lines.len(), 2);
-        assert_eq!(doc.lines[0].content, "alpha");
-        assert_eq!(doc.lines[1].content, "delta");
+        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
+        assert_eq!(doc.lines[1].content.as_ref(), "delta");
         assert_eq!(doc.lines[1].short_hash, original_hash);
         assert_eq!(doc.render(), b"alpha\ndelta\n");
     }
@@ -436,7 +440,7 @@ mod tests {
     fn split_content_lines_preserves_internal_blank_lines() {
         assert_eq!(
             split_content_lines("alpha\n\nbeta"),
-            vec!["alpha".to_owned(), String::new(), "beta".to_owned()]
+            vec![Arc::from("alpha"), Arc::from(""), Arc::from("beta")]
         );
     }
 

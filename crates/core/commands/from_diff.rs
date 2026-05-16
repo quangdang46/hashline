@@ -260,7 +260,7 @@ fn matches_at(doc: &Document, start: usize, needle: &[&str]) -> bool {
     }
     doc.lines[start..start + needle.len()]
         .iter()
-        .map(|line| line.content.as_str())
+        .map(|line| line.content.as_ref())
         .eq(needle.iter().copied())
 }
 
