@@ -1,0 +1,396 @@
+   Compiling linehash v0.1.0 (/data/projects/linehash/crates/core)
+    Finished `bench` profile [optimized] target(s) in 3m 06s
+     Running benches/edit_bench.rs (target/release/deps/edit_bench-1438cefd61e48f04)
+Gnuplot not found, using plotters backend
+Benchmarking edit_linehash_single_edit_1k_exact_match
+Benchmarking edit_linehash_single_edit_1k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_linehash_single_edit_1k_exact_match: Collecting 100 samples in estimated 5.2560 s (50k iterations)
+Benchmarking edit_linehash_single_edit_1k_exact_match: Analyzing
+edit_linehash_single_edit_1k_exact_match
+                        time:   [90.078 µs 93.959 µs 98.310 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking edit_naive_str_replace_single_edit_1k_exact_match
+Benchmarking edit_naive_str_replace_single_edit_1k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_naive_str_replace_single_edit_1k_exact_match: Collecting 100 samples in estimated 5.0126 s (409k iterations)
+Benchmarking edit_naive_str_replace_single_edit_1k_exact_match: Analyzing
+edit_naive_str_replace_single_edit_1k_exact_match
+                        time:   [12.866 µs 13.786 µs 14.798 µs]
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking edit_linehash_single_edit_10k_exact_match
+Benchmarking edit_linehash_single_edit_10k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_linehash_single_edit_10k_exact_match: Collecting 100 samples in estimated 5.1939 s (2000 iterations)
+Benchmarking edit_linehash_single_edit_10k_exact_match: Analyzing
+edit_linehash_single_edit_10k_exact_match
+                        time:   [1.4040 ms 1.5666 ms 1.7456 ms]
+Found 10 outliers among 100 measurements (10.00%)
+  6 (6.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking edit_naive_str_replace_single_edit_10k_exact_match
+Benchmarking edit_naive_str_replace_single_edit_10k_exact_match: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 5.1s, enable flat sampling, or reduce sample count to 70.
+Benchmarking edit_naive_str_replace_single_edit_10k_exact_match: Collecting 100 samples in estimated 5.0761 s (5050 iterations)
+Benchmarking edit_naive_str_replace_single_edit_10k_exact_match: Analyzing
+edit_naive_str_replace_single_edit_10k_exact_match
+                        time:   [1.1304 ms 1.3199 ms 1.5440 ms]
+Found 8 outliers among 100 measurements (8.00%)
+  5 (5.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking edit_linehash_single_edit_100k_exact_match
+Benchmarking edit_linehash_single_edit_100k_exact_match: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 6.2s, or reduce sample count to 80.
+Benchmarking edit_linehash_single_edit_100k_exact_match: Collecting 100 samples in estimated 6.2177 s (100 iterations)
+Benchmarking edit_linehash_single_edit_100k_exact_match: Analyzing
+edit_linehash_single_edit_100k_exact_match
+                        time:   [79.486 ms 85.003 ms 90.624 ms]
+
+Benchmarking edit_naive_str_replace_single_edit_100k_exact_match
+Benchmarking edit_naive_str_replace_single_edit_100k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_naive_str_replace_single_edit_100k_exact_match: Collecting 100 samples in estimated 5.5905 s (200 iterations)
+Benchmarking edit_naive_str_replace_single_edit_100k_exact_match: Analyzing
+edit_naive_str_replace_single_edit_100k_exact_match
+                        time:   [16.657 ms 18.573 ms 20.550 ms]
+
+Benchmarking edit_linehash_single_edit_10k_long_lines_exact_match
+Benchmarking edit_linehash_single_edit_10k_long_lines_exact_match: Warming up for 3.0000 s
+Benchmarking edit_linehash_single_edit_10k_long_lines_exact_match: Collecting 100 samples in estimated 5.5675 s (900 iterations)
+Benchmarking edit_linehash_single_edit_10k_long_lines_exact_match: Analyzing
+edit_linehash_single_edit_10k_long_lines_exact_match
+                        time:   [6.4394 ms 6.9457 ms 7.4510 ms]
+
+Benchmarking edit_naive_str_replace_single_edit_10k_long_lines_exact_match
+Benchmarking edit_naive_str_replace_single_edit_10k_long_lines_exact_match: Warming up for 3.0000 s
+Benchmarking edit_naive_str_replace_single_edit_10k_long_lines_exact_match: Collecting 100 samples in estimated 5.7073 s (800 iterations)
+Benchmarking edit_naive_str_replace_single_edit_10k_long_lines_exact_match: Analyzing
+edit_naive_str_replace_single_edit_10k_long_lines_exact_match
+                        time:   [2.2001 ms 2.5383 ms 2.8965 ms]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking edit_linehash_single_edit_10k_whitespace_drift
+Benchmarking edit_linehash_single_edit_10k_whitespace_drift: Warming up for 3.0000 s
+Benchmarking edit_linehash_single_edit_10k_whitespace_drift: Collecting 100 samples in estimated 5.2404 s (2100 iterations)
+Benchmarking edit_linehash_single_edit_10k_whitespace_drift: Analyzing
+edit_linehash_single_edit_10k_whitespace_drift
+                        time:   [2.2438 ms 2.5839 ms 2.9488 ms]
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking edit_naive_str_replace_single_edit_10k_whitespace_drift
+Benchmarking edit_naive_str_replace_single_edit_10k_whitespace_drift: Warming up for 3.0000 s
+Benchmarking edit_naive_str_replace_single_edit_10k_whitespace_drift: Collecting 100 samples in estimated 5.5161 s (40k iterations)
+Benchmarking edit_naive_str_replace_single_edit_10k_whitespace_drift: Analyzing
+edit_naive_str_replace_single_edit_10k_whitespace_drift
+                        time:   [134.92 µs 148.21 µs 163.24 µs]
+Found 12 outliers among 100 measurements (12.00%)
+  6 (6.00%) high mild
+  6 (6.00%) high severe
+
+Benchmarking edit_linehash_single_edit_10k_target_whitespace_drift
+Benchmarking edit_linehash_single_edit_10k_target_whitespace_drift: Warming up for 3.0000 s
+Benchmarking edit_linehash_single_edit_10k_target_whitespace_drift: Collecting 100 samples in estimated 5.0392 s (1700 iterations)
+Benchmarking edit_linehash_single_edit_10k_target_whitespace_drift: Analyzing
+edit_linehash_single_edit_10k_target_whitespace_drift
+                        time:   [1.5482 ms 1.7519 ms 1.9921 ms]
+Found 9 outliers among 100 measurements (9.00%)
+  5 (5.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking edit_naive_str_replace_single_edit_10k_target_whitespace_drift
+Benchmarking edit_naive_str_replace_single_edit_10k_target_whitespace_drift: Warming up for 3.0000 s
+Benchmarking edit_naive_str_replace_single_edit_10k_target_whitespace_drift: Collecting 100 samples in estimated 5.0021 s (71k iterations)
+Benchmarking edit_naive_str_replace_single_edit_10k_target_whitespace_drift: Analyzing
+edit_naive_str_replace_single_edit_10k_target_whitespace_drift
+                        time:   [120.48 µs 142.33 µs 165.19 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  2 (2.00%) high mild
+  6 (6.00%) high severe
+
+Benchmarking edit_linehash_single_edit_10k_duplicate_target
+Benchmarking edit_linehash_single_edit_10k_duplicate_target: Warming up for 3.0000 s
+Benchmarking edit_linehash_single_edit_10k_duplicate_target: Collecting 100 samples in estimated 5.4189 s (1000 iterations)
+Benchmarking edit_linehash_single_edit_10k_duplicate_target: Analyzing
+edit_linehash_single_edit_10k_duplicate_target
+                        time:   [4.2655 ms 4.6971 ms 5.1577 ms]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high mild
+
+Benchmarking edit_naive_str_replace_single_edit_10k_duplicate_target
+Benchmarking edit_naive_str_replace_single_edit_10k_duplicate_target: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 5.4s, enable flat sampling, or reduce sample count to 60.
+Benchmarking edit_naive_str_replace_single_edit_10k_duplicate_target: Collecting 100 samples in estimated 5.4161 s (5050 iterations)
+Benchmarking edit_naive_str_replace_single_edit_10k_duplicate_target: Analyzing
+edit_naive_str_replace_single_edit_10k_duplicate_target
+                        time:   [336.99 µs 358.80 µs 383.45 µs]
+Found 16 outliers among 100 measurements (16.00%)
+  6 (6.00%) high mild
+  10 (10.00%) high severe
+
+Benchmarking edit_linehash_single_edit_10k_line_shift_drift
+Benchmarking edit_linehash_single_edit_10k_line_shift_drift: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 9.1s, enable flat sampling, or reduce sample count to 50.
+Benchmarking edit_linehash_single_edit_10k_line_shift_drift: Collecting 100 samples in estimated 9.0829 s (5050 iterations)
+Benchmarking edit_linehash_single_edit_10k_line_shift_drift: Analyzing
+edit_linehash_single_edit_10k_line_shift_drift
+                        time:   [2.4018 ms 2.8058 ms 3.2453 ms]
+Found 14 outliers among 100 measurements (14.00%)
+  8 (8.00%) high mild
+  6 (6.00%) high severe
+
+Benchmarking edit_naive_str_replace_single_edit_10k_line_shift_drift
+Benchmarking edit_naive_str_replace_single_edit_10k_line_shift_drift: Warming up for 3.0000 s
+Benchmarking edit_naive_str_replace_single_edit_10k_line_shift_drift: Collecting 100 samples in estimated 9.4399 s (10k iterations)
+Benchmarking edit_naive_str_replace_single_edit_10k_line_shift_drift: Analyzing
+edit_naive_str_replace_single_edit_10k_line_shift_drift
+                        time:   [646.90 µs 745.27 µs 857.90 µs]
+Found 5 outliers among 100 measurements (5.00%)
+  3 (3.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking edit_parse_document_10k_exact_match
+Benchmarking edit_parse_document_10k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_parse_document_10k_exact_match: Collecting 100 samples in estimated 5.3116 s (1600 iterations)
+Benchmarking edit_parse_document_10k_exact_match: Analyzing
+edit_parse_document_10k_exact_match
+                        time:   [1.7430 ms 2.0752 ms 2.4394 ms]
+Found 15 outliers among 100 measurements (15.00%)
+  10 (10.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking edit_resolve_anchor_10k_exact_match
+Benchmarking edit_resolve_anchor_10k_exact_match: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 6.7s, enable flat sampling, or reduce sample count to 60.
+Benchmarking edit_resolve_anchor_10k_exact_match: Collecting 100 samples in estimated 6.7192 s (5050 iterations)
+Benchmarking edit_resolve_anchor_10k_exact_match: Analyzing
+edit_resolve_anchor_10k_exact_match
+                        time:   [1.2142 ms 1.3312 ms 1.4726 ms]
+Found 10 outliers among 100 measurements (10.00%)
+  5 (5.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking edit_resolve_anchor_100k_exact_match
+Benchmarking edit_resolve_anchor_100k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_resolve_anchor_100k_exact_match: Collecting 100 samples in estimated 5.3693 s (200 iterations)
+Benchmarking edit_resolve_anchor_100k_exact_match: Analyzing
+edit_resolve_anchor_100k_exact_match
+                        time:   [25.104 ms 27.651 ms 30.249 ms]
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking edit_resolve_anchor_100k_prebuilt_exact_match
+Benchmarking edit_resolve_anchor_100k_prebuilt_exact_match: Warming up for 3.0000 s
+Benchmarking edit_resolve_anchor_100k_prebuilt_exact_match: Collecting 100 samples in estimated 5.0009 s (24M iterations)
+Benchmarking edit_resolve_anchor_100k_prebuilt_exact_match: Analyzing
+edit_resolve_anchor_100k_prebuilt_exact_match
+                        time:   [206.42 ns 213.39 ns 220.67 ns]
+Found 8 outliers among 100 measurements (8.00%)
+  7 (7.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking edit_parse_document_100k_exact_match
+Benchmarking edit_parse_document_100k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_parse_document_100k_exact_match: Collecting 100 samples in estimated 8.8286 s (200 iterations)
+Benchmarking edit_parse_document_100k_exact_match: Analyzing
+edit_parse_document_100k_exact_match
+                        time:   [37.501 ms 39.556 ms 41.614 ms]
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) low mild
+  1 (1.00%) high mild
+
+Benchmarking edit_mutate_render_linehash_10k_single_line
+Benchmarking edit_mutate_render_linehash_10k_single_line: Warming up for 3.0000 s
+Benchmarking edit_mutate_render_linehash_10k_single_line: Collecting 100 samples in estimated 5.1677 s (1600 iterations)
+Benchmarking edit_mutate_render_linehash_10k_single_line: Analyzing
+edit_mutate_render_linehash_10k_single_line
+                        time:   [2.7854 ms 2.9794 ms 3.1813 ms]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high mild
+
+Benchmarking edit_mutate_render_linehash_100k_single_line
+Benchmarking edit_mutate_render_linehash_100k_single_line: Warming up for 3.0000 s
+Benchmarking edit_mutate_render_linehash_100k_single_line: Collecting 100 samples in estimated 9.8297 s (200 iterations)
+Benchmarking edit_mutate_render_linehash_100k_single_line: Analyzing
+edit_mutate_render_linehash_100k_single_line
+                        time:   [46.028 ms 48.016 ms 50.036 ms]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) low mild
+
+Benchmarking edit_render_document_100k_exact_match
+Benchmarking edit_render_document_100k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_render_document_100k_exact_match: Collecting 100 samples in estimated 5.6881 s (400 iterations)
+Benchmarking edit_render_document_100k_exact_match: Analyzing
+edit_render_document_100k_exact_match
+                        time:   [7.3686 ms 8.2256 ms 9.1073 ms]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking edit_mutate_render_linehash_10k_single_line_with_receipt
+Benchmarking edit_mutate_render_linehash_10k_single_line_with_receipt: Warming up for 3.0000 s
+Benchmarking edit_mutate_render_linehash_10k_single_line_with_receipt: Collecting 100 samples in estimated 5.1304 s (1600 iterations)
+Benchmarking edit_mutate_render_linehash_10k_single_line_with_receipt: Analyzing
+edit_mutate_render_linehash_10k_single_line_with_receipt
+                        time:   [3.1509 ms 3.3618 ms 3.5811 ms]
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+
+Benchmarking edit_mutate_render_linehash_100k_single_line_with_receipt
+Benchmarking edit_mutate_render_linehash_100k_single_line_with_receipt: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 5.5s, or reduce sample count to 90.
+Benchmarking edit_mutate_render_linehash_100k_single_line_with_receipt: Collecting 100 samples in estimated 5.4638 s (100 iterations)
+Benchmarking edit_mutate_render_linehash_100k_single_line_with_receipt: Analyzing
+edit_mutate_render_linehash_100k_single_line_with_receipt
+                        time:   [56.382 ms 58.993 ms 61.683 ms]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking edit_replace_naive_line_10k_exact_match
+Benchmarking edit_replace_naive_line_10k_exact_match: Warming up for 3.0000 s
+Benchmarking edit_replace_naive_line_10k_exact_match: Collecting 100 samples in estimated 6.2000 s (20k iterations)
+Benchmarking edit_replace_naive_line_10k_exact_match: Analyzing
+edit_replace_naive_line_10k_exact_match
+                        time:   [358.42 µs 404.59 µs 452.81 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  4 (4.00%) high mild
+
+     Running benches/outline_bench.rs (target/release/deps/outline_bench-3af25e303cc11d6c)
+Gnuplot not found, using plotters backend
+Benchmarking outline_rust_500_lines
+Benchmarking outline_rust_500_lines: Warming up for 3.0000 s
+Benchmarking outline_rust_500_lines: Collecting 100 samples in estimated 5.8491 s (600 iterations)
+Benchmarking outline_rust_500_lines: Analyzing
+outline_rust_500_lines  time:   [5.6975 ms 6.0287 ms 6.3965 ms]
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking outline_rust_2k_lines
+Benchmarking outline_rust_2k_lines: Warming up for 3.0000 s
+Benchmarking outline_rust_2k_lines: Collecting 100 samples in estimated 5.4717 s (200 iterations)
+Benchmarking outline_rust_2k_lines: Analyzing
+outline_rust_2k_lines   time:   [20.948 ms 21.515 ms 22.092 ms]
+
+Benchmarking outline_rust_10k_lines
+Benchmarking outline_rust_10k_lines: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 11.1s, or reduce sample count to 40.
+Benchmarking outline_rust_10k_lines: Collecting 100 samples in estimated 11.073 s (100 iterations)
+Benchmarking outline_rust_10k_lines: Analyzing
+outline_rust_10k_lines  time:   [115.39 ms 119.86 ms 124.80 ms]
+Found 12 outliers among 100 measurements (12.00%)
+  3 (3.00%) high mild
+  9 (9.00%) high severe
+
+Benchmarking outline_rust_2k_long_lines
+Benchmarking outline_rust_2k_long_lines: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 9.4s, or reduce sample count to 50.
+Benchmarking outline_rust_2k_long_lines: Collecting 100 samples in estimated 9.4137 s (100 iterations)
+Benchmarking outline_rust_2k_long_lines: Analyzing
+outline_rust_2k_long_lines
+                        time:   [141.97 ms 154.66 ms 168.46 ms]
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+
+Benchmarking outline_python_1k_lines
+Benchmarking outline_python_1k_lines: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 11.2s, or reduce sample count to 40.
+Benchmarking outline_python_1k_lines: Collecting 100 samples in estimated 11.248 s (100 iterations)
+Benchmarking outline_python_1k_lines: Analyzing
+outline_python_1k_lines time:   [115.38 ms 118.46 ms 122.24 ms]
+Found 7 outliers among 100 measurements (7.00%)
+  2 (2.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking outline_go_1k_lines
+Benchmarking outline_go_1k_lines: Warming up for 3.0000 s
+
+Warning: Unable to complete 100 samples in 5.0s. You may wish to increase target time to 27.7s, or reduce sample count to 10.
+Benchmarking outline_go_1k_lines: Collecting 100 samples in estimated 27.688 s (100 iterations)
+Benchmarking outline_go_1k_lines: Analyzing
+outline_go_1k_lines     time:   [259.23 ms 262.99 ms 267.01 ms]
+Found 13 outliers among 100 measurements (13.00%)
+  10 (10.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking outline_plaintext_1k_lines
+Benchmarking outline_plaintext_1k_lines: Warming up for 3.0000 s
+Benchmarking outline_plaintext_1k_lines: Collecting 100 samples in estimated 5.0000 s (612M iterations)
+Benchmarking outline_plaintext_1k_lines: Analyzing
+outline_plaintext_1k_lines
+                        time:   [7.8884 ns 7.9470 ns 8.0041 ns]
+Found 7 outliers among 100 measurements (7.00%)
+  2 (2.00%) low mild
+  3 (3.00%) high mild
+  2 (2.00%) high severe
+
+     Running benches/stats_bench.rs (target/release/deps/stats_bench-bf1320722968dca3)
+Gnuplot not found, using plotters backend
+Benchmarking stats_1k_lines
+Benchmarking stats_1k_lines: Warming up for 3.0000 s
+Benchmarking stats_1k_lines: Collecting 100 samples in estimated 5.3184 s (71k iterations)
+Benchmarking stats_1k_lines: Analyzing
+stats_1k_lines          time:   [75.620 µs 76.264 µs 76.903 µs]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking stats_10k_lines
+Benchmarking stats_10k_lines: Warming up for 3.0000 s
+Benchmarking stats_10k_lines: Collecting 100 samples in estimated 5.1793 s (10k iterations)
+Benchmarking stats_10k_lines: Analyzing
+stats_10k_lines         time:   [500.98 µs 505.25 µs 509.76 µs]
+Found 5 outliers among 100 measurements (5.00%)
+  5 (5.00%) high mild
+
+Benchmarking stats_collision_heavy_10k
+Benchmarking stats_collision_heavy_10k: Warming up for 3.0000 s
+Benchmarking stats_collision_heavy_10k: Collecting 100 samples in estimated 6.9089 s (15k iterations)
+Benchmarking stats_collision_heavy_10k: Analyzing
+stats_collision_heavy_10k
+                        time:   [446.56 µs 449.89 µs 453.23 µs]
+Found 8 outliers among 100 measurements (8.00%)
+  1 (1.00%) low mild
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+
+     Running benches/verify_bench.rs (target/release/deps/verify_bench-ed0630aae177cb62)
+Gnuplot not found, using plotters backend
+Benchmarking verify_10_anchors
+Benchmarking verify_10_anchors: Warming up for 3.0000 s
+Benchmarking verify_10_anchors: Collecting 100 samples in estimated 5.0943 s (141k iterations)
+Benchmarking verify_10_anchors: Analyzing
+verify_10_anchors       time:   [36.019 µs 36.313 µs 36.588 µs]
+
+Benchmarking verify_100_anchors
+Benchmarking verify_100_anchors: Warming up for 3.0000 s
+Benchmarking verify_100_anchors: Collecting 100 samples in estimated 5.0145 s (96k iterations)
+Benchmarking verify_100_anchors: Analyzing
+verify_100_anchors      time:   [51.401 µs 52.396 µs 53.724 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking verify_mixed_100_anchors
+Benchmarking verify_mixed_100_anchors: Warming up for 3.0000 s
+Benchmarking verify_mixed_100_anchors: Collecting 100 samples in estimated 5.5185 s (50k iterations)
+Benchmarking verify_mixed_100_anchors: Analyzing
+verify_mixed_100_anchors
+                        time:   [103.70 µs 104.79 µs 106.07 µs]
+Found 11 outliers among 100 measurements (11.00%)
+  8 (8.00%) high mild
+  3 (3.00%) high severe
+
