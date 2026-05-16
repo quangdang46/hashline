@@ -128,10 +128,17 @@ fn atomic_write_single_line_edit(
         return Ok(false);
     }
 
+    // On Windows, an active mmap prevents file rename (os error 1224).
+    // Copy the byte ranges out before the mmap is dropped.
+    let head = mmap[..start].to_vec();
+    let tail = mmap[end..].to_vec();
+    drop(mmap);
+    drop(file);
+
     atomic_write_with(path, |writer| {
-        writer.write_all(&mmap[..start])?;
+        writer.write_all(&head)?;
         writer.write_all(after.as_bytes())?;
-        writer.write_all(&mmap[end..])?;
+        writer.write_all(&tail)?;
         Ok(())
     })?;
     Ok(true)
