@@ -87,6 +87,7 @@ impl HashSidecar {
         Self::store_path(root, source).exists()
     }
 
+    #[allow(dead_code)]
     pub fn invalidate(root: &Path, source: &Path) -> io::Result<()> {
         let path = Self::store_path(root, source);
         if path.exists() {

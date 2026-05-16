@@ -729,12 +729,10 @@ fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord
     let mut start = 0usize;
     let mut search_from = 0usize;
     let mut hash_idx = 0usize;
-    let mut content_len = 0usize;
 
     while let Some(relative) = memchr::memchr(b'\n', &bytes[search_from..]) {
         let index = search_from + relative;
         let line = &content[start..index];
-        content_len += line.len();
         let sh = if hash_idx < short_hashes.len() {
             short_hashes[hash_idx]
         } else {
@@ -751,7 +749,6 @@ fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord
 
     if start < content.len() {
         let line = &content[start..];
-        content_len += line.len();
         let sh = if hash_idx < short_hashes.len() {
             short_hashes[hash_idx]
         } else {
