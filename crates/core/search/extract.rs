@@ -23,7 +23,7 @@ pub struct TrigramIter<'a> {
     pos: usize,
 }
 
-impl<'a> Iterator for TrigramIter<'a> {
+impl Iterator for TrigramIter<'_> {
     type Item = (Trigram, u8, Option<u8>);
 
     #[inline]

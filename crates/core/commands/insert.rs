@@ -2,7 +2,9 @@ use std::io::Write;
 
 use crate::anchor::{parse_anchor, resolve};
 use crate::cli::InsertCmd;
-use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
+use crate::commands::common::{
+    atomic_write, atomic_write_document, check_guard, interpret_escapes,
+};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
@@ -18,6 +20,11 @@ pub fn run<W: Write, E: Write>(
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
+    let content = if cmd.interpret_escapes {
+        interpret_escapes(&cmd.content)
+    } else {
+        cmd.content
+    };
     let index = doc.build_index();
     let anchor = parse_anchor(&cmd.anchor)?;
     let resolved = resolve(&anchor, &doc, &index)?;
@@ -26,12 +33,12 @@ pub fn run<W: Write, E: Write>(
     } else {
         resolved.index + 1
     };
-    insert_line(&mut doc, insert_at, &cmd.content)?;
+    insert_line(&mut doc, insert_at, &content)?;
 
     let summary = InsertSummary {
         anchor_line: resolved.line_no,
         inserted_line: insert_at + 1,
-        content: cmd.content,
+        content,
         before: cmd.before,
     };
 

@@ -7,6 +7,38 @@ use tempfile::NamedTempFile;
 use crate::document::Document;
 use crate::error::LinehashError;
 
+/// Interpret a small set of C-style escape sequences in `input`.
+///
+/// Supported sequences: `\n`, `\r`, `\t`, `\0`, `\\`, `\"`, `\'`.
+/// Any unrecognized escape (e.g. `\q`) is left as-is so that callers do not
+/// silently lose bytes when feeding arbitrary user content. A trailing
+/// backslash is also preserved literally.
+pub fn interpret_escapes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 pub fn check_guard(
     doc: &Document,
     expect_mtime: Option<i64>,

@@ -2210,3 +2210,83 @@ fn ndjson_takes_precedence_over_json() {
     let parsed: serde_json::Value = serde_json::from_str(first_line).unwrap();
     assert_eq!(parsed["event"], "header");
 }
+
+#[test]
+fn edit_interpret_escapes_expands_newline_into_multiple_lines() {
+    let content = "alpha\nbeta\ngamma\n";
+    let file = tmpfile(content);
+    let file_arg = file.to_string_lossy().into_owned();
+    let anchor = anchor_for_line(content, 2);
+    let (stdout, stderr, code) =
+        run_linehash(&["edit", "-e", &file_arg, &anchor, "BETA-1\\nBETA-2"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.starts_with("Edited line") || stdout.starts_with("Edited lines"),
+        "stdout: {stdout:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "alpha\nBETA-1\nBETA-2\ngamma\n",
+    );
+}
+
+#[test]
+fn edit_without_interpret_escapes_leaves_backslash_n_literal() {
+    let content = "alpha\nbeta\ngamma\n";
+    let file = tmpfile(content);
+    let file_arg = file.to_string_lossy().into_owned();
+    let anchor = anchor_for_line(content, 2);
+    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, "BETA-1\\nBETA-2"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "alpha\nBETA-1\\nBETA-2\ngamma\n",
+    );
+}
+
+#[test]
+fn insert_interpret_escapes_expands_newline() {
+    let content = "alpha\nbeta\n";
+    let file = tmpfile(content);
+    let file_arg = file.to_string_lossy().into_owned();
+    let anchor = anchor_for_line(content, 1);
+    let (_stdout, stderr, code) =
+        run_linehash(&["insert", "--interpret-escapes", &file_arg, &anchor, "x\\ny"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nx\ny\nbeta\n");
+}
+
+#[test]
+fn map_accepts_positional_directory_argument() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let dir_arg = dir.path().to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_linehash(&["map", &dir_arg, "--json"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let total = parsed["total_files"].as_u64().unwrap_or(0);
+    assert!(total >= 1, "expected at least one mapped file: {stdout}");
+}
+
+#[test]
+fn map_scope_flag_overrides_positional_directory() {
+    let dir = TempDir::new().unwrap();
+    let scope_dir = dir.path().join("scope");
+    fs::create_dir(&scope_dir).unwrap();
+    fs::write(scope_dir.join("inside.rs"), "fn a() {}\n").unwrap();
+    fs::write(dir.path().join("outside.rs"), "fn b() {}\n").unwrap();
+
+    let bogus = dir.path().join("nonexistent-positional");
+    let (stdout, stderr, code) = run_linehash(&[
+        "map",
+        bogus.to_str().unwrap(),
+        "--scope",
+        scope_dir.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(
+        stdout.contains("inside.rs") && !stdout.contains("outside.rs"),
+        "expected scope to win, got: {stdout}",
+    );
+}
