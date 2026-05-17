@@ -266,6 +266,7 @@ mod tests {
             audit_log: None,
             expect_mtime: None,
             expect_inode: None,
+            interpret_escapes: false,
             json: false,
             pretty: false,
         });
@@ -341,6 +342,7 @@ mod tests {
             audit_log: None,
             expect_mtime: None,
             expect_inode: None,
+            interpret_escapes: false,
             json: true,
             pretty: false,
         });

@@ -464,7 +464,7 @@ fn extract_function_call_naive(line: &str) -> Option<String> {
     if trimmed.ends_with(';') || trimmed.ends_with('{') {
         return None;
     }
-    if trimmed.find("fn ").is_some() {
+    if trimmed.contains("fn ") {
         return None;
     }
     for (i, _) in trimmed.match_indices('(') {

@@ -113,6 +113,11 @@ pub struct EditCmd {
     pub expect_mtime: Option<i64>,
     #[arg(long)]
     pub expect_inode: Option<u64>,
+    /// Interpret C-style escape sequences in CONTENT (\n, \r, \t, \0, \\, \", \').
+    /// Useful when the shell does not expand them. Defaults to literal content.
+    #[serde(default)]
+    #[arg(short = 'e', long)]
+    pub interpret_escapes: bool,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
@@ -142,6 +147,11 @@ pub struct InsertCmd {
     pub expect_mtime: Option<i64>,
     #[arg(long)]
     pub expect_inode: Option<u64>,
+    /// Interpret C-style escape sequences in CONTENT (\n, \r, \t, \0, \\, \", \').
+    /// Useful when the shell does not expand them. Defaults to literal content.
+    #[serde(default)]
+    #[arg(short = 'e', long)]
+    pub interpret_escapes: bool,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
@@ -527,9 +537,12 @@ pub struct DaemonCmd {}
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(
     about = "Map directory tree with token estimates",
-    long_about = "Map a directory tree showing file structure with estimated token counts. Useful for understanding codebase size and structure before editing."
+    long_about = "Map a directory tree showing file structure with estimated token counts. Useful for understanding codebase size and structure before editing. Pass a positional PATH or use --scope; defaults to the current directory."
 )]
 pub struct MapCmd {
+    /// Root directory to map. Defaults to current directory. Overridden by --scope if both are set.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
     #[serde(default)]
     #[arg(long)]
     pub scope: Option<PathBuf>,

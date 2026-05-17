@@ -14,7 +14,11 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: MapCmd,
 ) -> Result<(), LinehashError> {
-    let scope = cmd.scope.as_deref().unwrap_or_else(|| Path::new("."));
+    let scope = cmd
+        .scope
+        .as_deref()
+        .or(cmd.path.as_deref())
+        .unwrap_or_else(|| Path::new("."));
     let depth = cmd.depth.unwrap_or(usize::MAX);
     let budget = cmd.budget;
 

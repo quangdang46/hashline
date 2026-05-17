@@ -5,7 +5,7 @@ use crate::cli::EditCmd;
 use memmap2::Mmap;
 
 use crate::commands::common::{
-    atomic_write, atomic_write_document, atomic_write_with, check_guard,
+    atomic_write, atomic_write_document, atomic_write_with, check_guard, interpret_escapes,
 };
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
@@ -23,6 +23,12 @@ pub fn run<W: Write, E: Write>(
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
 
+    let content = if cmd.interpret_escapes {
+        interpret_escapes(&cmd.content)
+    } else {
+        cmd.content
+    };
+
     let index = doc.build_index();
     let summary = match looks_like_range_anchor(&cmd.anchor) {
         true => {
@@ -32,8 +38,8 @@ pub fn run<W: Write, E: Write>(
                 .iter()
                 .map(|line| line.content.to_string())
                 .collect::<Vec<_>>();
-            let after = split_content_lines(&cmd.content);
-            replace_range(&mut doc, start.index, end.index, &cmd.content)?;
+            let after = split_content_lines(&content);
+            replace_range(&mut doc, start.index, end.index, &content)?;
             EditSummary::Range {
                 start_line: start.line_no,
                 end_line: end.line_no,
@@ -45,11 +51,25 @@ pub fn run<W: Write, E: Write>(
             let anchor = parse_anchor(&cmd.anchor)?;
             let resolved = resolve(&anchor, &doc, &index)?;
             let before = doc.lines[resolved.index].content.to_string();
-            replace_line(&mut doc, resolved.index, &cmd.content)?;
-            EditSummary::Single {
-                line_no: resolved.line_no,
-                before,
-                after: cmd.content,
+            if content.contains(['\n', '\r']) {
+                // Replacement content spans multiple lines; treat the single
+                // anchor as a one-line range so callers can expand a single
+                // line into many without explicitly writing `H..H`.
+                let after_lines = split_content_lines(&content);
+                replace_range(&mut doc, resolved.index, resolved.index, &content)?;
+                EditSummary::Range {
+                    start_line: resolved.line_no,
+                    end_line: resolved.line_no,
+                    before: vec![before],
+                    after: after_lines.iter().map(|s| s.to_string()).collect(),
+                }
+            } else {
+                replace_line(&mut doc, resolved.index, &content)?;
+                EditSummary::Single {
+                    line_no: resolved.line_no,
+                    before,
+                    after: content,
+                }
             }
         }
     };
