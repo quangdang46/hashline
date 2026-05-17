@@ -445,6 +445,111 @@ Hint: re-read the file metadata and retry with fresh --expect-mtime/--expect-ino
 
 ---
 
+## Benchmarks
+
+Real-feature numbers produced by `scripts/bench-features.sh` on a 4-vCPU Ubuntu 24.04 VM, `cargo build --release`, hyperfine 1.12 with `--warmup 1-2` / `--runs 5`. Each row reports **mean (min … max)** in milliseconds.
+
+Fixtures (regenerated locally on first run):
+
+- `small.rs` — 100 lines, ~6 KB
+- `medium.rs` — 10 000 lines, ~660 KB
+- `large.rs` — 100 000 lines, ~7.0 MB
+- `core/` — the linehash `crates/core` source tree (used by the language-aware commands)
+
+### Read & orient
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `read small.rs` | 1.12 ms | 0.92 – 1.44 |
+| `read medium.rs` | 2.32 ms | 2.17 – 2.54 |
+| `read large.rs` | 12.50 ms | 11.98 – 13.00 |
+| `read large.rs --json` | 33.66 ms | 32.02 – 35.98 |
+| `read large.rs --anchor … --context 5` | 11.17 ms | 10.68 – 11.57 |
+| `index small.rs` | 1.14 ms | 0.89 – 1.59 |
+| `index medium.rs` | 2.50 ms | 2.33 – 2.59 |
+| `index large.rs` | 15.87 ms | 15.47 – 16.58 |
+
+### Verify
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `verify large.rs <anchor>` | 11.80 ms | 11.18 – 12.82 |
+| `verify large.rs <10 anchors>` | 11.51 ms | 11.09 – 11.93 |
+
+### Search (`grep`, `annotate`)
+
+Single regex match in `large.rs` (100 k lines). `rg` is included as a reference baseline — note that `linehash grep` returns anchor-addressed matches, not just byte offsets.
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `grep` trigram (cold cache) | 13.05 ms | 12.01 – 14.67 |
+| `grep` trigram (warm cache) | 13.10 ms | 12.02 – 16.38 |
+| `grep --no-index` | 11.48 ms | 11.08 – 12.38 |
+| `grep --daemon` (warm) | 15.12 ms | 14.57 – 16.58 |
+| `rg <pattern> large.rs` (ref) | 2.53 ms | 2.25 – 2.80 |
+| `annotate large.rs <substring>` | 15.47 ms | 15.05 – 15.95 |
+
+> On a single one-shot search of a 7 MB file the trigram index, `--no-index` linear scan, and `--daemon` paths land within ~4 ms of each other on this hardware — the per-call cost is dominated by file I/O and anchor formatting, not regex work. `rg` will win on raw throughput when you only need byte offsets; `linehash grep`'s value-add is that every match comes back as a `line:hash` anchor ready to feed into `edit` / `patch`. Persistent index + warm daemon mostly pay off in agent loops that issue many searches against the same file.
+
+### Mutations
+
+Each run is prepared with a fresh copy of `large.rs` (100 000 lines, 7 MB) so the I/O cost is realistic.
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `edit small.rs <anchor>` | 0.88 ms | 0.72 – 1.01 |
+| `edit medium.rs <anchor>` | 2.28 ms | 2.14 – 2.44 |
+| `edit large.rs <anchor>` | 15.74 ms | 15.46 – 16.34 |
+| `edit large.rs <2k-line range>` | 50.49 ms | 48.82 – 53.10 |
+| `insert large.rs <anchor>` | 59.51 ms | 56.29 – 63.66 |
+| `delete large.rs <anchor>` | 57.41 ms | 55.96 – 60.84 |
+| `swap large.rs <a> <b>` | 59.13 ms | 57.22 – 61.37 |
+| `move large.rs <a> after <b>` | 61.76 ms | 56.27 – 72.09 |
+| `indent large.rs <range> +2` | 65.39 ms | 62.59 – 68.57 |
+| `patch large.rs <10-op patch>` | 38.84 ms | 35.42 – 42.52 |
+
+> Single-line `edit` uses an mmap fast-path that only rewrites the changed byte range, hence the ~16 ms / 7 MB number. Structural mutations (`insert` / `delete` / `swap` / `move` / `indent`, multi-line `edit`, `patch`) rewrite the whole file via atomic-rename, which is where the ~50–65 ms band comes from at this file size.
+
+### Block & diagnostics
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `find-block large.rs <anchor>` | 31.56 ms | 29.67 – 34.65 |
+| `stats large.rs` | 15.82 ms | 14.11 – 19.22 |
+| `doctor large.rs` | 14.68 ms | 14.49 – 15.02 |
+
+### Tree-sitter / language tools (real `crates/core` source tree)
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `map core/ --json` | 1.91 ms | 1.69 – 2.08 |
+| `outline cli.rs` (667 L) | 2.78 ms | 2.55 – 2.92 |
+| `outline context.rs` | 2.53 ms | 2.32 – 2.89 |
+| `symbol EditCmd --scope core --json` | 4.30 ms | 4.03 – 4.67 |
+| `callers parse_anchor --scope core --depth 3 --json` | 149.02 ms | 144.71 – 154.87 |
+| `callees run --scope core --depth 2 --json` | 118.06 ms | 114.86 – 121.32 |
+| `deps --file cli.rs --json` | 1.04 ms | 0.87 – 1.48 |
+
+> `callers` / `callees` parse the whole scope with tree-sitter on every call and BFS the call graph, so they sit in the ~100 ms range on a multi-file scope. Single-file `outline` / `deps` stay in the low-millisecond range.
+
+### Misc
+
+| Command | Mean | Range |
+|---|---:|---:|
+| `workflows --root core` | 0.92 ms | 0.86 – 0.99 |
+| `watch-capabilities --json` | 1.00 ms | 0.84 – 1.32 |
+
+### Reproducing locally
+
+```bash
+cargo build --release
+scripts/bench-features.sh > bench-results/full-feature.tsv
+```
+
+The script generates `/tmp/lh-bench/{small,medium,large}.rs` on first run (cached afterwards), then drives `hyperfine` over each public subcommand and prints one tab-separated `label\tmean_ms\tmin_ms\tmax_ms` row per benchmark. It needs `hyperfine`, `ripgrep` (`rg`), and `python3` on `PATH`, and a release build of `linehash` at `target/release/linehash` (override with `LINEHASH_BIN=...`).
+
+---
+
 ## Roadmap
 
 - [ ] `linehash diff` — show pending edits before applying
