@@ -1,6 +1,6 @@
 #![allow(unused_imports, dead_code)]
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 #[path = "../document.rs"]
 mod document;
@@ -21,63 +21,70 @@ use lang::detect::Lang;
 use lang::outline::get_outline_entries;
 use support::{generate_long_fixture, generate_short_fixture};
 
-fn bench_outline_rust_small(c: &mut Criterion) {
-    let content = generate_short_fixture(500);
-    c.bench_function("outline_rust_500_lines", |b| {
-        b.iter(|| black_box(get_outline_entries(&content, Lang::Rust)))
-    });
+// --- Scaling across Rust fixture sizes ---
+fn bench_outline_rust_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("outline_rust");
+    for size in [500, 2_000, 10_000] {
+        let content = generate_short_fixture(size);
+        group.throughput(Throughput::Bytes(content.len() as u64));
+        group.bench_with_input(BenchmarkId::new("lines", size), &content, |b, content| {
+            b.iter(|| black_box(get_outline_entries(content, Lang::Rust)))
+        });
+    }
+    group.finish();
 }
 
-fn bench_outline_rust_medium(c: &mut Criterion) {
-    let content = generate_short_fixture(2_000);
-    c.bench_function("outline_rust_2k_lines", |b| {
-        b.iter(|| black_box(get_outline_entries(&content, Lang::Rust)))
-    });
-}
-
-fn bench_outline_rust_large(c: &mut Criterion) {
-    let content = generate_short_fixture(10_000);
-    c.bench_function("outline_rust_10k_lines", |b| {
-        b.iter(|| black_box(get_outline_entries(&content, Lang::Rust)))
-    });
-}
-
+// --- Long lines ---
 fn bench_outline_rust_long_lines(c: &mut Criterion) {
     let content = generate_long_fixture(2_000);
-    c.bench_function("outline_rust_2k_long_lines", |b| {
+    let mut group = c.benchmark_group("outline_long_lines");
+    group.throughput(Throughput::Bytes(content.len() as u64));
+    group.bench_function("rust_2k", |b| {
         b.iter(|| black_box(get_outline_entries(&content, Lang::Rust)))
     });
+    group.finish();
 }
 
-fn bench_outline_python(c: &mut Criterion) {
+// --- Cross-language comparison at 1k lines ---
+fn bench_outline_cross_language(c: &mut Criterion) {
     let content = generate_short_fixture(1_000);
-    c.bench_function("outline_python_1k_lines", |b| {
-        b.iter(|| black_box(get_outline_entries(&content, Lang::Python)))
-    });
+    let mut group = c.benchmark_group("outline_language");
+    group.throughput(Throughput::Bytes(content.len() as u64));
+
+    for lang in [Lang::Rust, Lang::Python, Lang::Go, Lang::PlainText] {
+        group.bench_with_input(
+            BenchmarkId::new("lang", format!("{lang:?}")),
+            &content,
+            |b, content| b.iter(|| black_box(get_outline_entries(content, lang))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_outline_go(c: &mut Criterion) {
-    let content = generate_short_fixture(1_000);
-    c.bench_function("outline_go_1k_lines", |b| {
-        b.iter(|| black_box(get_outline_entries(&content, Lang::Go)))
-    });
-}
+// --- Real-world content ---
+fn bench_outline_real_world(c: &mut Criterion) {
+    let mut group = c.benchmark_group("outline_real_world");
 
-fn bench_outline_plaintext(c: &mut Criterion) {
-    let content = generate_short_fixture(1_000);
-    c.bench_function("outline_plaintext_1k_lines", |b| {
-        b.iter(|| black_box(get_outline_entries(&content, Lang::PlainText)))
+    let real_rust = include_str!("../document.rs");
+    group.throughput(Throughput::Bytes(real_rust.len() as u64));
+    group.bench_function("document.rs", |b| {
+        b.iter(|| black_box(get_outline_entries(real_rust, Lang::Rust)))
     });
+
+    let real_rust_large = include_str!("../orchestration.rs");
+    group.throughput(Throughput::Bytes(real_rust_large.len() as u64));
+    group.bench_function("orchestration.rs", |b| {
+        b.iter(|| black_box(get_outline_entries(real_rust_large, Lang::Rust)))
+    });
+
+    group.finish();
 }
 
 criterion_group!(
     benches,
-    bench_outline_rust_small,
-    bench_outline_rust_medium,
-    bench_outline_rust_large,
+    bench_outline_rust_scaling,
     bench_outline_rust_long_lines,
-    bench_outline_python,
-    bench_outline_go,
-    bench_outline_plaintext
+    bench_outline_cross_language,
+    bench_outline_real_world
 );
 criterion_main!(benches);

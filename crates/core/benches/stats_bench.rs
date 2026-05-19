@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 #[path = "../document.rs"]
 mod document;
@@ -21,32 +21,31 @@ fn build_document(content: &str) -> Document {
     Document::from_str(Path::new("bench.rs"), content).expect("build benchmark document")
 }
 
-fn bench_stats_1k_lines(c: &mut Criterion) {
-    let doc = build_document(&generate_short_fixture(1_000));
-    c.bench_function("stats_1k_lines", |b| {
-        b.iter(|| black_box(doc.compute_stats()))
-    });
+fn bench_stats_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stats");
+    for size in [1_000, 10_000, 100_000] {
+        let content = generate_short_fixture(size);
+        let doc = build_document(&content);
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(BenchmarkId::new("lines", size), &doc, |b, doc| {
+            b.iter(|| black_box(doc.compute_stats()))
+        });
+    }
+    group.finish();
 }
 
-fn bench_stats_10k_lines(c: &mut Criterion) {
-    let doc = build_document(&generate_short_fixture(10_000));
-    c.bench_function("stats_10k_lines", |b| {
-        b.iter(|| black_box(doc.compute_stats()))
-    });
+fn bench_stats_collision_heavy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("stats_collision");
+    for size in [1_000, 10_000] {
+        let content = generate_collision_fixture(size, hash::short_hash);
+        let doc = build_document(&content);
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(BenchmarkId::new("lines", size), &doc, |b, doc| {
+            b.iter(|| black_box(doc.compute_stats()))
+        });
+    }
+    group.finish();
 }
 
-fn bench_stats_collision_heavy_10k(c: &mut Criterion) {
-    let content = generate_collision_fixture(10_000, hash::short_hash);
-    let doc = build_document(&content);
-    c.bench_function("stats_collision_heavy_10k", |b| {
-        b.iter(|| black_box(doc.compute_stats()))
-    });
-}
-
-criterion_group!(
-    benches,
-    bench_stats_1k_lines,
-    bench_stats_10k_lines,
-    bench_stats_collision_heavy_10k
-);
+criterion_group!(benches, bench_stats_scaling, bench_stats_collision_heavy);
 criterion_main!(benches);

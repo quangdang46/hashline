@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 #[path = "../anchor.rs"]
 mod anchor;
@@ -98,31 +98,35 @@ fn count_verify_successes(doc: &Document, anchor_strings: &[String]) -> usize {
     ok_count
 }
 
-fn bench_verify_10_anchors(c: &mut Criterion) {
-    let (doc, anchors) = build_anchor_batch(10_000, 10);
-    c.bench_function("verify_10_anchors", |b| {
-        b.iter(|| black_box(count_verify_successes(&doc, &anchors)))
-    });
+// Scaling: vary anchor count on a 10k-line document
+fn bench_verify_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("verify");
+    for count in [1, 10, 100, 1_000] {
+        let (doc, anchors) = build_anchor_batch(10_000, count);
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("anchors", count),
+            &(doc, anchors),
+            |b, (doc, anchors)| b.iter(|| black_box(count_verify_successes(doc, anchors))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_verify_100_anchors(c: &mut Criterion) {
-    let (doc, anchors) = build_anchor_batch(10_000, 100);
-    c.bench_function("verify_100_anchors", |b| {
-        b.iter(|| black_box(count_verify_successes(&doc, &anchors)))
-    });
+// Mixed anchors: valid + stale + invalid
+fn bench_verify_mixed(c: &mut Criterion) {
+    let mut group = c.benchmark_group("verify_mixed");
+    for count in [10, 100] {
+        let (doc, anchors) = build_mixed_anchor_batch(10_000, count);
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("anchors", count),
+            &(doc, anchors),
+            |b, (doc, anchors)| b.iter(|| black_box(count_verify_successes(doc, anchors))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_verify_mixed_100_anchors(c: &mut Criterion) {
-    let (doc, anchors) = build_mixed_anchor_batch(10_000, 100);
-    c.bench_function("verify_mixed_100_anchors", |b| {
-        b.iter(|| black_box(count_verify_successes(&doc, &anchors)))
-    });
-}
-
-criterion_group!(
-    benches,
-    bench_verify_10_anchors,
-    bench_verify_100_anchors,
-    bench_verify_mixed_100_anchors
-);
+criterion_group!(benches, bench_verify_scaling, bench_verify_mixed);
 criterion_main!(benches);

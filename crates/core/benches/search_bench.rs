@@ -3,25 +3,30 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 #[path = "../document.rs"]
 mod document;
 #[path = "../error.rs"]
 mod error;
+#[path = "../hash.rs"]
+mod hash;
 #[path = "../hash_cache.rs"]
 mod hash_cache;
 #[path = "../search/mod.rs"]
 mod search;
 mod support;
 
-use document::Document;
+use document::{Document, LineRecord};
 use search::cache::SharedIndexCache;
+use search::decompose::decompose_regex;
+use search::filter::CandidateFilter;
 use search::index::IndexBuilder;
+use search::verify::verify_candidates;
 use support::{generate_long_fixture, generate_short_fixture};
 
 fn build_index_for_content(content: &str) -> search::TrigramIndex {
-    let lines: Vec<Arc<str>> = content.lines().map(|l| Arc::from(l)).collect();
+    let lines: Vec<Arc<str>> = content.lines().map(Arc::from).collect();
     let mut builder = IndexBuilder::new();
     for (idx, line) in lines.iter().enumerate() {
         builder.add_line(idx, line.as_bytes());
@@ -29,143 +34,104 @@ fn build_index_for_content(content: &str) -> search::TrigramIndex {
     builder.build()
 }
 
-fn bench_index_build_1k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(1_000);
-    c.bench_function("index_build_1k_lines", |b| {
-        b.iter(|| black_box(build_index_for_content(&file)))
-    });
+fn do_indexed_grep(doc: &Document, index: &search::TrigramIndex, pattern: &str) -> usize {
+    let decomposed = decompose_regex(pattern);
+    let filter = CandidateFilter::new(index, &decomposed);
+    let candidates = filter.filter();
+    let results = verify_candidates(&candidates, &doc.lines, pattern, false);
+    results.len()
 }
 
-fn bench_index_build_10k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(10_000);
-    c.bench_function("index_build_10k_lines", |b| {
-        b.iter(|| black_box(build_index_for_content(&file)))
-    });
+fn do_linear_grep(doc: &Document, pattern: &str) -> usize {
+    let re = regex::Regex::new(pattern).unwrap();
+    doc.lines
+        .iter()
+        .filter(|line| re.is_match(&line.content))
+        .count()
 }
 
-fn bench_index_build_100k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(100_000);
-    c.bench_function("index_build_100k_lines", |b| {
-        b.iter(|| black_box(build_index_for_content(&file)))
-    });
+// --- Index build scaling ---
+fn bench_index_build_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("index_build");
+    for size in [1_000, 10_000] {
+        let file = generate_short_fixture(size);
+        group.throughput(Throughput::Bytes(file.len() as u64));
+        group.bench_with_input(BenchmarkId::new("lines", size), &file, |b, content| {
+            b.iter(|| black_box(build_index_for_content(content)))
+        });
+    }
+    group.finish();
 }
 
-fn bench_cached_index_1k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(1_000);
-    let cache = SharedIndexCache::default();
-    let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-    let mtime = doc
-        .file_meta
-        .as_ref()
-        .map(|m| m.mtime_secs as u64)
-        .unwrap_or(0);
-    let content_bytes: Vec<u8> = file.as_bytes().to_vec();
+// --- Cached index ---
+fn bench_cached_index(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cached_index");
+    for size in [1_000, 10_000] {
+        let file = generate_short_fixture(size);
+        let cache = SharedIndexCache::default();
+        let content_bytes: Vec<u8> = file.as_bytes().to_vec();
+        // Warm cache
+        let _ = cache.get_index(Path::new("bench.rs"), &content_bytes, 1000);
 
-    // First call builds the index
-    let _ = cache.get_index(Path::new("bench.rs"), &content_bytes, mtime);
-
-    c.bench_function("cached_index_1k_lines", |b| {
-        b.iter(|| {
-            let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-            let mtime = doc
-                .file_meta
-                .as_ref()
-                .map(|m| m.mtime_secs as u64)
-                .unwrap_or(0);
-            black_box(cache.get_index(Path::new("bench.rs"), &content_bytes, mtime))
-        })
-    });
+        group.throughput(Throughput::Bytes(file.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("hit", size),
+            &(cache, content_bytes),
+            |b, (cache, bytes)| {
+                b.iter(|| black_box(cache.get_index(Path::new("bench.rs"), bytes, 1000)))
+            },
+        );
+    }
+    group.finish();
 }
 
-fn bench_cached_index_10k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(10_000);
-    let cache = SharedIndexCache::default();
-    let content_bytes: Vec<u8> = file.as_bytes().to_vec();
+// --- Trigram grep scaling (1k–100k) ---
+fn bench_grep_trigram_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("grep_trigram");
+    for size in [1_000, 10_000] {
+        let file = generate_short_fixture(size);
+        let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
+        let index = build_index_for_content(&file);
+        let pattern = &format!("generated_line_{:05}", size / 2);
 
-    // Build initial index
-    let _ = cache.get_index(Path::new("bench.rs"), &content_bytes, 1000);
-
-    c.bench_function("cached_index_10k_lines", |b| {
-        b.iter(|| black_box(cache.get_index(Path::new("bench.rs"), &content_bytes, 1000)))
-    });
+        group.throughput(Throughput::Bytes(file.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("lines", size),
+            &(&doc, &index, pattern.as_str()),
+            |b, &(doc, idx, pat)| b.iter(|| black_box(do_indexed_grep(doc, idx, pat))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_linear_grep_1k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(1_000);
-    let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-    c.bench_function("linear_grep_1k_lines", |b| {
-        b.iter(|| {
-            black_box(crate::orchestration::grep_lines(
-                &doc,
-                "generated_line_05000",
-                false,
-                false,
-            ))
-        })
-    });
+// --- Trigram vs linear comparison (capped at 10k to keep runtime sane) ---
+fn bench_grep_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("grep_comparison");
+    for size in [1_000, 10_000] {
+        let file = generate_short_fixture(size);
+        let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
+        let index = build_index_for_content(&file);
+        let pattern = &format!("generated_line_{:05}", size / 2);
+
+        group.throughput(Throughput::Bytes(file.len() as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("trigram", size),
+            &(&doc, &index, pattern.as_str()),
+            |b, &(doc, idx, pat)| b.iter(|| black_box(do_indexed_grep(doc, idx, pat))),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("linear", size),
+            &(&doc, pattern.as_str()),
+            |b, &(doc, pat)| b.iter(|| black_box(do_linear_grep(doc, pat))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_linear_grep_10k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(10_000);
-    let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-    c.bench_function("linear_grep_10k_lines", |b| {
-        b.iter(|| {
-            black_box(crate::orchestration::grep_lines(
-                &doc,
-                "generated_line_05000",
-                false,
-                false,
-            ))
-        })
-    });
-}
-
-fn bench_indexed_grep_1k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(1_000);
-    let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-    c.bench_function("indexed_grep_1k_lines", |b| {
-        b.iter(|| {
-            black_box(crate::orchestration::grep_lines_indexed(
-                &doc,
-                "generated_line_05000",
-                false,
-                false,
-            ))
-        })
-    });
-}
-
-fn bench_indexed_grep_10k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(10_000);
-    let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-    c.bench_function("indexed_grep_10k_lines", |b| {
-        b.iter(|| {
-            black_box(crate::orchestration::grep_lines_indexed(
-                &doc,
-                "generated_line_05000",
-                false,
-                false,
-            ))
-        })
-    });
-}
-
-fn bench_indexed_grep_100k_lines(c: &mut Criterion) {
-    let file = generate_short_fixture(100_000);
-    let doc = Document::from_str(Path::new("bench.rs"), &file).unwrap();
-    c.bench_function("indexed_grep_100k_lines", |b| {
-        b.iter(|| {
-            black_box(crate::orchestration::grep_lines_indexed(
-                &doc,
-                "generated_line_05000",
-                false,
-                false,
-            ))
-        })
-    });
-}
-
-fn bench_index_stats_10k_lines(c: &mut Criterion) {
+// --- Index stats ---
+fn bench_index_stats(c: &mut Criterion) {
     let file = generate_short_fixture(10_000);
     let index = build_index_for_content(&file);
     c.bench_function("index_stats_10k_lines", |b| {
@@ -175,16 +141,10 @@ fn bench_index_stats_10k_lines(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    bench_index_build_1k_lines,
-    bench_index_build_10k_lines,
-    bench_index_build_100k_lines,
-    bench_cached_index_1k_lines,
-    bench_cached_index_10k_lines,
-    bench_linear_grep_1k_lines,
-    bench_linear_grep_10k_lines,
-    bench_indexed_grep_1k_lines,
-    bench_indexed_grep_10k_lines,
-    bench_indexed_grep_100k_lines,
-    bench_index_stats_10k_lines
+    bench_index_build_scaling,
+    bench_cached_index,
+    bench_grep_trigram_scaling,
+    bench_grep_comparison,
+    bench_index_stats
 );
 criterion_main!(benches);

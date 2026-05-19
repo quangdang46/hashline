@@ -96,3 +96,7 @@ harness = false
 [[bench]]
 name = "adaptive_bench"
 harness = false
+
+[[bench]]
+name = "search_bench"
+harness = false
