@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 #[path = "../anchor.rs"]
 mod anchor;
@@ -507,6 +507,62 @@ fn bench_edit_replace_naive_line_10k_exact_match(c: &mut Criterion) {
     });
 }
 
+// --- Comparison group: linehash vs str_replace scaling ---
+fn bench_edit_comparison_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("edit_comparison");
+    for size in [1_000, 10_000, 100_000] {
+        let scenario = generate_exact_match_edit_scenario(size);
+        group.throughput(Throughput::Bytes(scenario.drifted_content.len() as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("linehash", size),
+            &scenario,
+            |b, scenario| {
+                b.iter(|| {
+                    black_box(
+                        linehash_edit_once(black_box(scenario)).expect("exact-match edit succeeds"),
+                    )
+                })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("str_replace", size),
+            &scenario,
+            |b, scenario| b.iter(|| black_box(naive_str_replace_line_once(black_box(scenario)))),
+        );
+    }
+    group.finish();
+}
+
+// --- Pipeline breakdown: parse vs resolve vs mutate ---
+fn bench_edit_pipeline_breakdown(c: &mut Criterion) {
+    let mut group = c.benchmark_group("edit_pipeline");
+    let scenario = generate_exact_match_edit_scenario(10_000);
+    let bytes = scenario.drifted_content.len() as u64;
+    group.throughput(Throughput::Bytes(bytes));
+
+    group.bench_function("1_parse_document", |b| {
+        b.iter(|| black_box(linehash_parse_once(black_box(&scenario))))
+    });
+
+    group.bench_function("2_resolve_anchor", |b| {
+        b.iter(|| black_box(linehash_resolve_once(black_box(&scenario)).expect("resolves")))
+    });
+
+    group.bench_function("3_mutate_render", |b| {
+        b.iter(|| black_box(linehash_mutate_render_once(black_box(&scenario))))
+    });
+
+    group.bench_function("4_full_edit", |b| {
+        b.iter(|| {
+            black_box(linehash_edit_once(black_box(&scenario)).expect("exact-match edit succeeds"))
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_edit_linehash_single_edit_1k_exact_match,
@@ -535,6 +591,8 @@ criterion_group!(
     bench_edit_render_document_100k_exact_match,
     bench_edit_mutate_render_linehash_10k_single_line_with_receipt,
     bench_edit_mutate_render_linehash_100k_single_line_with_receipt,
-    bench_edit_replace_naive_line_10k_exact_match
+    bench_edit_replace_naive_line_10k_exact_match,
+    bench_edit_comparison_scaling,
+    bench_edit_pipeline_breakdown
 );
 criterion_main!(benches);

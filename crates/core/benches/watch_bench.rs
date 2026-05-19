@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 #[path = "../cli.rs"]
 mod cli;
@@ -61,32 +61,57 @@ fn build_diff_documents_with_append(
     (build_document(&old_content), build_document(&new_content))
 }
 
-fn bench_watch_diff_no_changes_10k(c: &mut Criterion) {
-    let old_doc = build_document(&generate_short_fixture(10_000));
-    let new_doc = old_doc.clone();
-    c.bench_function("watch_diff_no_changes_10k", |b| {
-        b.iter(|| black_box(diff_documents(&old_doc, &new_doc)))
-    });
+// Scaling: no-change diff across file sizes
+fn bench_watch_diff_no_changes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("watch_no_change");
+    for size in [1_000, 10_000, 100_000] {
+        let content = generate_short_fixture(size);
+        let doc = build_document(&content);
+        let doc2 = doc.clone();
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("lines", size),
+            &(doc, doc2),
+            |b, (old, new)| b.iter(|| black_box(diff_documents(old, new))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_watch_diff_single_change_10k(c: &mut Criterion) {
-    let (old_doc, new_doc) = build_diff_documents_with_single_change(10_000);
-    c.bench_function("watch_diff_single_change_10k", |b| {
-        b.iter(|| black_box(diff_documents(&old_doc, &new_doc)))
-    });
+// Scaling: single-change diff across file sizes
+fn bench_watch_diff_single_change(c: &mut Criterion) {
+    let mut group = c.benchmark_group("watch_single_change");
+    for size in [1_000, 10_000, 100_000] {
+        let (old_doc, new_doc) = build_diff_documents_with_single_change(size);
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("lines", size),
+            &(old_doc, new_doc),
+            |b, (old, new)| b.iter(|| black_box(diff_documents(old, new))),
+        );
+    }
+    group.finish();
 }
 
-fn bench_watch_diff_append_100_lines_10k(c: &mut Criterion) {
-    let (old_doc, new_doc) = build_diff_documents_with_append(10_000, 100);
-    c.bench_function("watch_diff_append_100_lines_10k", |b| {
-        b.iter(|| black_box(diff_documents(&old_doc, &new_doc)))
-    });
+// Append scenario at different scales
+fn bench_watch_diff_append(c: &mut Criterion) {
+    let mut group = c.benchmark_group("watch_append");
+    for append in [10, 100, 1_000] {
+        let (old_doc, new_doc) = build_diff_documents_with_append(10_000, append);
+        group.throughput(Throughput::Elements(append as u64));
+        group.bench_with_input(
+            BenchmarkId::new("appended_lines", append),
+            &(old_doc, new_doc),
+            |b, (old, new)| b.iter(|| black_box(diff_documents(old, new))),
+        );
+    }
+    group.finish();
 }
 
 criterion_group!(
     benches,
-    bench_watch_diff_no_changes_10k,
-    bench_watch_diff_single_change_10k,
-    bench_watch_diff_append_100_lines_10k
+    bench_watch_diff_no_changes,
+    bench_watch_diff_single_change,
+    bench_watch_diff_append
 );
 criterion_main!(benches);
