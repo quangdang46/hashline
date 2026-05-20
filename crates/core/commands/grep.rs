@@ -30,12 +30,20 @@ pub fn run<W: Write, E: Write>(
 
     let use_fast_path = !cmd.case_insensitive && !contains_regex_metacharacters(&cmd.pattern);
 
-    // Pretty-mode + literal-fast-path can skip the per-match `String`
-    // allocations by writing each match straight to stdout from the
-    // mmap-backed `SearchDocument.content`. This is what `ripgrep` does for
-    // its standard output path. JSON/NDJSON still materialize a
-    // `Vec<LineView>` because the serializers need owned data anyway.
-    if use_fast_path && matches!(ctx.output_mode(), OutputMode::Pretty) {
+    // Literal + case-sensitive fast path streams every output shape
+    // (pretty / ndjson / compact JSON) straight from the mmap-backed
+    // `SearchDocument.content` without ever building a `Vec<LineView>`.
+    // Pretty JSON (`--json --pretty`) still goes through the buffered
+    // serializer below because pretty output is only requested for small
+    // payloads where the allocation cost is irrelevant.
+    let stream_fast = use_fast_path
+        && match ctx.output_mode() {
+            OutputMode::Pretty => true,
+            OutputMode::Ndjson => true,
+            OutputMode::Json => !ctx.json_pretty(),
+        };
+
+    if stream_fast {
         let file_meta = fs::metadata(&cmd.file)?;
         let mtime = file_meta
             .modified()
@@ -59,14 +67,34 @@ pub fn run<W: Write, E: Write>(
             search_doc
         };
 
-        let total_lines = search_doc.line_offsets.len();
-        output::print_grep_pretty_streaming(
-            ctx.stdout(),
-            &search_doc,
-            &cmd.pattern,
-            cmd.invert,
-            total_lines,
-        )?;
+        match ctx.output_mode() {
+            OutputMode::Pretty => {
+                let total_lines = search_doc.line_offsets.len();
+                output::print_grep_pretty_streaming(
+                    ctx.stdout(),
+                    &search_doc,
+                    &cmd.pattern,
+                    cmd.invert,
+                    total_lines,
+                )?;
+            }
+            OutputMode::Ndjson => {
+                output::print_grep_ndjson_streaming(
+                    ctx.stdout(),
+                    &search_doc,
+                    &cmd.pattern,
+                    cmd.invert,
+                )?;
+            }
+            OutputMode::Json => {
+                output::print_grep_json_streaming(
+                    ctx.stdout(),
+                    &search_doc,
+                    &cmd.pattern,
+                    cmd.invert,
+                )?;
+            }
+        }
         return Ok(());
     }
 

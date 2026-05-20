@@ -557,6 +557,99 @@ pub fn write_grep_json<W: Write, E: Write>(
     write_json_success(ctx, lines)
 }
 
+/// Streaming `grep --json` writer.
+///
+/// Emits the same compact JSON array shape as
+/// [`write_grep_json`]/[`write_json_success`] (`{"ok":true,"data":[...]}`)
+/// but writes each match directly from the mmap-backed `SearchDocument`
+/// without ever building a `Vec<LineView>`. On a 100k-line file with
+/// 100k matches this drops the per-match `String` allocations for both
+/// `hash` and `content`.
+///
+/// Pretty (`--json --pretty`) output is intentionally NOT streamed —
+/// pretty JSON is only requested for small payloads by humans, where
+/// the allocation cost is irrelevant.
+pub fn print_grep_json_streaming(
+    writer: &mut impl Write,
+    search_doc: &crate::document::SearchDocument,
+    pattern: &str,
+    invert: bool,
+) -> io::Result<()> {
+    writer.write_all(b"[")?;
+    let mut number_buf = itoa::Buffer::new();
+    let mut hash_buf = [0u8; 2];
+    let mut first = true;
+    let mut io_err: Option<io::Error> = None;
+
+    search_doc.grep_for_each(pattern, invert, |line_idx, content, short_hash| {
+        if io_err.is_some() {
+            return;
+        }
+        let result = (|| -> io::Result<()> {
+            if !first {
+                writer.write_all(b",")?;
+            }
+            first = false;
+            write_short_hash_bytes(&mut hash_buf, short_hash);
+            writer.write_all(b"{\"n\":")?;
+            writer.write_all(number_buf.format(line_idx + 1).as_bytes())?;
+            writer.write_all(b",\"hash\":\"")?;
+            writer.write_all(&hash_buf)?;
+            writer.write_all(b"\",\"content\":")?;
+            serde_json::to_writer(&mut *writer, content)?;
+            writer.write_all(b"}")
+        })();
+        if let Err(err) = result {
+            io_err = Some(err);
+        }
+    });
+
+    if let Some(err) = io_err {
+        return Err(err);
+    }
+    writer.write_all(b"]")?;
+    writeln!(writer)
+}
+
+/// Streaming `grep --ndjson` writer. Same shape as
+/// [`print_line_views_ndjson`] (one JSON object per line, no wrapper) but
+/// streams matches straight from the `SearchDocument` without allocating
+/// a `Vec<LineView>` or per-match `String`s.
+pub fn print_grep_ndjson_streaming(
+    writer: &mut impl Write,
+    search_doc: &crate::document::SearchDocument,
+    pattern: &str,
+    invert: bool,
+) -> io::Result<()> {
+    let mut hash_buf = [0u8; 2];
+    let mut io_err: Option<io::Error> = None;
+
+    search_doc.grep_for_each(pattern, invert, |line_idx, content, short_hash| {
+        if io_err.is_some() {
+            return;
+        }
+        write_short_hash_bytes(&mut hash_buf, short_hash);
+        let hash_str = std::str::from_utf8(&hash_buf).expect("short hash is ASCII hex");
+        let view = LineViewRef {
+            n: line_idx + 1,
+            hash: hash_str,
+            content,
+        };
+        let result: io::Result<()> = (|| {
+            serde_json::to_writer(&mut *writer, &view)?;
+            writeln!(writer)
+        })();
+        if let Err(err) = result {
+            io_err = Some(err);
+        }
+    });
+
+    if let Some(err) = io_err {
+        return Err(err);
+    }
+    Ok(())
+}
+
 pub fn write_error<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     error: &LinehashError,

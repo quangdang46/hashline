@@ -20,6 +20,7 @@
 //! - **NextMask**: 8-bit bloom filter of characters immediately following the trigram,
 //!   used to quickly reject false-positive matches during candidate filtering
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -186,7 +187,12 @@ impl IndexMeta {
 #[derive(Clone, Debug)]
 pub struct TrigramIndex {
     /// The inverted index: trigram → list of postings.
-    trigrams: HashMap<Trigram, Vec<Posting>>,
+    ///
+    /// Uses `FxHashMap` because `Trigram` is a `u32` key — the default
+    /// `RandomState` (SipHash) is HMAC-grade overkill for small integer keys
+    /// and is the dominant cost on the index-build + filter hot paths. Fx is
+    /// what `rustc` and `ripgrep` use for the same shape of workload.
+    trigrams: FxHashMap<Trigram, Vec<Posting>>,
     /// Number of lines in the indexed document.
     pub line_count: usize,
 }
@@ -201,7 +207,7 @@ impl TrigramIndex {
     /// Create a new empty trigram index.
     pub fn new() -> Self {
         Self {
-            trigrams: HashMap::new(),
+            trigrams: FxHashMap::default(),
             line_count: 0,
         }
     }
