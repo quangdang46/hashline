@@ -25,7 +25,25 @@ pub fn short_from_full(full: u32) -> ShortHash {
 }
 
 pub fn format_short_hash(short: ShortHash) -> String {
-    format!("{short:02x}")
+    let mut buf = [0u8; 2];
+    write_short_hash_bytes(&mut buf, short);
+    // SAFETY: write_short_hash_bytes writes only ASCII hex digits, which are
+    // always valid UTF-8. This avoids the cost of `format!`'s general
+    // formatting machinery on a path that's called once per hot grep/read
+    // match (100k+ times on a 100k-line file).
+    unsafe { String::from_utf8_unchecked(buf.to_vec()) }
+}
+
+/// Write the 2-character lowercase hex representation of `short` into `buf`.
+///
+/// Exposed so hot output paths can render anchors straight into a stdout
+/// byte buffer without going through `format!` or allocating a temporary
+/// `String`.
+#[inline]
+pub fn write_short_hash_bytes(buf: &mut [u8; 2], short: ShortHash) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    buf[0] = HEX[(short >> 4) as usize];
+    buf[1] = HEX[(short & 0x0f) as usize];
 }
 
 pub fn collides(a: &str, b: &str) -> bool {

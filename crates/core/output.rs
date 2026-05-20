@@ -9,6 +9,7 @@ use crate::anchor::ResolvedLine;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::{Document, FileStats, LineView, NewlineStyle, format_short_hash};
 use crate::error::LinehashError;
+use crate::hash::write_short_hash_bytes;
 use crate::orchestration::{IndexPayload, ReadPayload};
 use crate::risk::blocked_assessment;
 
@@ -230,11 +231,14 @@ pub fn print_read_ndjson_streaming(writer: &mut impl Write, doc: &Document) -> i
     Ok(())
 }
 
-/// Write `short` as 2-character lowercase hex into `buf`.
+/// Backwards-compatible alias for [`write_short_hash_bytes`].
+///
+/// Kept here so existing callers in this file don't have to change. The
+/// canonical helper now lives in [`crate::hash`] so output paths can render
+/// directly without going through `format!`.
+#[inline]
 fn write_short_hash(buf: &mut [u8; 2], short: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    buf[0] = HEX[(short >> 4) as usize];
-    buf[1] = HEX[(short & 0x0f) as usize];
+    write_short_hash_bytes(buf, short);
 }
 
 pub fn print_read_context(
@@ -247,32 +251,36 @@ pub fn print_read_context(
     let anchor_indexes: BTreeSet<usize> = anchors.iter().map(|anchor| anchor.index).collect();
     let included = collect_context_indexes(doc, anchors, context);
 
+    let mut number_buf = itoa::Buffer::new();
+    let mut hash_buf = [0u8; 2];
     let mut previous: Option<usize> = None;
     for index in included {
         if let Some(prev) = previous {
             if index > prev + 1 {
-                writeln!(writer, "...")?;
+                writer.write_all(b"...\n")?;
             }
         }
 
-        let marker = if anchor_indexes.contains(&index) {
-            '→'
+        let marker: &[u8] = if anchor_indexes.contains(&index) {
+            // U+2192 RIGHTWARDS ARROW, 3 UTF-8 bytes.
+            "→".as_bytes()
         } else {
-            ' '
+            b" "
         };
         let line = &doc.lines[index];
-        let number = (index + 1).to_string();
+        let number = number_buf.format(index + 1);
         let padding = width.saturating_sub(number.len());
-        writeln!(
-            writer,
-            "{indent:>padding$}{marker}{number}:{hash}| {content}",
-            indent = "",
-            marker = marker,
-            number = number,
-            hash = format_short_hash(line.short_hash),
-            content = line.content,
-            padding = padding,
-        )?;
+        for _ in 0..padding {
+            writer.write_all(b" ")?;
+        }
+        writer.write_all(marker)?;
+        writer.write_all(number.as_bytes())?;
+        writer.write_all(b":")?;
+        write_short_hash_bytes(&mut hash_buf, line.short_hash);
+        writer.write_all(&hash_buf)?;
+        writer.write_all(b"| ")?;
+        writer.write_all(line.content.as_bytes())?;
+        writer.write_all(b"\n")?;
         previous = Some(index);
     }
 
@@ -280,13 +288,15 @@ pub fn print_read_context(
 }
 
 pub fn print_index(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
+    let mut number_buf = itoa::Buffer::new();
+    let mut hash_buf = [0u8; 2];
     for (index, line) in doc.lines.iter().enumerate() {
-        writeln!(
-            writer,
-            "{}:{}",
-            index + 1,
-            format_short_hash(line.short_hash)
-        )?;
+        let number = number_buf.format(index + 1);
+        writer.write_all(number.as_bytes())?;
+        writer.write_all(b":")?;
+        write_short_hash_bytes(&mut hash_buf, line.short_hash);
+        writer.write_all(&hash_buf)?;
+        writer.write_all(b"\n")?;
     }
     Ok(())
 }
@@ -465,21 +475,77 @@ pub fn print_grep(writer: &mut impl Write, doc: &Document, indexes: &[usize]) ->
     Ok(())
 }
 
+/// Streaming pretty-mode `grep` writer.
+///
+/// Hands each match from `search_doc` straight to `writer` without
+/// constructing a `LineView` or copying the line content into a `String`.
+/// Used by the literal, case-sensitive pretty path — the most common shape
+/// for human-facing grep invocations.
+///
+/// `total_line_count` is the document's line count (already known to the
+/// caller from `search_doc.line_offsets.len()`) and is used to size the
+/// number-column width. Padding is at most one column wider than the old
+/// "compute width from observed matches" behavior, which is a worthwhile
+/// trade to avoid the two-pass scan.
+pub fn print_grep_pretty_streaming(
+    writer: &mut impl Write,
+    search_doc: &crate::document::SearchDocument,
+    pattern: &str,
+    invert: bool,
+    total_line_count: usize,
+) -> io::Result<()> {
+    let width = total_line_count.max(1).to_string().len();
+    let mut number_buf = itoa::Buffer::new();
+    let mut hash_buf = [0u8; 2];
+    let mut io_err: Option<io::Error> = None;
+
+    search_doc.grep_for_each(pattern, invert, |line_idx, content, short_hash| {
+        if io_err.is_some() {
+            return;
+        }
+        let number = number_buf.format(line_idx + 1);
+        let pad = width.saturating_sub(number.len());
+        let result = (|| -> io::Result<()> {
+            for _ in 0..pad {
+                writer.write_all(b" ")?;
+            }
+            writer.write_all(number.as_bytes())?;
+            writer.write_all(b":")?;
+            write_short_hash_bytes(&mut hash_buf, short_hash);
+            writer.write_all(&hash_buf)?;
+            writer.write_all(b"| ")?;
+            writer.write_all(content.as_bytes())?;
+            writer.write_all(b"\n")
+        })();
+        if let Err(err) = result {
+            io_err = Some(err);
+        }
+    });
+
+    if let Some(err) = io_err {
+        return Err(err);
+    }
+    Ok(())
+}
+
 pub fn print_line_views(writer: &mut impl Write, lines: &[LineView]) -> io::Result<()> {
     let width = lines
         .iter()
         .map(|line| line.n.to_string().len())
         .max()
         .unwrap_or(1);
+    let mut number_buf = itoa::Buffer::new();
     for line in lines {
-        writeln!(
-            writer,
-            "{number:>width$}:{hash}| {content}",
-            number = line.n,
-            hash = line.hash,
-            content = line.content,
-            width = width
-        )?;
+        let number = number_buf.format(line.n);
+        for _ in number.len()..width {
+            writer.write_all(b" ")?;
+        }
+        writer.write_all(number.as_bytes())?;
+        writer.write_all(b":")?;
+        writer.write_all(line.hash.as_bytes())?;
+        writer.write_all(b"| ")?;
+        writer.write_all(line.content.as_bytes())?;
+        writer.write_all(b"\n")?;
     }
     Ok(())
 }

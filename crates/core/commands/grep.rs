@@ -30,8 +30,12 @@ pub fn run<W: Write, E: Write>(
 
     let use_fast_path = !cmd.case_insensitive && !contains_regex_metacharacters(&cmd.pattern);
 
-    let lines = if use_fast_path {
-        // Get file metadata for cache validation
+    // Pretty-mode + literal-fast-path can skip the per-match `String`
+    // allocations by writing each match straight to stdout from the
+    // mmap-backed `SearchDocument.content`. This is what `ripgrep` does for
+    // its standard output path. JSON/NDJSON still materialize a
+    // `Vec<LineView>` because the serializers need owned data anyway.
+    if use_fast_path && matches!(ctx.output_mode(), OutputMode::Pretty) {
         let file_meta = fs::metadata(&cmd.file)?;
         let mtime = file_meta
             .modified()
@@ -43,14 +47,47 @@ pub fn run<W: Write, E: Write>(
         let content_bytes = fs::read(&cmd.file)?;
         let content_hash = compute_content_hash(&content_bytes);
 
-        // Try cache first
+        let search_doc = if let Some(cached) =
+            ctx.search_doc_cache
+                .get(&cmd.file, mtime, size, content_hash)
+        {
+            cached
+        } else {
+            let search_doc = SearchDocument::load(&cmd.file)?;
+            ctx.search_doc_cache
+                .put(&cmd.file, search_doc.clone(), mtime, size, content_hash);
+            search_doc
+        };
+
+        let total_lines = search_doc.line_offsets.len();
+        output::print_grep_pretty_streaming(
+            ctx.stdout(),
+            &search_doc,
+            &cmd.pattern,
+            cmd.invert,
+            total_lines,
+        )?;
+        return Ok(());
+    }
+
+    let lines = if use_fast_path {
+        let file_meta = fs::metadata(&cmd.file)?;
+        let mtime = file_meta
+            .modified()
+            .map_err(std::io::Error::other)?
+            .duration_since(UNIX_EPOCH)
+            .map_err(std::io::Error::other)?
+            .as_secs();
+        let size = file_meta.len();
+        let content_bytes = fs::read(&cmd.file)?;
+        let content_hash = compute_content_hash(&content_bytes);
+
         if let Some(search_doc) = ctx
             .search_doc_cache
             .get(&cmd.file, mtime, size, content_hash)
         {
             search_doc.grep_lines(&cmd.pattern, cmd.invert)
         } else {
-            // Cache miss: load, cache, use
             let search_doc = SearchDocument::load(&cmd.file)?;
             ctx.search_doc_cache
                 .put(&cmd.file, search_doc.clone(), mtime, size, content_hash);

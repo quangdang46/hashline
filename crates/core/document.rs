@@ -164,11 +164,29 @@ impl SearchDocument {
     }
 
     pub fn grep_lines(&self, pattern: &str, invert: bool) -> Vec<LineView> {
+        let mut results = Vec::new();
+        self.grep_for_each(pattern, invert, |line_idx, content, short_hash| {
+            results.push(LineView {
+                n: line_idx + 1,
+                hash: hash::format_short_hash(short_hash),
+                content: content.to_string(),
+            });
+        });
+        results
+    }
+
+    /// Streaming variant of [`SearchDocument::grep_lines`] that hands each
+    /// match to `sink` instead of building a `Vec<LineView>`. The pretty-mode
+    /// `grep` path uses this so we never allocate a `String` per match — the
+    /// content slice is borrowed straight out of the underlying mmap-backed
+    /// `self.content` and a 2-byte hash buffer is rendered inline.
+    pub fn grep_for_each<F>(&self, pattern: &str, invert: bool, mut sink: F)
+    where
+        F: FnMut(usize, &str, crate::hash::ShortHash),
+    {
         let pattern_bytes = pattern.as_bytes();
         let pat_len = pattern_bytes.len();
-        let mut results = Vec::new();
 
-        // Pre-build memmem finder for multi-byte patterns (SIMD-optimized).
         let finder = if pat_len >= 2 {
             Some(memchr::memmem::Finder::new(pattern_bytes))
         } else {
@@ -205,15 +223,9 @@ impl SearchDocument {
             if include {
                 let full_hash = hash::full_hash(line_content);
                 let short_hash = hash::short_from_full(full_hash);
-                results.push(LineView {
-                    n: line_idx + 1,
-                    hash: hash::format_short_hash(short_hash),
-                    content: line_content.to_string(),
-                });
+                sink(line_idx, line_content, short_hash);
             }
         }
-
-        results
     }
 }
 

@@ -223,14 +223,39 @@ impl TrigramIndex {
 
     /// Insert a posting for a trigram.
     /// If a posting for the same line already exists, merge the masks.
+    ///
+    /// Hot-path optimization: when callers feed postings in monotonically
+    /// increasing `line_idx` order (which is what [`crate::search::index::IndexBuilder`]
+    /// does), the dedup check is `O(1)` — we only look at the last posting.
+    /// Out-of-order inserts fall back to a linear `find`, preserving the
+    /// previous semantics for any caller that doesn't follow the in-order
+    /// convention.
     pub fn insert(&mut self, trigram: Trigram, posting: Posting) {
         let postings = self.trigrams.entry(trigram).or_default();
 
-        if let Some(existing) = postings.iter_mut().find(|p| p.line_idx == posting.line_idx) {
-            existing.loc_mask = existing.loc_mask.union(posting.loc_mask);
-            existing.next_mask.merge(posting.next_mask);
-        } else {
-            postings.push(posting);
+        match postings.last_mut() {
+            Some(last) if last.line_idx == posting.line_idx => {
+                last.loc_mask = last.loc_mask.union(posting.loc_mask);
+                last.next_mask.merge(posting.next_mask);
+            }
+            Some(last) if posting.line_idx > last.line_idx => {
+                postings.push(posting);
+            }
+            None => {
+                postings.push(posting);
+            }
+            _ => {
+                // Out-of-order insert (line_idx not strictly increasing).
+                // Fall back to the linear merge-or-append behavior so we
+                // remain backwards compatible with arbitrary insertion order.
+                if let Some(existing) = postings.iter_mut().find(|p| p.line_idx == posting.line_idx)
+                {
+                    existing.loc_mask = existing.loc_mask.union(posting.loc_mask);
+                    existing.next_mask.merge(posting.next_mask);
+                } else {
+                    postings.push(posting);
+                }
+            }
         }
     }
 
