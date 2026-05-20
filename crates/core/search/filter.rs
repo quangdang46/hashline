@@ -49,14 +49,17 @@ impl<'a> CandidateFilter<'a> {
     }
 
     fn line_has_trigram(&self, line_idx: u32, trigram: Trigram) -> bool {
-        if let Some(postings) = self.index.get(trigram) {
-            for posting in postings {
-                if posting.line_idx == line_idx {
-                    return true;
-                }
-            }
-        }
-        false
+        let Some(postings) = self.index.get(trigram) else {
+            return false;
+        };
+        // Postings are inserted in monotonically increasing `line_idx` order
+        // by `IndexBuilder` (see `TrigramIndex::insert`), so a binary search
+        // is correct and reduces the per-probe cost from O(N) to O(log N).
+        // This dominates the filter cost when a common trigram has tens of
+        // thousands of postings.
+        postings
+            .binary_search_by_key(&line_idx, |p| p.line_idx)
+            .is_ok()
     }
 }
 

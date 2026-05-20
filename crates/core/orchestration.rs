@@ -15,6 +15,7 @@ use crate::document::{
     count_short_hashes, format_short_hash,
 };
 use crate::error::LinehashError;
+#[allow(unused_imports)]
 use crate::index::adaptive::search_adaptive;
 use crate::search::cache::SharedIndexCache;
 use crate::search::filter::filter_candidates;
@@ -240,47 +241,59 @@ pub fn grep_lines(
     case_insensitive: bool,
 ) -> Result<Vec<LineView>, LinehashError> {
     if !case_insensitive && !contains_regex_metacharacters(pattern) {
-        // Build line_offsets and full_content for adaptive search
-        let mut line_offsets = Vec::with_capacity(doc.lines.len() + 1);
-        line_offsets.push(0);
-        let mut offset = 0;
-        for line in &doc.lines {
-            offset += line.content.len() + 1; // +1 for newline
-            line_offsets.push(offset);
-        }
-        let full_content = doc
-            .lines
-            .iter()
-            .map(|l| l.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Literal, case-sensitive: scan each `LineRecord.content` directly
+        // with `memchr::memmem` (SIMD-accelerated). The previous code joined
+        // every line into a single `String` (5.9 MB on a 100k-line file)
+        // just to feed `search_adaptive`, which doubled the literal-grep
+        // wall time. Now we go line-by-line with zero whole-document allocs.
+        let pattern_bytes = pattern.as_bytes();
+        let mut results: Vec<LineView> = Vec::new();
 
-        let results = search_adaptive(pattern, case_insensitive, &line_offsets, &full_content);
-
-        // Apply invert to results
-        let matched_lines: std::collections::HashSet<usize> =
-            results.iter().map(|r| r.line_idx).collect();
-
-        let filtered: Vec<LineView> = doc
-            .lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| {
-                let is_match = matched_lines.contains(&index);
+        if pattern_bytes.is_empty() {
+            // An empty literal matches every line; preserve old semantics.
+            for (index, line) in doc.lines.iter().enumerate() {
+                let is_match = true;
                 let include = if invert { !is_match } else { is_match };
                 if include {
-                    Some(LineView {
+                    results.push(LineView {
                         n: index + 1,
                         hash: format_short_hash(line.short_hash),
                         content: line.content.to_string(),
-                    })
-                } else {
-                    None
+                    });
                 }
-            })
-            .collect();
+            }
+            return Ok(results);
+        }
 
-        return Ok(filtered);
+        if pattern_bytes.len() == 1 {
+            let needle = pattern_bytes[0];
+            for (index, line) in doc.lines.iter().enumerate() {
+                let is_match = memchr(needle, line.content.as_bytes()).is_some();
+                let include = if invert { !is_match } else { is_match };
+                if include {
+                    results.push(LineView {
+                        n: index + 1,
+                        hash: format_short_hash(line.short_hash),
+                        content: line.content.to_string(),
+                    });
+                }
+            }
+        } else {
+            let finder = memchr::memmem::Finder::new(pattern_bytes);
+            for (index, line) in doc.lines.iter().enumerate() {
+                let is_match = finder.find(line.content.as_bytes()).is_some();
+                let include = if invert { !is_match } else { is_match };
+                if include {
+                    results.push(LineView {
+                        n: index + 1,
+                        hash: format_short_hash(line.short_hash),
+                        content: line.content.to_string(),
+                    });
+                }
+            }
+        }
+
+        return Ok(results);
     }
 
     let regex = RegexBuilder::new(pattern)
@@ -476,17 +489,54 @@ pub fn annotate_lines(
             })
             .collect()
     } else {
-        doc.lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| {
-                line.content.contains(query).then_some(LineView {
+        // Literal queries scan with `memchr::memmem` (SIMD-accelerated).
+        // The previous code used `line.content.contains(query)`, which goes
+        // through `str::find -> Searcher::next` and skips the SIMD fast path
+        // for short multi-byte needles. `memmem::Finder` is what `ripgrep`
+        // uses for the same job.
+        let query_bytes = query.as_bytes();
+        if query_bytes.is_empty() {
+            doc.lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| LineView {
                     n: index + 1,
                     hash: format_short_hash(line.short_hash),
                     content: line.content.to_string(),
                 })
-            })
-            .collect()
+                .collect()
+        } else if query_bytes.len() == 1 {
+            let needle = query_bytes[0];
+            doc.lines
+                .iter()
+                .enumerate()
+                .filter_map(|(index, line)| {
+                    memchr(needle, line.content.as_bytes())
+                        .is_some()
+                        .then_some(LineView {
+                            n: index + 1,
+                            hash: format_short_hash(line.short_hash),
+                            content: line.content.to_string(),
+                        })
+                })
+                .collect()
+        } else {
+            let finder = memchr::memmem::Finder::new(query_bytes);
+            doc.lines
+                .iter()
+                .enumerate()
+                .filter_map(|(index, line)| {
+                    finder
+                        .find(line.content.as_bytes())
+                        .is_some()
+                        .then_some(LineView {
+                            n: index + 1,
+                            hash: format_short_hash(line.short_hash),
+                            content: line.content.to_string(),
+                        })
+                })
+                .collect()
+        }
     };
 
     Ok(MatchReport {

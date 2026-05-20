@@ -82,17 +82,18 @@ pub fn search_adaptive(
     line_offsets: &[usize],
     content: &str,
 ) -> Vec<SearchResult> {
-    let adjusted_pattern = if case_insensitive {
-        pattern.to_lowercase()
+    let adjusted_pattern: std::borrow::Cow<'_, str> = if case_insensitive {
+        std::borrow::Cow::Owned(pattern.to_lowercase())
     } else {
-        pattern.to_string()
+        std::borrow::Cow::Borrowed(pattern)
     };
 
-    // For case-insensitive search, lowercase the content so matches work
-    let searched_content = if case_insensitive {
-        content.to_lowercase()
+    // Only allocate a lowercased copy when we actually need case folding.
+    // The case-sensitive path can borrow the caller's content unchanged.
+    let searched_content: std::borrow::Cow<'_, str> = if case_insensitive {
+        std::borrow::Cow::Owned(content.to_lowercase())
     } else {
-        content.to_string()
+        std::borrow::Cow::Borrowed(content)
     };
 
     match classify_pattern(&adjusted_pattern) {
@@ -128,22 +129,32 @@ fn search_single_byte(b: u8, line_offsets: &[usize], content: &str) -> Vec<Searc
     results
 }
 
-/// Search for a literal using token intersection.
+/// Search for a literal using SIMD-accelerated `memchr::memmem`.
+///
+/// The previous implementation called `line_bytes.windows(pat_len).any(..)`,
+/// a naive O(line_len * pat_len) compare. Switching to `memmem::Finder`
+/// gives us the same SIMD `memchr` path ripgrep uses for short literals.
 fn search_literal(lit: &str, line_offsets: &[usize], content: &str) -> Vec<SearchResult> {
     let bytes = content.as_bytes();
     let lit_bytes = lit.as_bytes();
     let pat_len = lit_bytes.len();
     let mut results = Vec::new();
 
+    if pat_len == 0 {
+        return results;
+    }
+
+    let finder = memchr::memmem::Finder::new(lit_bytes);
+
     for (i, windows) in line_offsets.windows(2).enumerate() {
         let start = windows[0];
         let end = windows[1].min(content.len());
         let line_bytes = &bytes[start..end];
 
-        let is_match =
-            pat_len <= line_bytes.len() && line_bytes.windows(pat_len).any(|w| w == lit_bytes);
-
-        if is_match {
+        if pat_len > line_bytes.len() {
+            continue;
+        }
+        if finder.find(line_bytes).is_some() {
             results.push(SearchResult {
                 line_idx: i,
                 line_text: content[start..end]

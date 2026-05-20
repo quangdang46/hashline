@@ -148,20 +148,42 @@ fn atomic_write_single_line_edit(
         return Ok(false);
     }
 
-    // On Windows, an active mmap prevents file rename (os error 1224).
-    // Copy the byte ranges out before the mmap is dropped.
-    let head = mmap[..start].to_vec();
-    let tail = mmap[end..].to_vec();
-    drop(mmap);
-    drop(file);
+    #[cfg(windows)]
+    {
+        // On Windows, an active mmap prevents file rename (os error 1224).
+        // Copy the byte ranges out before the mmap is dropped.
+        let head = mmap[..start].to_vec();
+        let tail = mmap[end..].to_vec();
+        drop(mmap);
+        drop(file);
 
-    atomic_write_with(path, |writer| {
-        writer.write_all(&head)?;
-        writer.write_all(after.as_bytes())?;
-        writer.write_all(&tail)?;
-        Ok(())
-    })?;
-    Ok(true)
+        atomic_write_with(path, |writer| {
+            writer.write_all(&head)?;
+            writer.write_all(after.as_bytes())?;
+            writer.write_all(&tail)?;
+            Ok(())
+        })?;
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    {
+        // On Unix the source file can stay mmap'd during the temp-file write
+        // and the subsequent rename, so we skip the two `to_vec()` copies of
+        // the unchanged head/tail (which dominate `edit` latency on large
+        // files — 5.9 MB of unnecessary user-space copy on a 100k-line file).
+        let head: &[u8] = &mmap[..start];
+        let tail: &[u8] = &mmap[end..];
+        atomic_write_with(path, |writer| {
+            writer.write_all(head)?;
+            writer.write_all(after.as_bytes())?;
+            writer.write_all(tail)?;
+            Ok(())
+        })?;
+        drop(mmap);
+        drop(file);
+        Ok(true)
+    }
 }
 
 fn original_line_byte_span(
