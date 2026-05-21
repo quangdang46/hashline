@@ -621,7 +621,13 @@ pub fn print_grep_ndjson_streaming(
     pattern: &str,
     invert: bool,
 ) -> io::Result<()> {
+    // Same per-line scratch-buffer batching as `print_read_ndjson_streaming`
+    // — see the comment there for the rationale (collapses N small
+    // `write_all` calls down to one per record, amortizing call-site
+    // overhead through the BufWriter).
+    let mut number_buf = itoa::Buffer::new();
     let mut hash_buf = [0u8; 2];
+    let mut scratch: Vec<u8> = Vec::with_capacity(512);
     let mut io_err: Option<io::Error> = None;
 
     search_doc.grep_for_each(pattern, invert, |line_idx, content, short_hash| {
@@ -629,15 +635,16 @@ pub fn print_grep_ndjson_streaming(
             return;
         }
         write_short_hash_bytes(&mut hash_buf, short_hash);
-        let hash_str = std::str::from_utf8(&hash_buf).expect("short hash is ASCII hex");
-        let view = LineViewRef {
-            n: line_idx + 1,
-            hash: hash_str,
-            content,
-        };
+        scratch.clear();
         let result: io::Result<()> = (|| {
-            serde_json::to_writer(&mut *writer, &view)?;
-            writeln!(writer)
+            scratch.extend_from_slice(b"{\"n\":");
+            scratch.extend_from_slice(number_buf.format(line_idx + 1).as_bytes());
+            scratch.extend_from_slice(b",\"hash\":\"");
+            scratch.extend_from_slice(&hash_buf);
+            scratch.extend_from_slice(b"\",\"content\":");
+            serde_json::to_writer(&mut scratch, content)?;
+            scratch.extend_from_slice(b"}\n");
+            writer.write_all(&scratch)
         })();
         if let Err(err) = result {
             io_err = Some(err);
