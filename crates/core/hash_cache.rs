@@ -47,7 +47,10 @@ impl HashSidecar {
 
         temp.write_all(&buf)?;
         temp.flush()?;
-        temp.as_file().sync_all()?;
+        // No fsync: the sidecar is a regeneratable cache (mtime + size +
+        // content_hash invalidates on any change), so durability across a
+        // crash is unnecessary. Skipping the fsync trims ~5-10 ms off the
+        // cold-cache path on most filesystems.
         temp.persist(path).map_err(|e| e.error)?;
         Ok(())
     }
@@ -93,4 +96,37 @@ impl HashSidecar {
         }
         Ok(())
     }
+}
+
+/// Walk up from `path`'s parent directory looking for a project root marker
+/// (`.git`, `.hg`, `Cargo.toml`, `package.json`, `pyproject.toml`,
+/// `go.mod`, `.linehash`). Falls back to the file's parent directory if no
+/// marker is found within 16 levels — this matches the agent workflow where
+/// the file usually lives inside a repo but graceful degradation matters
+/// when invoked on standalone files.
+pub fn discover_sidecar_root(path: &Path) -> PathBuf {
+    const MARKERS: &[&str] = &[
+        ".linehash",
+        ".git",
+        ".hg",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+    ];
+
+    let start = path.parent().unwrap_or(path);
+    let mut current = start;
+    for _ in 0..16 {
+        for marker in MARKERS {
+            if current.join(marker).exists() {
+                return current.to_path_buf();
+            }
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+    start.to_path_buf()
 }

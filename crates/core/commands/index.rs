@@ -4,6 +4,7 @@ use crate::cli::IndexCmd;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
+use crate::hash_cache::discover_sidecar_root;
 use crate::orchestration::index_payload;
 use crate::output;
 
@@ -11,7 +12,8 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: IndexCmd,
 ) -> Result<(), LinehashError> {
-    let doc = Document::load(&cmd.file)?;
+    let root = discover_sidecar_root(&cmd.file);
+    let doc = Document::load_with_hash_cache(&cmd.file, &root)?;
 
     match ctx.output_mode() {
         OutputMode::Ndjson => {

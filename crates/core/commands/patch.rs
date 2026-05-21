@@ -509,7 +509,7 @@ fn build_lines(contents: &[String]) -> Vec<LineRecord> {
         .map(|content| {
             let full_hash = hash::full_hash(content);
             LineRecord {
-                content: std::sync::Arc::from(content.as_str()),
+                content: Box::from(content.as_str()),
                 short_hash: hash::short_from_full(full_hash),
             }
         })

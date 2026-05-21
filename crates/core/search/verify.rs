@@ -1,13 +1,12 @@
 #![allow(unused)]
 
 use regex::Regex;
-use std::sync::Arc;
 
 use crate::document::LineRecord;
 
 pub struct VerifyResult {
     pub line_idx: u32,
-    pub content: Arc<str>,
+    pub content: Box<str>,
     pub matches: Vec<MatchRange>,
 }
 
@@ -55,7 +54,13 @@ pub fn verify_candidates(
         if !matches.is_empty() {
             results.push(VerifyResult {
                 line_idx,
-                content: content.clone(),
+                // `content` is `&Box<str>` here, so this is a deep copy of
+                // the matching line's content. Per-line content was
+                // `Arc<str>` historically (cheap clone via refcount bump),
+                // but verify only fires on actual regex hits which is a
+                // tiny fraction of the input — deep-copying a few hundred
+                // lines is cheaper than Arc'ing all 100k.
+                content: Box::from(content.as_ref()),
                 matches,
             });
         }
@@ -66,14 +71,12 @@ pub fn verify_candidates(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
     use crate::document::LineRecord;
 
     fn make_line(idx: u32, content: &str) -> LineRecord {
         LineRecord {
-            content: Arc::from(content),
+            content: Box::from(content),
             short_hash: idx as u8,
         }
     }
