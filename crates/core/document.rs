@@ -332,9 +332,15 @@ impl Document {
                         std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
                             path: path_string.clone(),
                         })?;
-                    let (newline, trailing_newline, _, content_len) =
-                        parse_document_content(content, path)?;
-                    let lines = build_lines_from_hashes(&sidecar.short_hashes, content);
+                    // Single-pass build: collects newline style, trailing
+                    // newline, content_len, and LineRecords (with the
+                    // sidecar's pre-computed short_hashes) in one walk over
+                    // the content. The previous code called
+                    // parse_document_content + build_lines_from_hashes which
+                    // scanned the file twice and re-hashed every line —
+                    // defeating the entire point of the cache.
+                    let (newline, trailing_newline, lines, content_len) =
+                        build_lines_from_hashes_with_meta(&sidecar.short_hashes, content);
                     let file_meta = Some(FileMeta::from_metadata(&metadata)?);
 
                     return Ok(Document {
@@ -357,13 +363,23 @@ impl Document {
         let (newline, trailing_newline, lines, content_len) =
             parse_document_content(content, path)?;
 
-        let sidecar = HashSidecar {
-            mtime_secs: mtime,
-            size: metadata.len(),
-            content_hash,
-            short_hashes: lines.iter().map(|l| l.short_hash).collect(),
-        };
-        let _ = sidecar.write(root, path);
+        // Write the sidecar in a background thread so the first-run callers
+        // never wait on the fsync that `HashSidecar::write` triggers. The
+        // returned Document is unaffected — subsequent reads of the same
+        // file pick up the cache.
+        let sidecar_short_hashes: Vec<u8> = lines.iter().map(|l| l.short_hash).collect();
+        let path_clone = path.to_path_buf();
+        let root_clone = root.to_path_buf();
+        let size = metadata.len();
+        std::thread::spawn(move || {
+            let sidecar = HashSidecar {
+                mtime_secs: mtime,
+                size,
+                content_hash,
+                short_hashes: sidecar_short_hashes,
+            };
+            let _ = sidecar.write(&root_clone, &path_clone);
+        });
 
         Ok(Document {
             path: path.to_path_buf(),
@@ -734,6 +750,101 @@ fn build_line_record(content: &str) -> LineRecord {
         content: Arc::from(content),
         short_hash: hash::short_from_full(full_hash),
     }
+}
+
+/// Cache-hit variant that computes newline style, trailing-newline flag,
+/// content_len, and the full `Vec<LineRecord>` in a single pass over
+/// `content`, reusing the pre-computed `short_hashes` from the sidecar.
+///
+/// The non-cached path does a sequential or parallel hash pass via
+/// `parse_document_content`; this helper exists so the cache-hit branch
+/// of `Document::load_with_hash_cache` doesn't pay that hashing cost.
+fn build_lines_from_hashes_with_meta(
+    short_hashes: &[u8],
+    content: &str,
+) -> (NewlineStyle, bool, Vec<LineRecord>, usize) {
+    let bytes = content.as_bytes();
+    let trailing_newline = content.ends_with('\n');
+
+    let mut newline = NewlineStyle::Lf;
+    let mut saw_lf = false;
+    let mut saw_crlf = false;
+
+    let mut lines = Vec::with_capacity(short_hashes.len());
+    let mut content_len = 0usize;
+    let mut start = 0usize;
+    let mut search_from = 0usize;
+    let mut hash_idx = 0usize;
+
+    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
+        let index = search_from + relative;
+        match bytes[index] {
+            b'\r' => {
+                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                    saw_crlf = true;
+                    newline = NewlineStyle::Crlf;
+                    let line = &content[start..index];
+                    content_len += line.len();
+                    let sh = if hash_idx < short_hashes.len() {
+                        short_hashes[hash_idx]
+                    } else {
+                        hash::short_from_full(hash::full_hash(line))
+                    };
+                    lines.push(LineRecord {
+                        content: Arc::from(line),
+                        short_hash: sh,
+                    });
+                    hash_idx += 1;
+                    search_from = index + 2;
+                    start = search_from;
+                } else {
+                    // Bare CR: fall back to LF parsing semantics by skipping
+                    // the byte; the cache-hit branch should never see this on
+                    // a well-formed file since the sidecar was only written
+                    // after parse_document_content accepted it. Defensive.
+                    search_from = index + 1;
+                }
+            }
+            b'\n' => {
+                saw_lf = true;
+                let line = &content[start..index];
+                content_len += line.len();
+                let sh = if hash_idx < short_hashes.len() {
+                    short_hashes[hash_idx]
+                } else {
+                    hash::short_from_full(hash::full_hash(line))
+                };
+                lines.push(LineRecord {
+                    content: Arc::from(line),
+                    short_hash: sh,
+                });
+                hash_idx += 1;
+                search_from = index + 1;
+                start = search_from;
+            }
+            _ => unreachable!("memchr2 only returns requested bytes"),
+        }
+    }
+
+    if !trailing_newline && start < content.len() {
+        let line = &content[start..];
+        content_len += line.len();
+        let sh = if hash_idx < short_hashes.len() {
+            short_hashes[hash_idx]
+        } else {
+            hash::short_from_full(hash::full_hash(line))
+        };
+        lines.push(LineRecord {
+            content: Arc::from(line),
+            short_hash: sh,
+        });
+    }
+
+    if saw_lf && !saw_crlf {
+        newline = NewlineStyle::Lf;
+    }
+
+    (newline, trailing_newline, lines, content_len)
 }
 
 fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord> {

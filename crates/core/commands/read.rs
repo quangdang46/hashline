@@ -5,6 +5,7 @@ use crate::cli::ReadCmd;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::LinehashError;
+use crate::hash_cache::discover_sidecar_root;
 use crate::orchestration::{read_payload, resolve_read_anchors};
 use crate::output;
 use crate::search::persist::IndexStore;
@@ -13,7 +14,11 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: ReadCmd,
 ) -> Result<(), LinehashError> {
-    let doc = Document::load(&cmd.file)?;
+    // Pure read: use the hash sidecar so repeated reads of the same file
+    // skip the per-line hashing pass on cache hit. First read writes the
+    // sidecar in a background thread, so cold-cache latency is unchanged.
+    let root = discover_sidecar_root(&cmd.file);
+    let doc = Document::load_with_hash_cache(&cmd.file, &root)?;
 
     if let Some(ref meta) = doc.file_meta {
         let path = cmd.file.canonicalize().unwrap_or_else(|_| cmd.file.clone());
