@@ -3,7 +3,6 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use memchr::{memchr, memchr2};
@@ -60,7 +59,14 @@ pub struct FileMeta {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LineRecord {
-    pub content: Arc<str>,
+    /// Per-line content. Was `Arc<str>` historically; `Box<str>` keeps the
+    /// same accessor API (`Deref<Target=str>`, `as_ref()`, `as_bytes()`)
+    /// while dropping the 16-byte atomic refcount header and the per-drop
+    /// `fetch_sub`. We never clone `LineRecord.content` anywhere in the
+    /// codebase, so the shared-ownership semantics of `Arc` were dead
+    /// weight — ~100k atomic ops + 100k * 16 bytes of header memory on
+    /// a 100k-line file. Box has a single non-atomic free at drop.
+    pub content: Box<str>,
     pub short_hash: ShortHash,
 }
 
@@ -747,7 +753,7 @@ fn parse_line_offsets(content: &str) -> (NewlineStyle, bool, Vec<usize>) {
 fn build_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
-        content: Arc::from(content),
+        content: Box::from(content),
         short_hash: hash::short_from_full(full_hash),
     }
 }
@@ -791,7 +797,7 @@ fn build_lines_from_hashes_with_meta(
                         hash::short_from_full(hash::full_hash(line))
                     };
                     lines.push(LineRecord {
-                        content: Arc::from(line),
+                        content: Box::from(line),
                         short_hash: sh,
                     });
                     hash_idx += 1;
@@ -815,7 +821,7 @@ fn build_lines_from_hashes_with_meta(
                     hash::short_from_full(hash::full_hash(line))
                 };
                 lines.push(LineRecord {
-                    content: Arc::from(line),
+                    content: Box::from(line),
                     short_hash: sh,
                 });
                 hash_idx += 1;
@@ -835,7 +841,7 @@ fn build_lines_from_hashes_with_meta(
             hash::short_from_full(hash::full_hash(line))
         };
         lines.push(LineRecord {
-            content: Arc::from(line),
+            content: Box::from(line),
             short_hash: sh,
         });
     }
@@ -863,7 +869,7 @@ fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord
             hash::short_from_full(hash::full_hash(line))
         };
         lines.push(LineRecord {
-            content: Arc::from(line),
+            content: Box::from(line),
             short_hash: sh,
         });
         hash_idx += 1;
@@ -879,7 +885,7 @@ fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord
             hash::short_from_full(hash::full_hash(line))
         };
         lines.push(LineRecord {
-            content: Arc::from(line),
+            content: Box::from(line),
             short_hash: sh,
         });
     }

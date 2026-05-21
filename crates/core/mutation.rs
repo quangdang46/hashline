@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
-
 use crate::document::{Document, LineRecord};
 use crate::error::LinehashError;
 use crate::hash;
@@ -14,14 +12,14 @@ pub fn validate_single_line_content(content: &str) -> Result<(), LinehashError> 
     }
 }
 
-pub fn split_content_lines(content: &str) -> Vec<Arc<str>> {
+pub fn split_content_lines(content: &str) -> Vec<Box<str>> {
     if content.is_empty() {
-        return vec![Arc::from("")];
+        return vec![Box::from("")];
     }
 
-    let lines = content.lines().map(Arc::from).collect::<Vec<_>>();
+    let lines = content.lines().map(Box::from).collect::<Vec<_>>();
     if lines.is_empty() {
-        vec![Arc::from("")]
+        vec![Box::from("")]
     } else {
         lines
     }
@@ -33,7 +31,7 @@ pub fn replace_line(doc: &mut Document, index: usize, content: &str) -> Result<(
 
     let old_len = doc.lines[index].content.len();
     if doc.lines[index].content.as_ref() != content {
-        doc.lines[index].content = Arc::from(content);
+        doc.lines[index].content = Box::from(content);
         refresh_line_metadata(&mut doc.lines[index]);
     }
     doc.content_len = doc.content_len + doc.lines[index].content.len() - old_len;
@@ -158,7 +156,7 @@ fn refresh_line_metadata(line: &mut LineRecord) {
 fn new_line_record(content: &str) -> LineRecord {
     let full_hash = hash::full_hash(content);
     LineRecord {
-        content: Arc::from(content),
+        content: Box::from(content),
         short_hash: hash::short_from_full(full_hash),
     }
 }
@@ -199,8 +197,6 @@ fn ensure_range(doc: &Document, start: usize, end: usize) -> Result<(), Linehash
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::{
         delete_line, delete_range, insert_line, move_line, replace_line, replace_range,
         replace_range_with_line, split_content_lines, swap_lines, validate_single_line_content,
@@ -440,7 +436,7 @@ mod tests {
     fn split_content_lines_preserves_internal_blank_lines() {
         assert_eq!(
             split_content_lines("alpha\n\nbeta"),
-            vec![Arc::from("alpha"), Arc::from(""), Arc::from("beta")]
+            vec![Box::<str>::from("alpha"), Box::<str>::from(""), Box::<str>::from("beta")]
         );
     }
 

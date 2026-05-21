@@ -1,7 +1,6 @@
 #![allow(unused_imports, dead_code)]
 
 use std::path::Path;
-use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
@@ -26,7 +25,7 @@ use search::verify::verify_candidates;
 use support::{generate_long_fixture, generate_short_fixture};
 
 fn build_index_for_content(content: &str) -> search::TrigramIndex {
-    let lines: Vec<Arc<str>> = content.lines().map(Arc::from).collect();
+    let lines: Vec<Box<str>> = content.lines().map(Box::from).collect();
     let mut builder = IndexBuilder::new();
     for (idx, line) in lines.iter().enumerate() {
         builder.add_line(idx, line.as_bytes());
