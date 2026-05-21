@@ -70,9 +70,7 @@ pub fn write_json_string_fast<W: Write + ?Sized>(writer: &mut W, s: &str) -> io:
     // source files; we still need to catch them so the fast path also
     // requires that no byte < 0x20 (other than tab, already counted)
     // appears \u2014 verified by the second memchr2 below.
-    if memchr::memchr3(b'"', b'\\', b'\t', bytes).is_some()
-        || has_control_byte(bytes)
-    {
+    if memchr::memchr3(b'"', b'\\', b'\t', bytes).is_some() || has_control_byte(bytes) {
         // Slow path: defer to serde_json for full escape correctness.
         serde_json::to_writer(writer, s).map_err(io::Error::from)?;
         return Ok(());

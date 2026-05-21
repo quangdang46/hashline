@@ -436,7 +436,11 @@ mod tests {
     fn split_content_lines_preserves_internal_blank_lines() {
         assert_eq!(
             split_content_lines("alpha\n\nbeta"),
-            vec![Box::<str>::from("alpha"), Box::<str>::from(""), Box::<str>::from("beta")]
+            vec![
+                Box::<str>::from("alpha"),
+                Box::<str>::from(""),
+                Box::<str>::from("beta")
+            ]
         );
     }
 
