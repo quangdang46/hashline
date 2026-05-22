@@ -9,14 +9,39 @@
 
 ### From GitHub releases
 
+#### Linux / macOS
+
 Install the latest release with the generated installer:
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/linehash/main/install.sh?$(date +%s)" | bash
 ```
 
+#### Windows (PowerShell 5.1+)
 
-The installer downloads the matching GitHub release asset for your platform, verifies checksums when available, can optionally add the install directory to your shell PATH, then auto-detects supported MCP providers and installs the `linehash` MCP entry for each detected host.
+```powershell
+irm "https://raw.githubusercontent.com/quangdang46/linehash/main/install.ps1" | iex
+```
+
+To pin a version or pass flags, download once and run:
+
+```powershell
+irm "https://raw.githubusercontent.com/quangdang46/linehash/main/install.ps1" -OutFile install.ps1
+.\install.ps1 -Version v0.1.10 -EasyMode -Verify
+```
+
+The installer downloads the matching GitHub release asset for your platform, verifies the SHA-256 sidecar when available, can optionally add the install directory to your shell PATH (Bash/Zsh on Unix, user PATH on Windows), then auto-detects supported MCP providers and installs the `linehash` MCP entry for each detected host.
+
+| Flag (sh / ps1)              | Effect                                                        |
+|------------------------------|---------------------------------------------------------------|
+| `--version vX.Y.Z` / `-Version` | Pin a specific release (default: latest)                   |
+| `--dest <path>` / `-Dest`       | Install to a custom directory                              |
+| `--system` / `-System`          | Install to `/usr/local/bin` / `%ProgramFiles%\linehash`    |
+| `--easy-mode` / `-EasyMode`     | Append install dir to user PATH                            |
+| `--verify` / `-Verify`          | Run `linehash --version` after install                     |
+| `--from-source`                 | Build from source via `cargo` (Unix only)                  |
+| `--quiet` / `-Quiet`            | Suppress info logs                                         |
+| `--uninstall` / `-Uninstall`    | Remove the binary and any easy-mode PATH lines             |
 
 ### From source
 
