@@ -6,18 +6,12 @@ mod document;
 mod error;
 mod hash;
 mod hash_cache;
-mod index;
-mod lang;
 mod mcp;
 mod mutation;
 mod orchestration;
 mod output;
 mod receipt;
 mod risk;
-mod search;
-#[cfg(unix)]
-mod server;
-mod workflows;
 
 use std::io;
 use std::io::Write;
@@ -253,48 +247,13 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::Insert(cmd) => commands::insert::run(&mut context, cmd).map(|_| 0),
         Commands::Delete(cmd) => commands::delete::run(&mut context, cmd).map(|_| 0),
         Commands::Verify(cmd) => commands::verify::run(&mut context, cmd),
-        Commands::Grep(cmd) => commands::grep::run(&mut context, cmd).map(|_| 0),
-        Commands::Annotate(cmd) => commands::annotate::run(&mut context, cmd),
         Commands::Patch(cmd) => commands::patch::run(&mut context, cmd).map(|_| 0),
         Commands::Swap(cmd) => commands::swap::run(&mut context, cmd).map(|_| 0),
         Commands::Move(cmd) => commands::r#move::run(&mut context, cmd).map(|_| 0),
         Commands::Indent(cmd) => commands::indent::run(&mut context, cmd).map(|_| 0),
-        Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
         Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
         Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
-        Commands::Workflows(cmd) => commands::workflows::run(&mut context, cmd).map(|_| 0),
-        Commands::FromDiff(cmd) => commands::from_diff::run(&mut context, cmd).map(|_| 0),
-        Commands::MergePatches(cmd) => commands::merge_patches::run(&mut context, cmd).map(|_| 0),
-        Commands::Watch(cmd) => commands::watch::run(&mut context, cmd).map(|_| 0),
-        Commands::WatchCapabilities(cmd) => {
-            commands::watch_capabilities::run(&mut context, cmd).map(|_| 0)
-        }
-        Commands::Explode(cmd) => commands::explode::run(&mut context, cmd).map(|_| 0),
-        Commands::Implode(cmd) => commands::implode::run(&mut context, cmd).map(|_| 0),
-        Commands::Map(cmd) => commands::map::run(&mut context, cmd).map(|_| 0),
-        Commands::Outline(cmd) => commands::outline::run(&mut context, cmd).map(|_| 0),
-        Commands::Symbol(cmd) => commands::symbol::run(&mut context, cmd).map(|_| 0),
-        Commands::Callers(cmd) => commands::callers::run(&mut context, cmd).map(|_| 0),
-        Commands::Callees(cmd) => commands::callees::run(&mut context, cmd).map(|_| 0),
-        Commands::Deps(cmd) => commands::deps::run(&mut context, cmd).map(|_| 0),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
-        #[cfg(unix)]
-        Commands::Daemon => {
-            info!("starting daemon mode");
-            if let Err(error) = server::run_daemon() {
-                error!(%error, "daemon failed");
-                eprintln!("daemon error: {error}");
-                return Err(error);
-            }
-            Ok(0)
-        }
-        #[cfg(not(unix))]
-        Commands::Daemon => {
-            eprintln!("daemon mode is only supported on Unix");
-            Err(LinehashError::Io(std::io::Error::other(
-                "daemon not supported on this platform",
-            )))
-        }
     }
 }
 

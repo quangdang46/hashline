@@ -527,40 +527,6 @@ pub fn print_stats_json(
     serialize_json(writer, stats, style)
 }
 
-pub fn print_map(
-    writer: &mut impl Write,
-    result: &crate::commands::map::MapResult,
-) -> io::Result<()> {
-    writeln!(writer, "Map: {}", result.root)?;
-    writeln!(writer, "Total files: {}", result.total_files)?;
-    writeln!(writer, "Total tokens: ~{}", result.total_tokens)?;
-    writeln!(writer, "Truncated: {}", result.truncated)?;
-    writeln!(writer, "Tree:")?;
-    print_map_node(writer, &result.tree, 0)
-}
-
-fn print_map_node(
-    writer: &mut impl Write,
-    tree: &BTreeMap<String, crate::commands::map::MapNode>,
-    indent: usize,
-) -> io::Result<()> {
-    for (key, node) in tree {
-        let prefix = "  ".repeat(indent);
-        writeln!(
-            writer,
-            "{}{}/ ({} tokens, {} files)",
-            prefix,
-            key,
-            node.token_count,
-            node.files.len()
-        )?;
-        if !node.subdirs.is_empty() {
-            print_map_node(writer, &node.subdirs, indent + 1)?;
-        }
-    }
-    Ok(())
-}
-
 pub fn print_grep(writer: &mut impl Write, doc: &Document, indexes: &[usize]) -> io::Result<()> {
     for index in indexes {
         let line = &doc.lines[*index];

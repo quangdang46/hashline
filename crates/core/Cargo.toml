@@ -19,7 +19,6 @@ thiserror = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
-regex-syntax = { workspace = true }
 notify = { workspace = true }
 walkdir = { workspace = true }
 memchr = { workspace = true }
@@ -29,29 +28,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 toml = "0.8"
 
-# Tree-sitter
-tree-sitter = "0.23"
-tree-sitter-rust = "0.23"
-tree-sitter-javascript = "0.23"
-tree-sitter-typescript = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-go = "0.23"
-tree-sitter-c = "0.23"
-tree-sitter-cpp = "0.23"
-
-# Parallel processing
+# Parallel processing for hashing large files
 rayon = "1.10"
 crossbeam = "0.8"
 parking_lot = "0.12"
-
-# Aho-Corasick for multi-pattern search
-aho-corasick = "1.1"
-
-# Bitset for line index
-fixedbitset = "0.4"
-
-# Bloom filter
-bloomfilter = "1.0"
 
 # LRU cache
 lru = "0.17"
@@ -59,10 +39,9 @@ lru = "0.17"
 # Cached initialization
 once_cell = "1.19"
 
-# File walking
+# File walking (used by hash sidecar discovery)
 ignore = "0.4"
 rustc-hash = "2.1.2"
-rho-hashline = "0.5.0"
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -84,21 +63,5 @@ name = "verify_bench"
 harness = false
 
 [[bench]]
-name = "watch_bench"
-harness = false
-
-[[bench]]
 name = "edit_bench"
-harness = false
-
-[[bench]]
-name = "outline_bench"
-harness = false
-
-[[bench]]
-name = "adaptive_bench"
-harness = false
-
-[[bench]]
-name = "search_bench"
 harness = false

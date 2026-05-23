@@ -194,62 +194,22 @@ Edited line 3.
 Pure Rust. No tree-sitter. No LLM. No external dependencies.
 Simplest tool in the suite.
 
-## Instant Grep (Trigram Index)
+## Scope: edit, not search
 
-`linehash grep` uses a **trigram inverted index** for fast regex search, inspired by Cursor's instant grep algorithm. This provides 20-100× speedup over linear scanning for large files.
-
-### How It Works
-
-1. **Trigram Decomposition**: Each line is split into overlapping 3-byte sequences:
-   ```
-   "hello" → ["hel", "ell", "llo"]
-   ```
-
-2. **Inverted Index**: Maps each trigram to posting lists recording which lines contain it
-
-3. **Candidate Filtering**: Uses bloom filters to quickly reject non-matching lines
-
-4. **Regex Verification**: Full regex check only on candidate lines
-
-### Auto-Indexing
-
-- Index is built automatically on first search
-- Content hash validates index freshness
-- LRU cache prevents memory bloat (configurable capacity)
-- Persistent storage available for instant warm restarts
-
-### Using `--no-index`
-
-For small files or one-off searches:
-```bash
-linehash grep --no-index file.txt "pattern"
-```
-
-### Hot-loop grep with the daemon
-
-For repeated searches over the same files, keep the Unix daemon warm and route
-grep through it:
+`linehash` deliberately stays focused on **read + edit + delete + verify**.
+Search, symbol lookup, and static analysis are intentionally out of scope —
+companion tools like [`ffs`](https://github.com/quangdang46/fast_file_search)
+handle those better. A typical agent workflow combines them:
 
 ```bash
-linehash daemon >/tmp/linehash-daemon.log 2>&1 &
-linehash grep src/auth.rs "verify_token" --daemon
+ffs grep "fn verify" src/         # find candidate locations
+linehash read src/auth.rs         # get fresh anchors
+linehash edit src/auth.rs 42:a3 "new content"
 ```
 
-`grep --daemon` auto-starts the daemon when it is not already running on Unix.
-The daemon caches file contents in memory and verifies the same regex semantics
-as the normal grep path before returning anchor-addressed matches. Other
-commands still use the regular CLI paths today; do not document or script
-daemon-backed read/edit unless those flags are added.
-
-### Architecture
-
-| Component | Purpose |
-|---|---|
-| `search/decompose.rs` | Regex → trigram decomposition |
-| `search/filter.rs` | Candidate filtering using masks |
-| `search/verify.rs` | Full regex verification on candidates |
-| `search/cache.rs` | LRU cache with content-hash validation |
-| `search/persist.rs` | Persistent index storage |
+This keeps the linehash CLI surface small (13 commands) and the MCP tool
+list AI-friendly (8 core tools), instead of duplicating an entire search
+engine inside the file-edit binary.
 
 ## MCP server
 
@@ -274,11 +234,6 @@ Current auto-install targets:
 
 Auto-detect is the default. Set `LINEHASH_MCP_HOST=codex` or a comma-separated host list only when you want to override detection and target a specific subset.
 
-For watch behavior, the current split is intentional:
-- CLI supports `linehash watch --continuous`
-- MCP supports only single-event watch calls today
-- `linehash watch-capabilities --json` or MCP `linehash_watch_capabilities` returns the evaluated capability contract and recommended fallback modes
-
 ## Usage
 
 Common workflows for Claude Code, AI code editing, and patch-safe file automation:
@@ -296,11 +251,6 @@ linehash index src/auth.js
 # Check whether one or more anchors still resolve
 linehash verify src/auth.js 2:f1 4:9c
 
-# Search content and return anchors for matching lines
-linehash grep src/auth.js "verifyToken"
-linehash annotate src/auth.js "missing expiry"
-linehash annotate src/auth.js "^export function" --regex --expect-one
-
 # Edit by hash anchor
 linehash edit <file> <hash-or-line:hash> <new_content>
 linehash edit <file> <start-line:hash>..<end-line:hash> <new_content>
@@ -313,30 +263,17 @@ linehash swap <file> <anchor-a> <anchor-b>
 linehash move <file> <anchor> before <target-anchor>
 linehash move <file> <anchor> after <target-anchor>
 linehash indent <file> <start-line:hash>..<end-line:hash> +2
-linehash find-block <file> <anchor>
 
 # Multi-op workflows
 linehash patch <file> <patch.json>
 # patch.json shape:
 # {"ops":[{"op":"edit","anchor":"3:64","content":"  return message.toUpperCase()"}]}
-linehash from-diff <file> <diff.patch>
-linehash merge-patches <patch-a.json> <patch-b.json> --base <file>
 
 # Inspect collision/token-budget guidance for large files
 linehash stats src/auth.js
 
-# Watch for live hash changes (v1 defaults to one change event, then exit)
-linehash watch src/auth.js
-linehash watch src/auth.js --continuous
-linehash watch-capabilities --json
-
-# List repo-local markdown workflow packs / skills
-linehash workflows
-linehash workflows --root /path/to/repo --json
-
-# Explode / implode workflow
-linehash explode src/auth.js --out out/auth.lines
-linehash implode out/auth.lines --out src/auth.js --dry-run
+# Recommend a read-only workflow for a file
+linehash doctor src/auth.js
 ```
 
 ## Integration with Claude Code
@@ -366,35 +303,14 @@ Example:
 - Use `read --anchor ... --context N` when you already know the target anchor and want a smaller local window.
 - Use `index` for fast orientation when content is not needed.
 - Use `verify` to confirm anchors still resolve before building a larger edit plan.
-- Use `grep` / `annotate` when you know content but need current anchors.
-- Use `swap`, `move`, `indent`, and `find-block` instead of simulating structural edits with multiple fragile single-line operations.
-- Use `patch`, `from-diff`, and `merge-patches` for multi-step or reviewable change sets.
+- Use external tools like `ffs grep` / `ffs symbol` to locate targets when you only know content.
+- Use `swap`, `move`, `indent` instead of simulating structural edits with multiple fragile single-line operations.
+- Use `patch` for coordinated multi-line changes that should succeed or fail together.
 - Use `stats` when a file is large, collisions are likely, or you want guidance on whether short hashes and small context windows are still ergonomic.
 - Use `doctor` when you want a read-only recommendation for how to approach a file before reading or editing it.
-- Use `explode` / `implode` only when you explicitly want a filesystem-native round-trip workflow.
 - Use qualified anchors like `12:ab` whenever possible; they are safer than bare `ab` when collisions or stale reads matter.
 
 ## Workflow playbooks
-
-## Markdown workflow packs
-
-`linehash` now supports repo-local markdown skill packs under `.linehash/skills/<name>/SKILL.md`.
-Each pack uses TOML frontmatter with bounded CLI and MCP surfaces, then a Markdown body with
-the actual workflow instructions:
-
-```toml
----
-title = "Anchored Read"
-description = "Orient before mutating."
-allowed_cli_commands = ["linehash index", "linehash read"]
-allowed_mcp_tools = ["linehash_index", "linehash_read"]
----
-```
-
-Use `linehash workflows` to inspect the loaded pack catalog locally, or call the MCP
-tool `linehash_workflows` to retrieve the same catalog from an integration client.
-The bundled packs cover anchored reads, verify-then-edit, patch transactions, and
-stale-anchor repair.
 
 ### Targeted edit
 
@@ -405,10 +321,9 @@ stale-anchor repair.
 
 ### Search → anchor → edit
 
-1. `linehash annotate <file> <text>` when you know exact content
-2. `linehash grep <file> <pattern>` when you know a regex or broader pattern
-3. `linehash read <file> --anchor <line:hash> --context N`
-4. `linehash edit` / `linehash patch`
+1. Use `ffs grep` / `ffs symbol` (or any external search tool) to locate target
+2. `linehash read <file> --anchor <line:hash> --context N` for a focused window
+3. `linehash edit` / `linehash patch`
 
 ### Large-file workflow
 
@@ -426,15 +341,14 @@ stale-anchor repair.
 
 ### Multi-op patch workflow
 
-1. Use `annotate` / `grep` / `find-block` to collect target anchors
-2. Build a patch JSON file
-3. Run `linehash patch <file> <patch.json> --dry-run`
-4. Apply the patch once the dry-run output looks correct
-5. Use `merge-patches` when combining independently prepared change sets
+1. Use external search (`ffs grep` / `ffs symbol`) to collect target lines
+2. `linehash read <file> --anchor <line:hash> --context N` to confirm anchors
+3. Build a patch JSON file
+4. Run `linehash patch <file> <patch.json> --dry-run`
+5. Apply the patch once the dry-run output looks correct
 
 ### Structural edit workflow
 
-- Use `find-block` before editing a function/class-sized region
 - Use `move` or `swap` for reordering instead of rewriting text by hand
 - Use `indent` after movement or when shifting a whole block
 - Prefer `patch` over many tiny single-line edits when the change is coordinated
@@ -459,9 +373,8 @@ linehash read src/auth.js --json --pretty
   ...
 }
 
-# NDJSON event stream for agents / scripts
-linehash watch src/auth.js --json
-{"timestamp":1714001321,"event":"changed","path":"src/auth.js","changes":[...],"total_lines":847}
+# NDJSON output: header line + one JSON object per file line (read/index)
+linehash read src/auth.js --ndjson
 ```
 
 The MCP server defaults to compact JSON in tool result text (saves ~30% tokens
@@ -471,18 +384,11 @@ hand.
 ## Additional Commands
 
 - `verify` checks whether anchors still resolve and returns a non-zero exit code if any do not.
-- `grep` searches by regex using trigram index for speed (20-100× faster than linear on large files). Use `--no-index` to force linear scan.
-- `annotate` maps exact substrings or regex matches back to current anchors.
 - `doctor` recommends a read-only workflow for a file using current size/collision heuristics.
 - `patch` applies a JSON patch transaction atomically.
 - `swap` exchanges two lines in one snapshot-safe operation.
 - `move` repositions one line before or after another anchor.
 - `indent` indents or dedents an anchor-qualified range.
-- `find-block` discovers a likely structural block around an anchor.
-- `from-diff` compiles a unified diff into linehash patch JSON.
-- `merge-patches` merges two patch files and reports conflicts.
-- `explode` writes one file per source line plus metadata.
-- `implode` validates and reassembles an exploded directory back into a file.
 
 ## Error Handling
 
@@ -544,13 +450,6 @@ Fixtures (regenerated locally on first run):
 |---|---:|
 | `verify large.rs <anchor>` | ~18 ms |
 
-### Search (`grep`, `annotate`)
-
-| Command | Mean |
-|---|---:|
-| `grep large.rs <pattern>` | ~23 ms |
-| `annotate large.rs <substring>` | ~15 ms |
-
 ### Mutations
 
 | Command | Mean |
@@ -574,34 +473,12 @@ to xxHash32 is shorter:
 | `edit_mutate_render (100k)` | 877 µs | **-22 %** |
 | `edit_parse_document (100k)` | 148 µs | **-30 %** |
 
-### Block & diagnostics
+### Diagnostics
 
 | Command | Mean | Range |
 |---|---:|---:|
-| `find-block large.rs <anchor>` | 31.56 ms | 29.67 – 34.65 |
 | `stats large.rs` | 15.82 ms | 14.11 – 19.22 |
 | `doctor large.rs` | 14.68 ms | 14.49 – 15.02 |
-
-### Tree-sitter / language tools (real `crates/core` source tree)
-
-| Command | Mean | Range |
-|---|---:|---:|
-| `map core/ --json` | 1.91 ms | 1.69 – 2.08 |
-| `outline cli.rs` (667 L) | 2.78 ms | 2.55 – 2.92 |
-| `outline context.rs` | 2.53 ms | 2.32 – 2.89 |
-| `symbol EditCmd --scope core --json` | 4.30 ms | 4.03 – 4.67 |
-| `callers parse_anchor --scope core --depth 3 --json` | 149.02 ms | 144.71 – 154.87 |
-| `callees run --scope core --depth 2 --json` | 118.06 ms | 114.86 – 121.32 |
-| `deps --file cli.rs --json` | 1.04 ms | 0.87 – 1.48 |
-
-> `callers` / `callees` parse the whole scope with tree-sitter on every call and BFS the call graph, so they sit in the ~100 ms range on a multi-file scope. Single-file `outline` / `deps` stay in the low-millisecond range.
-
-### Misc
-
-| Command | Mean | Range |
-|---|---:|---:|
-| `workflows --root core` | 0.92 ms | 0.86 – 0.99 |
-| `watch-capabilities --json` | 1.00 ms | 0.84 – 1.32 |
 
 ### Reproducing locally
 
@@ -610,7 +487,7 @@ cargo build --release
 scripts/bench-features.sh > bench-results/full-feature.tsv
 ```
 
-The script generates `/tmp/lh-bench/{small,medium,large}.rs` on first run (cached afterwards), then drives `hyperfine` over each public subcommand and prints one tab-separated `label\tmean_ms\tmin_ms\tmax_ms` row per benchmark. It needs `hyperfine`, `ripgrep` (`rg`), and `python3` on `PATH`, and a release build of `linehash` at `target/release/linehash` (override with `LINEHASH_BIN=...`).
+The script generates `/tmp/lh-bench/{small,medium,large}.rs` on first run (cached afterwards), then drives `hyperfine` over each public subcommand and prints one tab-separated `label\tmean_ms\tmin_ms\tmax_ms` row per benchmark. It needs `hyperfine` and `python3` on `PATH`, and a release build of `linehash` at `target/release/linehash` (override with `LINEHASH_BIN=...`).
 
 ---
 

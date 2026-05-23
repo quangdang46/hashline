@@ -7,20 +7,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, FindBlockCmd, FromDiffCmd,
-    GrepCmd, ImplodeCmd, IndentCmd, IndexCmd, InsertCmd, MapCmd, McpCmd, MergePatchesCmd, MoveCmd,
-    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
+    Commands, DeleteCmd, DoctorCmd, EditCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MoveCmd,
+    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::LinehashError;
 use crate::orchestration::{
-    annotate_lines, command_name, doctor_payload, grep_lines, grep_lines_indexed, index_payload,
-    read_payload, verify_report, watch_capabilities_payload,
+    command_name, doctor_payload, index_payload, read_payload, verify_report,
 };
 use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
-#[cfg(unix)]
-use crate::server::ensure_daemon_running;
 
 const SERVER_INSTRUCTIONS: &str = "\
 linehash MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\
@@ -87,11 +83,6 @@ pub fn run(_cmd: McpCmd) -> io::Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     let mut session = SessionState::default();
-
-    #[cfg(unix)]
-    if let Err(e) = ensure_daemon_running() {
-        eprintln!("warning: failed to start daemon: {e}");
-    }
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -298,8 +289,6 @@ fn dispatch_tool(
             result
         }
         "linehash_verify" => tool_verify(arguments, session),
-        "linehash_grep" => tool_grep(arguments, session),
-        "linehash_annotate" => tool_annotate(arguments, session),
         "linehash_patch" => {
             let mut cmd: PatchCmd = parse_args(arguments)?;
             cmd.json = true;
@@ -338,69 +327,8 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_find_block" => {
-            let mut cmd: FindBlockCmd = parse_args(arguments)?;
-            cmd.json = true;
-            invoke_command(Commands::FindBlock(cmd))
-        }
-        "linehash_workflows" => {
-            let mut cmd: WorkflowsCmd = parse_args(arguments)?;
-            cmd.json = true;
-            invoke_command(Commands::Workflows(cmd))
-        }
-        "linehash_watch_capabilities" => {
-            let cmd = WatchCapabilitiesCmd {
-                json: true,
-                pretty: false,
-            };
-            invoke_command(Commands::WatchCapabilities(cmd))
-        }
         "linehash_stats" => tool_stats(arguments, session),
         "linehash_doctor" => tool_doctor(arguments, session),
-        "linehash_from_diff" => {
-            let mut cmd: FromDiffCmd = parse_args(arguments)?;
-            cmd.json = true;
-            invoke_command(Commands::FromDiff(cmd))
-        }
-        "linehash_merge_patches" => {
-            let mut cmd: MergePatchesCmd = parse_args(arguments)?;
-            cmd.json = true;
-            invoke_command(Commands::MergePatches(cmd))
-        }
-        "linehash_watch" => {
-            let mut cmd: WatchCmd = parse_args(arguments)?;
-            if cmd.continuous {
-                return Err(tool_error(
-                    -32602,
-                    "continuous watch is not supported over MCP; omit `continuous` or set `once=true`",
-                    Some(json!({ "capabilities": watch_capabilities_payload() })),
-                ));
-            }
-            cmd.once = true;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let result = invoke_command(Commands::Watch(cmd));
-            session.invalidate(&path);
-            result
-        }
-        "linehash_explode" => {
-            let cmd: ExplodeCmd = parse_args(arguments)?;
-            invoke_command(Commands::Explode(cmd))
-        }
-        "linehash_implode" => {
-            let cmd: ImplodeCmd = parse_args(arguments)?;
-            let out = cmd.out.clone();
-            let result = invoke_command(Commands::Implode(cmd));
-            if result.is_ok() {
-                session.invalidate(&out);
-            }
-            result
-        }
-        "linehash_map" => {
-            let mut cmd: MapCmd = parse_args(arguments)?;
-            cmd.json = true;
-            invoke_command(Commands::Map(cmd))
-        }
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -433,50 +361,6 @@ fn tool_index(arguments: &Value, session: &mut SessionState) -> Result<Value, Js
             tool_error(
                 -32603,
                 &format!("failed to serialize index payload: {error}"),
-                None,
-            )
-        })?,
-        true,
-    ))
-}
-
-fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
-    let cmd: GrepCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
-    let data = if cmd.no_index {
-        grep_lines(&entry.doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)
-    } else {
-        grep_lines_indexed(&entry.doc, &cmd.pattern, cmd.invert, cmd.case_insensitive)
-    }
-    .map_err(command_error)?;
-
-    Ok(success_payload(
-        "grep",
-        0,
-        serde_json::to_value(data).map_err(|error| {
-            tool_error(
-                -32603,
-                &format!("failed to serialize grep payload: {error}"),
-                None,
-            )
-        })?,
-        true,
-    ))
-}
-
-fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
-    let cmd: AnnotateCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
-    let report =
-        annotate_lines(&entry.doc, &cmd.query, cmd.regex, cmd.expect_one).map_err(command_error)?;
-
-    Ok(success_payload(
-        "annotate",
-        report.exit_code,
-        serde_json::to_value(report.lines).map_err(|error| {
-            tool_error(
-                -32603,
-                &format!("failed to serialize annotate payload: {error}"),
                 None,
             )
         })?,
@@ -1203,30 +1087,6 @@ mod tests {
     }
 
     #[test]
-    fn watch_tool_rejects_continuous_mode() -> Result<()> {
-        let error = dispatch_tool(
-            "linehash_watch",
-            &json!({
-                "file": "demo.txt",
-                "continuous": true,
-            }),
-            &mut SessionState::default(),
-        );
-        let error = must_err(error)?;
-
-        assert_eq!(error.code, -32602);
-        assert!(error.message.contains("continuous watch"));
-        assert_eq!(
-            error
-                .data
-                .as_ref()
-                .map(|data| &data["capabilities"]["mcp_streaming_supported"]),
-            Some(&json!(false))
-        );
-        Ok(())
-    }
-
-    #[test]
     fn read_tool_cache_refreshes_after_file_change() -> Result<()> {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
@@ -1396,55 +1256,6 @@ mod tests {
                 .and_then(|data| data["risk"]["summary"].as_str())
                 .is_some_and(|text| text.contains("blocked"))
         );
-        Ok(())
-    }
-
-    #[test]
-    fn workflows_tool_returns_repo_skill_pack_catalog() -> Result<()> {
-        let dir = must(TempDir::new())?;
-        let skills_dir = dir.path().join(".linehash/skills/anchored-read");
-        std::fs::create_dir_all(&skills_dir).map_err(|error| anyhow!("{error}"))?;
-        std::fs::write(
-            skills_dir.join("SKILL.md"),
-            concat!(
-                "---\n",
-                "title = \"Anchored read\"\n",
-                "description = \"Inspect before mutating\"\n",
-                "surfaces = [\"local\", \"mcp\"]\n",
-                "allowed_cli_commands = [\"linehash index\", \"linehash read\"]\n",
-                "allowed_mcp_tools = [\"linehash_index\", \"linehash_read\"]\n",
-                "---\n",
-                "Use index first, then a focused read.\n",
-            ),
-        )
-        .map_err(|error| anyhow!("{error}"))?;
-
-        let result = must(dispatch_tool(
-            "linehash_workflows",
-            &json!({ "root": dir.path() }),
-            &mut SessionState::default(),
-        ))?;
-
-        assert_eq!(result["command"], "workflows");
-        assert_eq!(result["data"]["packs"][0]["name"], "anchored-read");
-        assert_eq!(
-            result["data"]["packs"][0]["allowed_mcp_tools"][0],
-            "linehash_index"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn watch_capabilities_tool_reports_mcp_limitations() -> Result<()> {
-        let result = must(dispatch_tool(
-            "linehash_watch_capabilities",
-            &json!({}),
-            &mut SessionState::default(),
-        ))?;
-
-        assert_eq!(result["command"], "watch-capabilities");
-        assert_eq!(result["data"]["cli_continuous_supported"], true);
-        assert_eq!(result["data"]["mcp_streaming_supported"], false);
         Ok(())
     }
 }

@@ -2,11 +2,8 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::Arc;
 
-use memchr::memchr;
-use regex::RegexBuilder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::anchor::{ResolvedLine, parse_anchor, resolve};
 use crate::cli::Commands;
@@ -15,12 +12,6 @@ use crate::document::{
     count_short_hashes, format_short_hash,
 };
 use crate::error::LinehashError;
-#[allow(unused_imports)]
-use crate::index::adaptive::search_adaptive;
-use crate::search::cache::SharedIndexCache;
-use crate::search::filter::filter_candidates;
-use crate::search::index::IndexBuilder;
-use crate::search::verify::verify_candidates;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct IndexLineView {
@@ -43,12 +34,6 @@ pub struct ReadPayload {
 pub struct IndexPayload {
     pub file: String,
     pub lines: Vec<IndexLineView>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct MatchReport {
-    pub lines: Vec<LineView>,
-    pub exit_code: i32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -79,16 +64,6 @@ pub struct DoctorPayload {
     pub next_commands: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct WatchCapabilitiesPayload {
-    pub cli_continuous_supported: bool,
-    pub mcp_single_event_supported: bool,
-    pub mcp_streaming_supported: bool,
-    pub recommended_mcp_mode: &'static str,
-    pub streaming_block_reason: &'static str,
-    pub recommended_alternatives: Vec<&'static str>,
-}
-
 pub fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Read(_) => "read",
@@ -97,45 +72,13 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Insert(_) => "insert",
         Commands::Delete(_) => "delete",
         Commands::Verify(_) => "verify",
-        Commands::Grep(_) => "grep",
-        Commands::Annotate(_) => "annotate",
         Commands::Patch(_) => "patch",
         Commands::Swap(_) => "swap",
         Commands::Move(_) => "move",
         Commands::Indent(_) => "indent",
-        Commands::FindBlock(_) => "find-block",
         Commands::Stats(_) => "stats",
         Commands::Doctor(_) => "doctor",
-        Commands::Workflows(_) => "workflows",
-        Commands::FromDiff(_) => "from-diff",
-        Commands::MergePatches(_) => "merge-patches",
-        Commands::Watch(_) => "watch",
-        Commands::WatchCapabilities(_) => "watch-capabilities",
-        Commands::Explode(_) => "explode",
-        Commands::Implode(_) => "implode",
         Commands::Mcp(_) => "mcp",
-        Commands::Map(_) => "map",
-        Commands::Outline(_) => "outline",
-        Commands::Symbol(_) => "symbol",
-        Commands::Callers(_) => "callers",
-        Commands::Callees(_) => "callees",
-        Commands::Deps(_) => "deps",
-        Commands::Daemon => "daemon",
-    }
-}
-
-pub fn watch_capabilities_payload() -> WatchCapabilitiesPayload {
-    WatchCapabilitiesPayload {
-        cli_continuous_supported: true,
-        mcp_single_event_supported: true,
-        mcp_streaming_supported: false,
-        recommended_mcp_mode: "single-event watch",
-        streaming_block_reason: "The linehash MCP server currently runs request/response stdio tools, so a continuous watch would block the caller instead of emitting incremental tool events.",
-        recommended_alternatives: vec![
-            "Call `linehash_watch` with `once=true` and re-issue it after each consumed event.",
-            "Use CLI `linehash watch --continuous` outside MCP when you need a live terminal stream.",
-            "Poll `linehash_read`, `linehash_index`, or `linehash_verify` when a client already owns the scheduling loop.",
-        ],
     }
 }
 
@@ -231,317 +174,6 @@ pub fn index_payload(doc: &Document) -> IndexPayload {
             })
             .collect(),
     }
-}
-
-pub fn grep_lines(
-    doc: &Document,
-    pattern: &str,
-    invert: bool,
-    case_insensitive: bool,
-) -> Result<Vec<LineView>, LinehashError> {
-    if !case_insensitive && !contains_regex_metacharacters(pattern) {
-        // Literal, case-sensitive: scan each `LineRecord.content` directly
-        // with `memchr::memmem` (SIMD-accelerated). The previous code joined
-        // every line into a single `String` (5.9 MB on a 100k-line file)
-        // just to feed `search_adaptive`, which doubled the literal-grep
-        // wall time. Now we go line-by-line with zero whole-document allocs.
-        let pattern_bytes = pattern.as_bytes();
-        let mut results: Vec<LineView> = Vec::new();
-
-        if pattern_bytes.is_empty() {
-            // An empty literal matches every line; preserve old semantics.
-            for (index, line) in doc.lines.iter().enumerate() {
-                let is_match = true;
-                let include = if invert { !is_match } else { is_match };
-                if include {
-                    results.push(LineView {
-                        n: index + 1,
-                        hash: format_short_hash(line.short_hash),
-                        content: line.content.to_string(),
-                    });
-                }
-            }
-            return Ok(results);
-        }
-
-        if pattern_bytes.len() == 1 {
-            let needle = pattern_bytes[0];
-            for (index, line) in doc.lines.iter().enumerate() {
-                let is_match = memchr(needle, line.content.as_bytes()).is_some();
-                let include = if invert { !is_match } else { is_match };
-                if include {
-                    results.push(LineView {
-                        n: index + 1,
-                        hash: format_short_hash(line.short_hash),
-                        content: line.content.to_string(),
-                    });
-                }
-            }
-        } else {
-            let finder = memchr::memmem::Finder::new(pattern_bytes);
-            for (index, line) in doc.lines.iter().enumerate() {
-                let is_match = finder.find(line.content.as_bytes()).is_some();
-                let include = if invert { !is_match } else { is_match };
-                if include {
-                    results.push(LineView {
-                        n: index + 1,
-                        hash: format_short_hash(line.short_hash),
-                        content: line.content.to_string(),
-                    });
-                }
-            }
-        }
-
-        return Ok(results);
-    }
-
-    let regex = RegexBuilder::new(pattern)
-        .case_insensitive(case_insensitive)
-        .build()
-        .map_err(|error| LinehashError::InvalidPattern {
-            pattern: pattern.to_owned(),
-            message: error.to_string(),
-        })?;
-
-    Ok(doc
-        .lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            let is_match = regex.is_match(&line.content);
-            let include = if invert { !is_match } else { is_match };
-            include.then_some(LineView {
-                n: index + 1,
-                hash: format_short_hash(line.short_hash),
-                content: line.content.to_string(),
-            })
-        })
-        .collect())
-}
-
-fn grep_lines_fast(
-    doc: &Document,
-    pattern: &str,
-    invert: bool,
-) -> Result<Vec<LineView>, LinehashError> {
-    let pattern_bytes = pattern.as_bytes();
-    let mut results = Vec::new();
-
-    let finder = if pattern_bytes.len() >= 2 {
-        Some(memchr::memmem::Finder::new(pattern_bytes))
-    } else {
-        None
-    };
-
-    if pattern_bytes.len() == 1 {
-        let byte = pattern_bytes[0];
-        for (index, line) in doc.lines.iter().enumerate() {
-            let is_match = memchr(byte, line.content.as_bytes()).is_some();
-            let include = if invert { !is_match } else { is_match };
-            if include {
-                results.push(LineView {
-                    n: index + 1,
-                    hash: format_short_hash(line.short_hash),
-                    content: line.content.to_string(),
-                });
-            }
-        }
-    } else if let Some(ref f) = finder {
-        for (index, line) in doc.lines.iter().enumerate() {
-            let is_match = f.find(line.content.as_bytes()).is_some();
-            let include = if invert { !is_match } else { is_match };
-            if include {
-                results.push(LineView {
-                    n: index + 1,
-                    hash: format_short_hash(line.short_hash),
-                    content: line.content.to_string(),
-                });
-            }
-        }
-    }
-
-    Ok(results)
-}
-
-fn contains_regex_metacharacters(s: &str) -> bool {
-    for c in s.chars() {
-        match c {
-            '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\'
-            | '"' => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-pub fn grep_lines_indexed(
-    doc: &Document,
-    pattern: &str,
-    invert: bool,
-    case_insensitive: bool,
-) -> Result<Vec<LineView>, LinehashError> {
-    let mut builder = IndexBuilder::new();
-    for (idx, line) in doc.lines.iter().enumerate() {
-        builder.add_line(idx, line.content.as_bytes());
-    }
-    let index = builder.build();
-
-    let (candidates, is_match_all) = filter_candidates(&index, pattern);
-
-    if is_match_all {
-        return grep_lines(doc, pattern, invert, case_insensitive);
-    }
-
-    let results = verify_candidates(&candidates, &doc.lines, pattern, case_insensitive);
-
-    let filtered: Vec<LineView> = results
-        .into_iter()
-        .filter_map(|r| {
-            let is_match = true;
-            let include = if invert { !is_match } else { is_match };
-            include.then_some(LineView {
-                n: r.line_idx as usize + 1,
-                hash: format_short_hash(doc.lines[r.line_idx as usize].short_hash),
-                content: r.content.to_string(),
-            })
-        })
-        .collect();
-
-    Ok(filtered)
-}
-
-/// Grep with cached index for improved performance on repeated searches.
-///
-/// Uses a shared in-memory cache to avoid rebuilding the trigram index
-/// on every search. The cache tracks file metadata (mtime, size, content hash)
-/// to detect when the index needs rebuilding.
-pub fn grep_lines_indexed_cached(
-    doc: &Document,
-    pattern: &str,
-    invert: bool,
-    case_insensitive: bool,
-    cache: &SharedIndexCache,
-) -> Result<Vec<LineView>, LinehashError> {
-    let mtime = doc
-        .file_meta
-        .as_ref()
-        .map(|m| m.mtime_secs as u64)
-        .unwrap_or(0);
-    let content_bytes: Vec<u8> = doc
-        .lines
-        .iter()
-        .flat_map(|l| l.content.as_bytes().to_vec())
-        .collect();
-
-    let index = cache
-        .get_index(&doc.path, &content_bytes, mtime)
-        .map_err(LinehashError::Io)?;
-
-    let (candidates, is_match_all) = filter_candidates(&index, pattern);
-
-    if is_match_all {
-        return grep_lines(doc, pattern, invert, case_insensitive);
-    }
-
-    let results = verify_candidates(&candidates, &doc.lines, pattern, case_insensitive);
-
-    let filtered: Vec<LineView> = results
-        .into_iter()
-        .filter_map(|r| {
-            let is_match = true;
-            let include = if invert { !is_match } else { is_match };
-            include.then_some(LineView {
-                n: r.line_idx as usize + 1,
-                hash: format_short_hash(doc.lines[r.line_idx as usize].short_hash),
-                content: r.content.to_string(),
-            })
-        })
-        .collect();
-
-    Ok(filtered)
-}
-
-pub fn annotate_lines(
-    doc: &Document,
-    query: &str,
-    regex: bool,
-    expect_one: bool,
-) -> Result<MatchReport, LinehashError> {
-    let lines: Vec<LineView> = if regex {
-        let regex =
-            RegexBuilder::new(query)
-                .build()
-                .map_err(|error| LinehashError::InvalidPattern {
-                    pattern: query.to_owned(),
-                    message: error.to_string(),
-                })?;
-
-        doc.lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| {
-                regex.is_match(&line.content).then_some(LineView {
-                    n: index + 1,
-                    hash: format_short_hash(line.short_hash),
-                    content: line.content.to_string(),
-                })
-            })
-            .collect()
-    } else {
-        // Literal queries scan with `memchr::memmem` (SIMD-accelerated).
-        // The previous code used `line.content.contains(query)`, which goes
-        // through `str::find -> Searcher::next` and skips the SIMD fast path
-        // for short multi-byte needles. `memmem::Finder` is what `ripgrep`
-        // uses for the same job.
-        let query_bytes = query.as_bytes();
-        if query_bytes.is_empty() {
-            doc.lines
-                .iter()
-                .enumerate()
-                .map(|(index, line)| LineView {
-                    n: index + 1,
-                    hash: format_short_hash(line.short_hash),
-                    content: line.content.to_string(),
-                })
-                .collect()
-        } else if query_bytes.len() == 1 {
-            let needle = query_bytes[0];
-            doc.lines
-                .iter()
-                .enumerate()
-                .filter_map(|(index, line)| {
-                    memchr(needle, line.content.as_bytes())
-                        .is_some()
-                        .then_some(LineView {
-                            n: index + 1,
-                            hash: format_short_hash(line.short_hash),
-                            content: line.content.to_string(),
-                        })
-                })
-                .collect()
-        } else {
-            let finder = memchr::memmem::Finder::new(query_bytes);
-            doc.lines
-                .iter()
-                .enumerate()
-                .filter_map(|(index, line)| {
-                    finder
-                        .find(line.content.as_bytes())
-                        .is_some()
-                        .then_some(LineView {
-                            n: index + 1,
-                            hash: format_short_hash(line.short_hash),
-                            content: line.content.to_string(),
-                        })
-                })
-                .collect()
-        }
-    };
-
-    Ok(MatchReport {
-        exit_code: i32::from(expect_one && lines.len() > 1),
-        lines,
-    })
 }
 
 pub fn verify_report(doc: &Document, anchors: &[String]) -> VerifyReport {
@@ -671,9 +303,7 @@ fn newline_name(newline: NewlineStyle) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        annotate_lines, doctor_payload, grep_lines, index_payload, read_payload, verify_report,
-    };
+    use super::{doctor_payload, index_payload, read_payload, verify_report};
     use crate::document::{Document, FileStats};
     use std::path::Path;
 
@@ -687,25 +317,6 @@ mod tests {
         assert_eq!(payload.lines[0].content, "alpha");
         assert_eq!(payload.lines[1].content, "beta");
         assert_eq!(payload.lines[2].content, "gamma");
-    }
-
-    #[test]
-    fn grep_lines_apply_case_insensitive_and_invert() {
-        let doc = Document::from_str(Path::new("demo.txt"), "Alpha\nbeta\nGamma\n").unwrap();
-        let matches = grep_lines(&doc, "alpha|gamma", false, true).unwrap();
-        assert_eq!(matches.len(), 2);
-
-        let inverted = grep_lines(&doc, "beta", true, false).unwrap();
-        assert_eq!(inverted.len(), 2);
-    }
-
-    #[test]
-    fn annotate_lines_reports_expect_one_exit_code() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\nalpha\n").unwrap();
-        let report = annotate_lines(&doc, "alpha", false, true).unwrap();
-
-        assert_eq!(report.exit_code, 1);
-        assert_eq!(report.lines.len(), 2);
     }
 
     #[test]
@@ -733,7 +344,7 @@ mod tests {
             suggested_context_n: 5,
             recommended_read_mode: "read",
             recommended_anchor_mode: "qualified",
-            recommended_workflow: "read -> annotate -> verify -> edit",
+            recommended_workflow: "read -> verify -> edit",
             warnings: vec!["demo warning"],
         };
 

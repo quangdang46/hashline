@@ -139,32 +139,13 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Index(cmd) => format_mode(cmd.json, cmd.ndjson),
         Commands::Edit(cmd) => flag_mode(cmd.json),
         Commands::Verify(cmd) => flag_mode(cmd.json),
-        Commands::Grep(cmd) => format_mode(cmd.json, cmd.ndjson),
-        Commands::Annotate(cmd) => format_mode(cmd.json, cmd.ndjson),
         Commands::Insert(cmd) => flag_mode(cmd.json),
         Commands::Delete(cmd) => flag_mode(cmd.json),
         Commands::Patch(cmd) => flag_mode(cmd.json),
         Commands::Indent(cmd) => flag_mode(cmd.json),
-        Commands::FindBlock(cmd) => flag_mode(cmd.json),
         Commands::Stats(cmd) => flag_mode(cmd.json),
         Commands::Doctor(cmd) => flag_mode(cmd.json),
-        Commands::Workflows(cmd) => flag_mode(cmd.json),
-        Commands::FromDiff(cmd) => flag_mode(cmd.json),
-        Commands::MergePatches(cmd) => flag_mode(cmd.json),
-        Commands::Watch(cmd) => flag_mode(cmd.json),
-        Commands::WatchCapabilities(cmd) => flag_mode(cmd.json),
-        Commands::Swap(_)
-        | Commands::Move(_)
-        | Commands::Explode(_)
-        | Commands::Implode(_)
-        | Commands::Mcp(_)
-        | Commands::Daemon
-        | Commands::Map(_)
-        | Commands::Outline(_)
-        | Commands::Symbol(_)
-        | Commands::Callers(_)
-        | Commands::Callees(_)
-        | Commands::Deps(_) => OutputMode::Pretty,
+        Commands::Swap(_) | Commands::Move(_) | Commands::Mcp(_) => OutputMode::Pretty,
     }
 }
 
@@ -176,32 +157,13 @@ pub fn json_pretty_for(command: &Commands) -> bool {
         Commands::Index(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
         Commands::Edit(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Verify(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Grep(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
-        Commands::Annotate(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
         Commands::Insert(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Delete(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Patch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Indent(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::FindBlock(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Stats(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Doctor(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Workflows(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::FromDiff(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::MergePatches(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Watch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::WatchCapabilities(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Map(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Outline(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Symbol(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Callers(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Callees(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Deps(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Swap(_)
-        | Commands::Move(_)
-        | Commands::Explode(_)
-        | Commands::Implode(_)
-        | Commands::Mcp(_)
-        | Commands::Daemon => false,
+        Commands::Swap(_) | Commands::Move(_) | Commands::Mcp(_) => false,
     }
 }
 
@@ -233,8 +195,7 @@ fn json_pretty_flag(json: bool, pretty: bool, ndjson: bool) -> bool {
 mod tests {
     use super::{OutputMode, json_pretty_for, output_mode_for};
     use crate::cli::{
-        Commands, DeleteCmd, DoctorCmd, EditCmd, ExplodeCmd, ImplodeCmd, IndentCmd, InsertCmd,
-        ReadCmd, WatchCapabilitiesCmd, WatchCmd, WorkflowsCmd,
+        Commands, DeleteCmd, DoctorCmd, EditCmd, IndentCmd, InsertCmd, ReadCmd,
     };
     use std::path::PathBuf;
 
@@ -270,62 +231,6 @@ mod tests {
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
-    }
-
-    #[test]
-    fn defaults_to_pretty_for_commands_without_json_flag() {
-        let command = Commands::Explode(ExplodeCmd {
-            file: PathBuf::from("demo.txt"),
-            out: PathBuf::from("out"),
-            force: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
-    }
-
-    #[test]
-    fn implode_defaults_to_pretty_mode() {
-        let command = Commands::Implode(ImplodeCmd {
-            dir: PathBuf::from("exploded"),
-            out: PathBuf::from("demo.txt"),
-            dry_run: true,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
-    }
-
-    #[test]
-    fn supports_json_mode_for_watch() {
-        let command = Commands::Watch(WatchCmd {
-            file: PathBuf::from("demo.txt"),
-            once: false,
-            continuous: true,
-            json: true,
-            pretty: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-    }
-
-    #[test]
-    fn supports_json_mode_for_watch_capabilities() {
-        let command = Commands::WatchCapabilities(WatchCapabilitiesCmd {
-            json: true,
-            pretty: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-    }
-
-    #[test]
-    fn supports_json_mode_for_workflows() {
-        let command = Commands::Workflows(WorkflowsCmd {
-            root: Some(PathBuf::from(".")),
-            json: true,
-            pretty: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
     }
 
     #[test]
