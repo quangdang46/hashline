@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 const HASH_DIR: &str = ".linehash/hashes";
-const MAGIC: &[u8] = b"LHH1";
+// LHH2: hash function now strips trailing whitespace before hashing
+// (formerly LHH1 hashed raw line content, breaking anchors after
+// formatter runs).
+const MAGIC: &[u8] = b"LHH2";
 
 pub struct HashSidecar {
     pub mtime_secs: u64,

@@ -26,8 +26,8 @@ fn read_fixture_pretty_output_includes_anchors() {
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
     assert!(stdout.contains("1:"));
-    assert!(stdout.contains("| function greet(name) {"));
-    assert!(stdout.contains("| export function main() {"));
+    assert!(stdout.contains("|function greet(name) {"));
+    assert!(stdout.contains("|export function main() {"));
 }
 
 #[test]
@@ -207,17 +207,20 @@ fn verify_json_output_is_structured() {
 }
 
 #[test]
-fn verify_stale_anchor_reports_relocated_line_when_hash_still_exists() {
+fn verify_stale_anchor_with_unique_hash_succeeds_via_fuzzy_relocation() {
+    // Phase 2: verify accepts anchors whose line+hash mismatch IF the hash
+    // is unique elsewhere in the file (or within ±3 lines if collisions).
+    // This matches the edit-side behavior so verify returns the same
+    // outcome as the eventual edit.
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let full = parse_json(&["read", &file_arg, "--json"]);
     let moved_hash = full["lines"][0]["hash"].as_str().unwrap();
     let stale = format!("2:{moved_hash}");
-    let (stdout, stderr, code) = run_linehash(&["verify", &file_arg, &stale]);
+    let (_stdout, stderr, code) = run_linehash(&["verify", &file_arg, &stale]);
 
-    assert_eq!(code, 1);
-    assert!(stderr.is_empty());
-    assert!(stdout.contains("hash still exists at line(s) 1"));
+    // Unique hash at line 1, requested line 2 → relocates → verify passes.
+    assert_eq!(code, 0, "expected success after fuzzy relocation, stderr: {stderr}");
 }
 
 #[test]
@@ -229,8 +232,8 @@ fn grep_pretty_returns_anchor_formatted_matches() {
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
     assert!(stdout.contains("1:"));
-    assert!(stdout.contains("| function greet(name) {"));
-    assert!(stdout.contains("|   return greet(name)"));
+    assert!(stdout.contains("|function greet(name) {"));
+    assert!(stdout.contains("|  return greet(name)"));
 }
 
 #[test]
@@ -278,8 +281,8 @@ fn annotate_substring_match_returns_anchor_output() {
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
     assert!(stdout.contains("1:"));
-    assert!(stdout.contains("| function greet(name) {"));
-    assert!(stdout.contains("|   return greet(name)"));
+    assert!(stdout.contains("|function greet(name) {"));
+    assert!(stdout.contains("|  return greet(name)"));
 }
 
 #[test]
@@ -597,18 +600,22 @@ fn edit_accepts_matching_mtime_and_inode_guards() {
 }
 
 #[test]
-fn edit_qualified_anchor_rejects_stale_line_without_retargeting() {
+fn edit_qualified_anchor_fuzzy_relocates_when_line_shifts() {
+    // Phase 2: when the anchored hash exists elsewhere within ±3 lines
+    // (or uniquely anywhere), edits silently relocate. This lets agents
+    // survive small file drifts (formatter inserting blank lines, sibling
+    // edits in the same batch, etc.) without re-reading.
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let stale_anchor = anchor_from_file(&file_arg, 2);
+    // "beta" moves from line 2 to line 3 — anchor's hash is unique → relocate.
     fs::write(&file, "alpha\ngamma\nbeta\n").unwrap();
 
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &stale_anchor, "BETA"]);
+    let (_stdout, _stderr, code) = run_linehash(&["edit", &file_arg, &stale_anchor, "BETA"]);
 
-    assert_eq!(code, 1);
-    assert!(stderr.contains("content changed since last read"));
-    assert!(stderr.contains("hash still exists at line(s) 3"));
-    assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\ngamma\nbeta\n");
+    assert_eq!(code, 0);
+    // The edit landed on the relocated line (the one with the matching hash).
+    assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\ngamma\nBETA\n");
 }
 
 #[test]

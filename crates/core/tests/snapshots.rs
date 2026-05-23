@@ -133,7 +133,10 @@ fn snapshot_stale_anchor_error_output() {
     let file_arg = file.to_string_lossy().into_owned();
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_anchor = format!("2:{}", parsed["lines"][1]["hash"].as_str().unwrap());
-    std::fs::write(&file, "alpha\ngamma\nbeta\n").unwrap();
+    // Replace `beta` with content whose hash is unlikely to collide
+    // with `beta`'s hash. Just reordering would let fuzzy relocation
+    // succeed; we need the hash to disappear from the file entirely.
+    std::fs::write(&file, "alpha\nDELTA-NEW-CONTENT-XYZ\ngamma\n").unwrap();
 
     let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &stale_anchor, "BETA"]);
 

@@ -113,7 +113,6 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::WatchCapabilities(_) => "watch-capabilities",
         Commands::Explode(_) => "explode",
         Commands::Implode(_) => "implode",
-        Commands::InstallMcp(_) => "install-mcp",
         Commands::Mcp(_) => "mcp",
         Commands::Map(_) => "map",
         Commands::Outline(_) => "outline",

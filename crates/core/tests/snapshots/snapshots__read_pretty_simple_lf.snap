@@ -1,14 +1,13 @@
 ---
 source: crates/core/tests/snapshots.rs
-assertion_line: 32
 expression: stdout
 ---
-1:45| function greet(name) {
-2:0d|   const message = `hello, ${name}`
-3:64|   return message
-4:18| }
-5:05| 
-6:d2| export function main() {
-7:90|   const name = 'world'
-8:72|   return greet(name)
-9:18| }
+1:45|function greet(name) {
+2:0d|  const message = `hello, ${name}`
+3:64|  return message
+4:18|}
+5:05|
+6:d2|export function main() {
+7:90|  const name = 'world'
+8:72|  return greet(name)
+9:18|}

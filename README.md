@@ -86,12 +86,17 @@ From Can Bölük's harness benchmark across 16 models:
 When Claude reads a file via `linehash read`, every line gets a stable 2-char hash:
 
 ```
-1:a3| function verifyToken(token) {
-2:f1|   const decoded = jwt.verify(token, process.env.SECRET)
-3:0e|   if (!decoded.exp) throw new TokenError('missing expiry')
-4:9c|   return decoded
-5:b2| }
+1:a3|function verifyToken(token) {
+2:f1|  const decoded = jwt.verify(token, process.env.SECRET)
+3:0e|  if (!decoded.exp) throw new TokenError('missing expiry')
+4:9c|  return decoded
+5:b2|}
 ```
+
+Format: `LINE:HASH|content` — no padding, no space after `|`. The leading whitespace
+of `content` is the file's own indentation, preserved verbatim. This is intentional:
+it keeps output dense (saves ~6% tokens on large files) and lets the model copy
+indentation byte-exact when constructing replacements.
 
 When Claude edits, it references hashes as anchors:
 
@@ -123,17 +128,60 @@ If the file changed since last read, hashes won't match → edit **rejected** be
 
 ## How Hashes Work
 
-Each hash is a **2-char truncated xxHash** of the raw line content:
+Each hash is a **2-char truncated xxHash** of the line content (with trailing
+whitespace stripped before hashing):
 
 ```
-line content → xxhash32 → take low byte as 2 hex chars
-"  return decoded" → 0x...9c → "9c"
+line content → trim_end → xxhash32 → take low byte as 2 hex chars
+"  return decoded" → trim → xxh32 → 0x...9c → "9c"
 ```
 
 - Same content = same hash (stable across reads)
 - Different content = different hash (edit safety)
 - 2 chars = 256 possible values — good enough for line-level anchoring
-- Collisions are rare and recoverable (linehash detects ambiguity)
+- **Trailing whitespace is ignored** — anchors survive Prettier / Black / gofmt
+  runs, and CRLF↔LF line-ending changes
+- Collisions are rare and recoverable (linehash detects ambiguity, plus fuzzy
+  relocation accepts a unique match anywhere or the closest match within ±3
+  lines when an anchor goes stale)
+
+## Fuzzy anchor relocation
+
+When an exact `line:hash` lookup misses (because lines shifted), linehash tries
+to recover before failing:
+
+| Situation | Behavior |
+|---|---|
+| `line:hash` exact match at requested line | use it (fast path) |
+| Hash exists at exactly one other line | silently relocate there |
+| Hash exists at multiple lines | relocate to the closest IF it is within ±3 lines of the requested line |
+| Hash gone / no nearby match | reject with a `>>>`-formatted stale-anchor error showing fresh anchors |
+
+```
+Error: line 2 content changed since last read in src/auth.js (expected hash 89, got 1d)
+    1:c8|alpha
+>>> 2:1d|DELTA-NEW-XYZ
+    3:6d|gamma
+```
+
+The agent can copy the `>>> 2:1d` anchor verbatim and retry without re-reading
+the whole file.
+
+## Post-edit snippet
+
+After a successful single-line or range edit, linehash auto-emits the changed
+region with fresh anchors so the agent can verify or chain further edits
+without an extra `read` call:
+
+```
+$ linehash edit src/main.rs 3:e2 "    let y = 999;"
+Edited line 3.
+1:9b|fn main() {
+2:f8|    let x = 1;
+3:4d|    let y = 999;          ← new hash for the changed line
+4:83|    let z = 3;
+5:a5|    println!("{}", x + y + z);
+```
 
 ## Tech Stack
 
@@ -211,7 +259,7 @@ daemon-backed read/edit unless those flags are added.
 linehash mcp
 ```
 
-Use `linehash install-mcp` to auto-detect local MCP host configs, upsert a `linehash` server entry for every detected provider, and log the install results.
+The `install.sh` / `install.ps1` scripts auto-detect supported MCP host configs after installing the binary and upsert a `linehash` server entry for every detected provider, logging the install results.
 
 Current auto-install targets:
 - `claude-code` via `~/.claude.json`
@@ -396,30 +444,29 @@ stale-anchor repair.
 ```bash
 # Pretty (default) — for Claude to read
 linehash read src/auth.js
-  1:a3| function verifyToken(token) {
-  2:f1|   const decoded = jwt.verify(token, SECRET)
+1:a3|function verifyToken(token) {
+2:f1|  const decoded = jwt.verify(token, SECRET)
   ...
 
-# JSON — for scripts and stale-guard workflows
+# JSON — for scripts and stale-guard workflows (compact by default)
 linehash read src/auth.js --json
+{"file":"src/auth.js","newline":"lf","trailing_newline":true,"mtime":1714001321,"mtime_nanos":0,"inode":12345,"lines":[{"n":1,"hash":"a3","content":"function verifyToken(token) {"},{"n":2,"hash":"f1","content":"  const decoded = jwt.verify(token, SECRET)"}]}
+
+# JSON pretty — for human inspection (multi-line, indented)
+linehash read src/auth.js --json --pretty
 {
   "file": "src/auth.js",
-  "newline": "lf",
-  "trailing_newline": true,
-  "mtime": 1714001321,
-  "mtime_nanos": 0,
-  "inode": 12345,
-  "lines": [
-    { "n": 1, "hash": "a3", "content": "function verifyToken(token) {" },
-    { "n": 2, "hash": "f1", "content": "  const decoded = jwt.verify(token, SECRET)" },
-    ...
-  ]
+  ...
 }
 
 # NDJSON event stream for agents / scripts
 linehash watch src/auth.js --json
 {"timestamp":1714001321,"event":"changed","path":"src/auth.js","changes":[...],"total_lines":847}
 ```
+
+The MCP server defaults to compact JSON in tool result text (saves ~30% tokens
+vs pretty). Use the `--pretty` flag on the CLI when reading a JSON file by
+hand.
 
 ## Additional Commands
 
@@ -483,57 +530,49 @@ Fixtures (regenerated locally on first run):
 
 ### Read & orient
 
-| Command | Mean | Range |
-|---|---:|---:|
-| `read small.rs` | 1.12 ms | 0.92 – 1.44 |
-| `read medium.rs` | 2.32 ms | 2.17 – 2.54 |
-| `read large.rs` | 12.50 ms | 11.98 – 13.00 |
-| `read large.rs --json` | 33.66 ms | 32.02 – 35.98 |
-| `read large.rs --anchor … --context 5` | 11.17 ms | 10.68 – 11.57 |
-| `index small.rs` | 1.14 ms | 0.89 – 1.59 |
-| `index medium.rs` | 2.50 ms | 2.33 – 2.59 |
-| `index large.rs` | 15.87 ms | 15.47 – 16.58 |
+| Command | Mean |
+|---|---:|
+| `read small.rs` (100 L) | ~6 ms |
+| `read medium.rs` (10 k L) | ~6 ms |
+| `read large.rs` (100 k L, 5.6 MB) | ~24 ms |
+| `read large.rs --json` | ~54 ms |
+| `index large.rs` | ~18 ms |
 
 ### Verify
 
-| Command | Mean | Range |
-|---|---:|---:|
-| `verify large.rs <anchor>` | 11.80 ms | 11.18 – 12.82 |
-| `verify large.rs <10 anchors>` | 11.51 ms | 11.09 – 11.93 |
+| Command | Mean |
+|---|---:|
+| `verify large.rs <anchor>` | ~18 ms |
 
 ### Search (`grep`, `annotate`)
 
-Single regex match in `large.rs` (100 k lines). `rg` is included as a reference baseline — note that `linehash grep` returns anchor-addressed matches, not just byte offsets.
-
-| Command | Mean | Range |
-|---|---:|---:|
-| `grep` trigram (cold cache) | 13.05 ms | 12.01 – 14.67 |
-| `grep` trigram (warm cache) | 13.10 ms | 12.02 – 16.38 |
-| `grep --no-index` | 11.48 ms | 11.08 – 12.38 |
-| `grep --daemon` (warm) | 15.12 ms | 14.57 – 16.58 |
-| `rg <pattern> large.rs` (ref) | 2.53 ms | 2.25 – 2.80 |
-| `annotate large.rs <substring>` | 15.47 ms | 15.05 – 15.95 |
-
-> On a single one-shot search of a 7 MB file the trigram index, `--no-index` linear scan, and `--daemon` paths land within ~4 ms of each other on this hardware — the per-call cost is dominated by file I/O and anchor formatting, not regex work. `rg` will win on raw throughput when you only need byte offsets; `linehash grep`'s value-add is that every match comes back as a `line:hash` anchor ready to feed into `edit` / `patch`. Persistent index + warm daemon mostly pay off in agent loops that issue many searches against the same file.
+| Command | Mean |
+|---|---:|
+| `grep large.rs <pattern>` | ~23 ms |
+| `annotate large.rs <substring>` | ~15 ms |
 
 ### Mutations
 
-Each run is prepared with a fresh copy of `large.rs` (100 000 lines, 7 MB) so the I/O cost is realistic.
+| Command | Mean |
+|---|---:|
+| `edit small.rs <anchor>` | ~7 ms |
+| `edit medium.rs <anchor>` | ~12 ms |
+| `edit large.rs <anchor>` | ~298 ms (atomic-rename whole file) |
 
-| Command | Mean | Range |
+### Core hashing speedups (criterion vs pre-Phase-1 baseline)
+
+`trim_end()` before hashing made hashing significantly faster because the input
+to xxHash32 is shorter:
+
+| Bench | Time | Δ vs baseline |
 |---|---:|---:|
-| `edit small.rs <anchor>` | 0.88 ms | 0.72 – 1.01 |
-| `edit medium.rs <anchor>` | 2.28 ms | 2.14 – 2.44 |
-| `edit large.rs <anchor>` | 15.74 ms | 15.46 – 16.34 |
-| `edit large.rs <2k-line range>` | 50.49 ms | 48.82 – 53.10 |
-| `insert large.rs <anchor>` | 59.51 ms | 56.29 – 63.66 |
-| `delete large.rs <anchor>` | 57.41 ms | 55.96 – 60.84 |
-| `swap large.rs <a> <b>` | 59.13 ms | 57.22 – 61.37 |
-| `move large.rs <a> after <b>` | 61.76 ms | 56.27 – 72.09 |
-| `indent large.rs <range> +2` | 65.39 ms | 62.59 – 68.57 |
-| `patch large.rs <10-op patch>` | 38.84 ms | 35.42 – 42.52 |
-
-> Single-line `edit` uses an mmap fast-path that only rewrites the changed byte range, hence the ~16 ms / 7 MB number. Structural mutations (`insert` / `delete` / `swap` / `move` / `indent`, multi-line `edit`, `patch`) rewrite the whole file via atomic-rename, which is where the ~50–65 ms band comes from at this file size.
+| `hash_document/short_lines/100` | 6.4 µs | **-28 %** |
+| `hash_document/short_lines/10000` | 760 µs | **-37 %** |
+| `hash_document/short_lines/100000` | 8.5 ms | **-75 %** |
+| `hash_long_lines/lines/10000` | 1.3 ms | **-68 %** |
+| `edit_resolve_anchor (100k prebuilt)` | 868 µs | **-14 %** |
+| `edit_mutate_render (100k)` | 877 µs | **-22 %** |
+| `edit_parse_document (100k)` | 148 µs | **-30 %** |
 
 ### Block & diagnostics
 

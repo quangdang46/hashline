@@ -197,6 +197,7 @@ fn resolve_qualified(
             anchor: format!("{line}:{rendered_short}"),
         })?;
 
+    // Fast path: exact line+hash match.
     if actual.short_hash == short {
         return Ok(ResolvedLine {
             index: idx,
@@ -205,20 +206,99 @@ fn resolve_qualified(
         });
     }
 
-    let relocated_suffix = if let Some(index) = index {
-        if !index[short as usize].is_empty() {
-            let lines = index[short as usize]
+    // Fuzzy relocation: when line+hash mismatch, look for the same hash
+    // elsewhere in the file. This lets edits survive small line shifts
+    // (e.g. a sibling `use` statement added at top, formatter inserting
+    // a blank line, etc.) without forcing the agent to re-read.
+    //
+    // Logic (matches hashfile-mcp):
+    //   - 1 unique match anywhere → silently relocate to it
+    //   - N matches → relocate to the one closest to the requested line
+    //     IF that closest match is within ±FUZZY_RELOCATE_RADIUS lines.
+    //     Beyond that radius, the request is ambiguous enough that the
+    //     agent should re-read.
+    //
+    // This only fires for QUALIFIED anchors (line:hash). Unqualified
+    // anchors (just hash) already use the global index lookup.
+    const FUZZY_RELOCATE_RADIUS: isize = 3;
+
+    if let Some(index) = index {
+        let candidates = &index[short as usize];
+        let relocated = match candidates.as_slice() {
+            [] => None,
+            [single] => Some(*single),
+            many => {
+                // Pick the candidate closest to the requested line.
+                let target = idx as isize;
+                let closest = many
+                    .iter()
+                    .min_by_key(|&&c| (c as isize - target).abs())
+                    .copied()
+                    .expect("non-empty");
+                let dist = (closest as isize - target).abs();
+                if dist <= FUZZY_RELOCATE_RADIUS {
+                    Some(closest)
+                } else {
+                    None
+                }
+            }
+        };
+
+        if let Some(new_idx) = relocated {
+            return Ok(ResolvedLine {
+                index: new_idx,
+                line_no: new_idx + 1,
+                short_hash: rendered_short,
+            });
+        }
+    }
+
+    // Build a rich context block showing the stale line with its NEW hash
+    // plus ±2 lines of surrounding context, so the agent can copy a fresh
+    // anchor verbatim without re-reading the whole file.
+    //
+    // Format (matches pi-hashline-edit's >>> convention):
+    //
+    //     3:f1|  context
+    //     4:b3|  context
+    //   >>> 5:7e|  stale line with current hash
+    //     6:c2|  context
+    //
+    // Plus, if the requested hash exists elsewhere, list those lines too.
+    const CONTEXT_RADIUS: usize = 2;
+    let lo = idx.saturating_sub(CONTEXT_RADIUS);
+    let hi = (idx + CONTEXT_RADIUS).min(doc.lines.len().saturating_sub(1));
+    let mut context = String::new();
+    context.push('\n');
+    for i in lo..=hi {
+        let line_record = &doc.lines[i];
+        let prefix = if i == idx { ">>> " } else { "    " };
+        let line_no = i + 1;
+        let hash = format_short_hash(line_record.short_hash);
+        // Truncate very long lines so the error stays readable.
+        let content: &str = &line_record.content;
+        let display: std::borrow::Cow<'_, str> = if content.len() > 80 {
+            std::borrow::Cow::Owned(format!("{}…", &content[..80]))
+        } else {
+            std::borrow::Cow::Borrowed(content)
+        };
+        context.push_str(&format!("{prefix}{line_no}:{hash}|{display}\n"));
+    }
+
+    // If the requested hash exists elsewhere (beyond fuzzy-relocation radius),
+    // tell the agent where to look.
+    if let Some(index) = index {
+        let elsewhere = &index[short as usize];
+        if !elsewhere.is_empty() {
+            let lines = elsewhere
                 .iter()
                 .map(|idx| (idx + 1).to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("; hash still exists at line(s) {lines}")
-        } else {
-            String::new()
+            context.push_str(&format!("(hash {rendered_short} also at line(s) {lines})\n"));
         }
-    } else {
-        String::new()
-    };
+    }
+    let relocated_suffix = context;
     Err(LinehashError::StaleAnchor {
         anchor: format!("{line}:{rendered_short}").into_boxed_str(),
         line,
@@ -461,11 +541,15 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_qualified_stale_mentions_relocated_hash_when_present() -> Result<()> {
+    fn test_resolve_qualified_fuzzy_relocates_within_3_lines() -> Result<()> {
+        // Phase 2: when line+hash mismatch but the hash exists nearby
+        // (within ±3 lines), silently relocate to the unique closest match.
+        // This lets edits survive small line shifts.
         let doc = sample_doc()?;
         let index = doc.build_index();
         let relocated_hash = doc.lines[0].short_hash;
-        let error = must_err(resolve(
+        // Request line 2 with line-1's hash → distance is 1, should relocate
+        let resolved = must(resolve(
             &Anchor::LineHash {
                 line: 2,
                 short: relocated_hash,
@@ -473,10 +557,51 @@ mod tests {
             &doc,
             &index,
         ))?;
+        assert_eq!(resolved.index, 0, "should fuzzy-relocate to line 1");
+        assert_eq!(resolved.line_no, 1);
+        Ok(())
+    }
 
-        let rendered = error.to_string();
+    #[test]
+    fn test_resolve_qualified_unique_hash_relocates_anywhere() -> Result<()> {
+        // When the requested hash exists at exactly ONE line in the file,
+        // we relocate unconditionally — the line number was just a hint,
+        // and the hash is the canonical identifier. This matches the
+        // behavior of hashfile-mcp.
+        let doc = far_doc()?;
+        let index = doc.build_index();
+        let line1_hash = doc.lines[0].short_hash;
+        // Request line 10 with line-1's hash — unique match anywhere → relocate
+        let resolved = must(resolve(
+            &Anchor::LineHash {
+                line: 10,
+                short: line1_hash,
+            },
+            &doc,
+            &index,
+        ))?;
+        assert_eq!(resolved.index, 0, "should relocate to line 1");
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_qualified_stale_when_hash_absent() -> Result<()> {
+        // When the requested hash exists nowhere in the file, return
+        // StaleAnchor with a hint that the hash is gone.
+        let doc = sample_doc()?;
+        let index = doc.build_index();
+        // 0xff is unlikely to match any of "alpha"/"beta"/"gamma".
+        // (sample_doc uses lines that don't hash to 0xff — verified
+        // by `test_resolve_unqualified_not_found` above.)
+        let error = must_err(resolve(
+            &Anchor::LineHash {
+                line: 2,
+                short: 0xff,
+            },
+            &doc,
+            &index,
+        ))?;
         assert!(matches!(error, LinehashError::StaleAnchor { .. }));
-        assert!(rendered.contains("hash still exists at line(s) 1"));
         Ok(())
     }
 
@@ -578,6 +703,17 @@ mod tests {
             Path::new("demo.txt"),
             "alpha\nbeta\ngamma\n",
         ))
+    }
+
+    fn far_doc() -> Result<Document> {
+        // 10 distinct lines: line-1 hash is at index 0, far from index 9.
+        // Used to test that fuzzy relocation refuses when distance > 3.
+        let content = (1..=10)
+            .map(|i| format!("line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        must(Document::from_str(Path::new("demo.txt"), &content))
     }
 
     fn collision_doc() -> Result<Document> {

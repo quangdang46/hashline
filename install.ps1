@@ -237,27 +237,158 @@ function Install-BinaryAtomic {
 # ════════════════════════════════════════════════════════════════════════════
 # MCP auto-install — mirrors install.sh: best-effort, never fatal.
 #
-# linehash exposes an `install-mcp` subcommand that writes provider configs
-# (Claude Code, etc.) for any host it detects on disk. Failures here just
-# print a hint; the binary install has already succeeded by this point.
+# Detect installed MCP providers (Claude Code, Cursor, Codex, etc.) and
+# upsert a `linehash` server entry into each provider's config file.
+# Replicates the logic that used to live in `linehash install-mcp`.
+# Failures here just print a hint; the binary install has already succeeded.
 # ════════════════════════════════════════════════════════════════════════════
+
+function Update-LinehashMcpConfig {
+    param(
+        [string]$Path,
+        [string]$ServersKey,
+        [string]$BinaryPath
+    )
+
+    $entry = [pscustomobject]@{
+        command = $BinaryPath
+        args    = @('mcp')
+    }
+
+    # Load existing config (or start empty).
+    $config = $null
+    $status = 'installed'
+    if (Test-Path $Path) {
+        try {
+            $raw = Get-Content -Path $Path -Raw -ErrorAction Stop
+            if ($raw.Trim().Length -gt 0) {
+                $config = $raw | ConvertFrom-Json -ErrorAction Stop
+            }
+        } catch {
+            Write-Warn "Skipping $Path (invalid JSON: $($_.Exception.Message))"
+            return $null
+        }
+    }
+    if ($null -eq $config) { $config = [pscustomobject]@{} }
+
+    # Ensure servers container exists.
+    $servers = $config.PSObject.Properties[$ServersKey]
+    if ($null -eq $servers) {
+        Add-Member -InputObject $config -MemberType NoteProperty `
+            -Name $ServersKey -Value ([pscustomobject]@{}) -Force
+    }
+    $serversObj = $config.$ServersKey
+
+    # Compare existing entry (if any) for unchanged/updated signal.
+    $existing = $serversObj.PSObject.Properties['linehash']
+    if ($existing) {
+        $existingJson = $existing.Value | ConvertTo-Json -Compress
+        $entryJson    = $entry          | ConvertTo-Json -Compress
+        if ($existingJson -eq $entryJson) {
+            return @{ Status = 'unchanged'; Path = $Path }
+        }
+        $status = 'updated'
+    }
+
+    # Upsert entry and write file (pretty JSON for human inspection).
+    Add-Member -InputObject $serversObj -MemberType NoteProperty `
+        -Name 'linehash' -Value $entry -Force
+
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $config | ConvertTo-Json -Depth 32 | Set-Content -Path $Path -Encoding UTF8
+
+    return @{ Status = $status; Path = $Path }
+}
+
+function Update-LinehashCodexConfig {
+    param([string]$Path, [string]$BinaryPath)
+
+    $marker = '[mcp_servers.linehash]'
+    $cmdEsc = $BinaryPath -replace '\\', '\\\\'
+    $section = "$marker`r`ncommand = `"$cmdEsc`"`r`nargs = [`"mcp`"]"
+
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+
+    if (-not (Test-Path $Path)) {
+        Set-Content -Path $Path -Value $section -Encoding UTF8
+        return @{ Status = 'installed'; Path = $Path }
+    }
+
+    $existing = Get-Content -Path $Path -Raw -ErrorAction Stop
+    if ($existing -notmatch [regex]::Escape($marker)) {
+        $sep = if ($existing.EndsWith("`n")) { '' } else { "`r`n" }
+        Add-Content -Path $Path -Value "$sep`r`n$section" -Encoding UTF8
+        return @{ Status = 'installed'; Path = $Path }
+    }
+
+    # Replace the existing [mcp_servers.linehash] block.
+    $pattern = '(?ms)' + [regex]::Escape($marker) + '.*?(?=^\[|\z)'
+    $updated = [regex]::Replace($existing, $pattern, "$section`r`n", 1)
+    if ($updated -eq $existing) {
+        return @{ Status = 'unchanged'; Path = $Path }
+    }
+    Set-Content -Path $Path -Value $updated -Encoding UTF8
+    return @{ Status = 'updated'; Path = $Path }
+}
 
 function Invoke-McpAutoInstall {
     if ($NoMcp) { return }
     Write-Info "auto-installing MCP provider configs..."
+
     $bin = Join-Path $Dest $BinaryFile
     try {
-        & $bin install-mcp | Out-Host
-        $code = $LASTEXITCODE
-        if ($null -eq $code) { $code = 0 }
-        if ($code -ne 0) {
-            Write-Warn "MCP auto-install exited with code $code"
-            Write-Warn "Run manually: $bin install-mcp"
+        $resolved = (Resolve-Path -LiteralPath $bin -ErrorAction Stop).ProviderPath
+        if ($resolved) { $bin = $resolved }
+    } catch { } # Fall back to the joined path if resolution fails.
+
+    $home = $env:USERPROFILE
+    $cwd  = (Get-Location).Path
+    $results = @()
+
+    # JSON-based hosts. Each entry: name, path, servers_key, condition.
+    $jsonHosts = @(
+        @{ Name = 'claude-code'; Path = "$home\.claude.json";                       Key = 'mcpServers';     Cond = { Test-Path "$home\.claude.json" } },
+        @{ Name = 'cursor';      Path = "$home\.cursor\mcp.json";                   Key = 'mcpServers';     Cond = { Test-Path "$home\.cursor" -PathType Container } },
+        @{ Name = 'windsurf';    Path = "$home\.codeium\windsurf\mcp_config.json";  Key = 'mcpServers';     Cond = { Test-Path "$home\.codeium\windsurf" -PathType Container } },
+        @{ Name = 'vscode';      Path = "$cwd\.vscode\mcp.json";                    Key = 'servers';        Cond = { Test-Path "$cwd\.vscode" -PathType Container } },
+        @{ Name = 'gemini';      Path = "$home\.gemini\settings.json";              Key = 'mcpServers';     Cond = { Test-Path "$home\.gemini" -PathType Container } },
+        @{ Name = 'opencode';    Path = "$home\.opencode.json";                     Key = 'mcpServers';     Cond = { Test-Path "$home\.opencode.json" } },
+        @{ Name = 'amp';         Path = "$home\.config\amp\settings.json";          Key = 'amp.mcpServers'; Cond = { Test-Path "$home\.config\amp" -PathType Container } },
+        @{ Name = 'droid';       Path = "$home\.factory\mcp.json";                  Key = 'mcpServers';     Cond = { Test-Path "$home\.factory" -PathType Container } }
+    )
+
+    foreach ($h in $jsonHosts) {
+        if (-not (& $h.Cond)) { continue }
+        try {
+            $r = Update-LinehashMcpConfig -Path $h.Path -ServersKey $h.Key -BinaryPath $bin
+            if ($r) { $results += "- $($h.Name): $($r.Status) ($($r.Path))" }
+        } catch {
+            Write-Warn "$($h.Name): $($_.Exception.Message)"
         }
-    } catch {
-        Write-Warn "MCP auto-install failed: $($_.Exception.Message)"
-        Write-Warn "Run manually: $bin install-mcp"
     }
+
+    # TOML host: codex.
+    if (Test-Path "$home\.codex" -PathType Container) {
+        try {
+            $r = Update-LinehashCodexConfig -Path "$home\.codex\config.toml" -BinaryPath $bin
+            if ($r) { $results += "- codex: $($r.Status) ($($r.Path))" }
+        } catch {
+            Write-Warn "codex: $($_.Exception.Message)"
+        }
+    }
+
+    if ($results.Count -eq 0) {
+        Write-Warn "No supported MCP providers detected."
+        return
+    }
+    Write-Info "linehash MCP auto-install results:"
+    foreach ($line in $results) { Write-Host $line }
 }
 
 # ════════════════════════════════════════════════════════════════════════════

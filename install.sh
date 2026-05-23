@@ -352,13 +352,142 @@ find_extracted_binary() {
 
 run_mcp_auto_install() {
     log_info "Auto-installing MCP provider configs..."
-    if "$DEST/$BINARY_NAME" install-mcp; then
+
+    local bin="$DEST/$BINARY_NAME"
+    # Resolve to absolute, canonical path so configs survive PATH changes.
+    local abs_bin
+    if abs_bin=$(readlink -f "$bin" 2>/dev/null) && [ -n "$abs_bin" ]; then
+        bin="$abs_bin"
+    fi
+
+    local results=()
+    local any_installed=0
+
+    # ---- JSON hosts (require jq for safe upsert) ----
+    if ! command -v jq >/dev/null 2>&1; then
+        log_warn "jq not found — skipping JSON-based MCP host configs"
+        log_warn "Install jq (https://jqlang.org) and re-run install.sh, or configure MCP manually"
+    else
+        # host_name|config_path|servers_key|note
+        local json_hosts=(
+            "claude-code|$HOME/.claude.json|mcpServers|User scope"
+            "cursor|$HOME/.cursor/mcp.json|mcpServers|Global scope"
+            "windsurf|$HOME/.codeium/windsurf/mcp_config.json|mcpServers|Global scope"
+            "vscode|$PWD/.vscode/mcp.json|servers|Project scope"
+            "gemini|$HOME/.gemini/settings.json|mcpServers|User scope"
+            "opencode|$HOME/.opencode.json|mcpServers|User scope"
+            "amp|$HOME/.config/amp/settings.json|amp.mcpServers|User scope"
+            "droid|$HOME/.factory/mcp.json|mcpServers|User scope"
+        )
+
+        local host_entry name path key note detect_root
+        for host_entry in "${json_hosts[@]}"; do
+            IFS='|' read -r name path key note <<<"$host_entry"
+
+            # Skip hosts whose owning dir/file does not exist (mirrors detect_hosts in old Rust code)
+            case "$name" in
+                claude-code) [ -e "$HOME/.claude.json" ] || continue ;;
+                cursor) [ -d "$HOME/.cursor" ] || continue ;;
+                windsurf) [ -d "$HOME/.codeium/windsurf" ] || continue ;;
+                vscode) [ -d "$PWD/.vscode" ] || continue ;;
+                gemini) [ -d "$HOME/.gemini" ] || continue ;;
+                opencode) [ -e "$HOME/.opencode.json" ] || continue ;;
+                amp) [ -d "$HOME/.config/amp" ] || continue ;;
+                droid) [ -d "$HOME/.factory" ] || continue ;;
+            esac
+
+            mkdir -p "$(dirname "$path")"
+
+            local existing='{}' status='installed'
+            if [ -f "$path" ] && [ -s "$path" ]; then
+                if existing=$(jq '.' "$path" 2>/dev/null); then
+                    # Check if entry already exists and is identical
+                    local current
+                    current=$(printf '%s' "$existing" | jq --arg key "$key" '.[$key]["'"$BINARY_NAME"'"] // empty' 2>/dev/null || echo '')
+                    if [ -n "$current" ]; then
+                        local desired
+                        desired=$(jq -n --arg cmd "$bin" '{command: $cmd, args: ["mcp"]}')
+                        if [ "$current" = "$desired" ]; then
+                            status='unchanged'
+                        else
+                            status='updated'
+                        fi
+                    fi
+                else
+                    log_warn "$name: invalid JSON in $path — skipped"
+                    continue
+                fi
+            fi
+
+            if [ "$status" != 'unchanged' ]; then
+                local updated
+                updated=$(printf '%s' "$existing" | jq \
+                    --arg key "$key" \
+                    --arg name "$BINARY_NAME" \
+                    --arg cmd "$bin" \
+                    '.[$key] = (.[$key] // {}) | .[$key][$name] = {command: $cmd, args: ["mcp"]}'
+                ) || { log_warn "$name: jq upsert failed — skipped"; continue; }
+                printf '%s\n' "$updated" >"$path" || { log_warn "$name: write to $path failed"; continue; }
+            fi
+
+            results+=("- $name: $status ($path) — $note")
+            any_installed=1
+        done
+    fi
+
+    # ---- TOML host: codex (~/.codex/config.toml) ----
+    if [ -d "$HOME/.codex" ]; then
+        local codex_path="$HOME/.codex/config.toml"
+        local marker="[mcp_servers.${BINARY_NAME}]"
+        local section
+        section=$(printf '%s\ncommand = "%s"\nargs = ["mcp"]\n' "$marker" "$bin")
+
+        mkdir -p "$HOME/.codex"
+        if [ -f "$codex_path" ] && grep -qF "$marker" "$codex_path"; then
+            # Check unchanged: extract current section and compare
+            local current_section
+            current_section=$(awk -v m="$marker" '
+                $0 == m {p=1}
+                p && /^\[/ && $0 != m {p=0}
+                p {print}
+            ' "$codex_path")
+            if [ "$(printf '%s' "$current_section" | tr -d '[:space:]')" = "$(printf '%s' "$section" | tr -d '[:space:]')" ]; then
+                results+=("- codex: unchanged ($codex_path) — User scope")
+            else
+                # Replace existing section
+                local tmp="$codex_path.tmp.$$"
+                awk -v m="$marker" -v new="$section" '
+                    $0 == m {p=1; print new; next}
+                    p && /^\[/ && $0 != m {p=0}
+                    !p {print}
+                ' "$codex_path" >"$tmp" && mv "$tmp" "$codex_path"
+                results+=("- codex: updated ($codex_path) — User scope")
+                any_installed=1
+            fi
+        else
+            # Append new section
+            if [ -f "$codex_path" ] && [ -s "$codex_path" ]; then
+                # Ensure separating newline
+                tail -c1 "$codex_path" | read -r _ || printf '\n' >>"$codex_path"
+                printf '\n%s\n' "$section" >>"$codex_path"
+            else
+                printf '%s\n' "$section" >"$codex_path"
+            fi
+            results+=("- codex: installed ($codex_path) — User scope")
+            any_installed=1
+        fi
+    fi
+
+    if [ "$any_installed" -eq 0 ] && [ "${#results[@]}" -eq 0 ]; then
+        log_warn "No supported MCP providers detected."
         return 0
     fi
 
-    log_warn "MCP auto-install failed"
-    log_warn "Run manually: $DEST/$BINARY_NAME install-mcp"
-    return 1
+    log_info "${BINARY_NAME} MCP auto-install results:"
+    for line in "${results[@]}"; do
+        echo "$line"
+    done
+    return 0
 }
 
 print_summary() {

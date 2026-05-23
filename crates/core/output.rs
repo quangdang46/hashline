@@ -114,6 +114,59 @@ pub fn write_success_line<W: Write, E: Write>(
     writeln!(ctx.stdout(), "{line}")
 }
 
+/// Print `±context` lines around the changed range with their fresh anchors.
+///
+/// Called after a successful mutation to give agents the new anchors of the
+/// edited region without forcing them to call `read` again. This saves one
+/// MCP round-trip in the typical edit-then-verify flow.
+///
+/// The doc must be POST-mutation (lines re-hashed) — `Document` already does
+/// this in the mutation helpers via `refresh_line_metadata`.
+#[allow(dead_code)]
+pub fn write_post_edit_snippet<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    doc: &Document,
+    first_changed: usize, // 1-indexed
+    last_changed: usize,  // 1-indexed
+) -> io::Result<()> {
+    const CONTEXT: usize = 2;
+    const MAX_OUTPUT_LINES: usize = 12;
+
+    if doc.lines.is_empty() {
+        return Ok(());
+    }
+
+    let lo = first_changed.saturating_sub(CONTEXT).max(1);
+    let hi = (last_changed + CONTEXT).min(doc.lines.len());
+    if hi < lo {
+        return Ok(());
+    }
+    if hi - lo + 1 > MAX_OUTPUT_LINES {
+        // Range too large to inline — agent should re-read.
+        writeln!(
+            ctx.stdout(),
+            "(snippet omitted: changed range too large; use `linehash read --anchor LINE:HASH` to inspect)"
+        )?;
+        return Ok(());
+    }
+
+    let mut hash_buf = [0u8; 2];
+    let mut number_buf = itoa::Buffer::new();
+    let stdout = ctx.stdout();
+    for i in lo..=hi {
+        let line = &doc.lines[i - 1];
+        let number = number_buf.format(i);
+        stdout.write_all(number.as_bytes())?;
+        stdout.write_all(b":")?;
+        write_short_hash_bytes(&mut hash_buf, line.short_hash);
+        stdout.write_all(&hash_buf)?;
+        stdout.write_all(b"|")?;
+        stdout.write_all(line.content.as_bytes())?;
+        stdout.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// Emit `value` as JSON to stdout, using the context's JSON style
 /// (compact by default; pretty when the caller passed `--pretty`).
 #[allow(dead_code)]
@@ -126,19 +179,15 @@ pub fn write_json_success<W: Write, E: Write, T: Serialize + ?Sized>(
 }
 
 pub fn print_read(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
-    let width = line_number_width(doc);
     let mut number_buf = itoa::Buffer::new();
     let mut hash_buf = [0u8; 2];
     for (index, line) in doc.lines.iter().enumerate() {
         let number = number_buf.format(index + 1);
-        for _ in number.len()..width {
-            writer.write_all(b" ")?;
-        }
         writer.write_all(number.as_bytes())?;
         writer.write_all(b":")?;
         write_short_hash(&mut hash_buf, line.short_hash);
         writer.write_all(&hash_buf)?;
-        writer.write_all(b"| ")?;
+        writer.write_all(b"|")?;
         writer.write_all(line.content.as_bytes())?;
         writer.write_all(b"\n")?;
     }
@@ -305,7 +354,6 @@ pub fn print_read_context(
     anchors: &[ResolvedLine],
     context: usize,
 ) -> io::Result<()> {
-    let width = line_number_width(doc);
     let anchor_indexes: BTreeSet<usize> = anchors.iter().map(|anchor| anchor.index).collect();
     let included = collect_context_indexes(doc, anchors, context);
 
@@ -327,16 +375,12 @@ pub fn print_read_context(
         };
         let line = &doc.lines[index];
         let number = number_buf.format(index + 1);
-        let padding = width.saturating_sub(number.len());
-        for _ in 0..padding {
-            writer.write_all(b" ")?;
-        }
         writer.write_all(marker)?;
         writer.write_all(number.as_bytes())?;
         writer.write_all(b":")?;
         write_short_hash_bytes(&mut hash_buf, line.short_hash);
         writer.write_all(&hash_buf)?;
-        writer.write_all(b"| ")?;
+        writer.write_all(b"|")?;
         writer.write_all(line.content.as_bytes())?;
         writer.write_all(b"\n")?;
         previous = Some(index);
@@ -518,16 +562,14 @@ fn print_map_node(
 }
 
 pub fn print_grep(writer: &mut impl Write, doc: &Document, indexes: &[usize]) -> io::Result<()> {
-    let width = line_number_width(doc);
     for index in indexes {
         let line = &doc.lines[*index];
         writeln!(
             writer,
-            "{number:>width$}:{hash}| {content}",
+            "{number}:{hash}|{content}",
             number = *index + 1,
             hash = format_short_hash(line.short_hash),
             content = line.content,
-            width = width
         )?;
     }
     Ok(())
@@ -550,9 +592,8 @@ pub fn print_grep_pretty_streaming(
     search_doc: &crate::document::SearchDocument,
     pattern: &str,
     invert: bool,
-    total_line_count: usize,
+    _total_line_count: usize,
 ) -> io::Result<()> {
-    let width = total_line_count.max(1).to_string().len();
     let mut number_buf = itoa::Buffer::new();
     let mut hash_buf = [0u8; 2];
     let mut io_err: Option<io::Error> = None;
@@ -562,16 +603,12 @@ pub fn print_grep_pretty_streaming(
             return;
         }
         let number = number_buf.format(line_idx + 1);
-        let pad = width.saturating_sub(number.len());
         let result = (|| -> io::Result<()> {
-            for _ in 0..pad {
-                writer.write_all(b" ")?;
-            }
             writer.write_all(number.as_bytes())?;
             writer.write_all(b":")?;
             write_short_hash_bytes(&mut hash_buf, short_hash);
             writer.write_all(&hash_buf)?;
-            writer.write_all(b"| ")?;
+            writer.write_all(b"|")?;
             writer.write_all(content.as_bytes())?;
             writer.write_all(b"\n")
         })();
@@ -587,21 +624,13 @@ pub fn print_grep_pretty_streaming(
 }
 
 pub fn print_line_views(writer: &mut impl Write, lines: &[LineView]) -> io::Result<()> {
-    let width = lines
-        .iter()
-        .map(|line| line.n.to_string().len())
-        .max()
-        .unwrap_or(1);
     let mut number_buf = itoa::Buffer::new();
     for line in lines {
         let number = number_buf.format(line.n);
-        for _ in number.len()..width {
-            writer.write_all(b" ")?;
-        }
         writer.write_all(number.as_bytes())?;
         writer.write_all(b":")?;
         writer.write_all(line.hash.as_bytes())?;
-        writer.write_all(b"| ")?;
+        writer.write_all(b"|")?;
         writer.write_all(line.content.as_bytes())?;
         writer.write_all(b"\n")?;
     }
@@ -806,28 +835,40 @@ mod tests {
         print_read(&mut out, &doc).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            format!("1:{}| alpha\n", format_short_hash(doc.lines[0].short_hash))
+            format!("1:{}|alpha\n", format_short_hash(doc.lines[0].short_hash))
         );
     }
 
     #[test]
-    fn test_read_format_line_number_padding_2_digits() {
+    fn test_read_format_no_line_number_padding() {
+        // Phase 1: line numbers are flush-left, no padding for AI token efficiency.
         let doc = numbered_doc(10);
         let mut out = Vec::new();
         print_read(&mut out, &doc).unwrap();
         let rendered = String::from_utf8(out).unwrap();
-        assert!(rendered.lines().next().unwrap().starts_with(" 1:"));
+        assert!(rendered.lines().next().unwrap().starts_with("1:"));
         assert!(rendered.lines().last().unwrap().starts_with("10:"));
     }
 
     #[test]
-    fn test_read_format_line_number_padding_3_digits() {
+    fn test_read_format_three_digit_lines_no_padding() {
         let doc = numbered_doc(100);
         let mut out = Vec::new();
         print_read(&mut out, &doc).unwrap();
         let rendered = String::from_utf8(out).unwrap();
-        assert!(rendered.lines().next().unwrap().starts_with("  1:"));
+        assert!(rendered.lines().next().unwrap().starts_with("1:"));
         assert!(rendered.lines().last().unwrap().starts_with("100:"));
+    }
+
+    #[test]
+    fn test_read_format_no_space_after_pipe() {
+        // Phase 1: no space after `|` — content follows immediately.
+        // This preserves leading whitespace in code (indentation) verbatim.
+        let doc = Document::from_str(Path::new("demo.txt"), "    indented\n").unwrap();
+        let mut out = Vec::new();
+        print_read(&mut out, &doc).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        assert!(rendered.contains("|    indented\n"), "got: {rendered}");
     }
 
     #[test]

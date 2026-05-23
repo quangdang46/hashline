@@ -221,7 +221,10 @@ fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionState) -> Jso
     };
 
     match dispatch_tool(&params.name, &params.arguments, session) {
-        Ok(payload) => match serde_json::to_string_pretty(&payload) {
+        // Compact JSON: tools' text content is consumed by the LLM, not humans.
+        // Compact format saves ~20-30% tokens vs pretty (no indentation/newlines).
+        // The `structuredContent` field still provides the parsed object form.
+        Ok(payload) => match serde_json::to_string(&payload) {
             Ok(text) => JsonRpcResponse {
                 jsonrpc: "2.0",
                 id: request.id.clone(),
@@ -1363,7 +1366,10 @@ mod tests {
             &mut session,
         ))?;
         let anchor = line_anchor(&read, 1)?;
-        write_text(&path, "alpha\ngamma\nbeta\n")?;
+        // Replace the anchored line content with something whose hash
+        // is virtually guaranteed not to collide with `beta`'s hash.
+        // (Just reordering would let fuzzy relocation succeed.)
+        write_text(&path, "alpha\nDELTA-NEW-CONTENT-XYZ\ngamma\n")?;
 
         let error = must_err(dispatch_tool(
             "linehash_edit",

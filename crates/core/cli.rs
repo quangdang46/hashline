@@ -43,7 +43,6 @@ pub enum Commands {
     Workflows(WorkflowsCmd),
     Explode(ExplodeCmd),
     Implode(ImplodeCmd),
-    InstallMcp(InstallMcpCmd),
     Mcp(McpCmd),
     Daemon,
     Map(MapCmd),
@@ -512,13 +511,6 @@ pub struct ImplodeCmd {
     #[arg(long)]
     pub dry_run: bool,
 }
-
-#[derive(Clone, Debug, Deserialize, Parser)]
-#[command(
-    about = "Install MCP config into detected providers",
-    long_about = "Detect local MCP host configs, upsert the linehash MCP server entry for each detected provider, and print install results."
-)]
-pub struct InstallMcpCmd {}
 
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(

@@ -126,7 +126,25 @@ pub fn run<W: Write, E: Write>(
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => {
-            output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
+            output::write_success_line(ctx, &summary.success_message())
+                .map_err(LinehashError::from)?;
+            // Phase 2.3: emit fresh anchors of the changed region so the
+            // agent doesn't need a follow-up `read` call to verify the edit
+            // or anchor a subsequent edit.
+            let (first, last) = match &summary {
+                EditSummary::Single { line_no, .. } => (*line_no, *line_no),
+                EditSummary::Range {
+                    start_line,
+                    after,
+                    ..
+                } => {
+                    let last = start_line + after.len().saturating_sub(1).max(0);
+                    (*start_line, last.max(*start_line))
+                }
+            };
+            output::write_post_edit_snippet(ctx, &doc, first, last)
+                .map_err(LinehashError::from)?;
+            Ok(())
         }
     }
 }

@@ -7,7 +7,6 @@ mod error;
 mod hash;
 mod hash_cache;
 mod index;
-mod install;
 mod lang;
 mod mcp;
 mod mutation;
@@ -50,25 +49,6 @@ fn main() {
             std::process::exit(1);
         }
         info!("mcp server exited cleanly");
-        return;
-    }
-
-    if let Commands::InstallMcp(_) = &cli.command {
-        let cwd = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(error) => {
-                error!(%error, "failed to determine current directory for install-mcp");
-                eprintln!("install-mcp error: failed to determine current directory: {error}");
-                std::process::exit(1);
-            }
-        };
-        info!(cwd = %cwd.display(), "running install-mcp");
-        if let Err(error) = install::run_install_mcp(&cwd, &mut io::stdout(), &mut io::stderr()) {
-            error!(%error, cwd = %cwd.display(), "install-mcp failed");
-            eprintln!("install-mcp error: {error}");
-            std::process::exit(1);
-        }
-        info!("install-mcp completed");
         return;
     }
 
@@ -297,7 +277,6 @@ pub(crate) fn run_command<W: Write, E: Write>(
         Commands::Callers(cmd) => commands::callers::run(&mut context, cmd).map(|_| 0),
         Commands::Callees(cmd) => commands::callees::run(&mut context, cmd).map(|_| 0),
         Commands::Deps(cmd) => commands::deps::run(&mut context, cmd).map(|_| 0),
-        Commands::InstallMcp(_) => unreachable!("install-mcp is handled before command dispatch"),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
         #[cfg(unix)]
         Commands::Daemon => {

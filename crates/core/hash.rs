@@ -5,7 +5,13 @@ use xxhash_rust::xxh32::xxh32;
 pub type ShortHash = u8;
 
 pub fn full_hash(line: &str) -> u32 {
-    full_hash_bytes(line.as_bytes())
+    // Strip trailing whitespace (including CR) before hashing.
+    //
+    // This makes anchors stable across formatter runs that adjust trailing
+    // whitespace (Prettier, Black, gofmt, etc.) and across CRLF/LF newline
+    // changes. Matches the behavior of oh-my-pi, hashfile-mcp,
+    // mcp-hashline-edit-server, and pi-hashline-edit.
+    full_hash_bytes(line.trim_end().as_bytes())
 }
 
 pub fn full_hash_bytes(bytes: &[u8]) -> u32 {
@@ -71,13 +77,19 @@ mod tests {
     }
 
     #[test]
-    fn test_leading_space_differs_from_no_space() {
-        assert_ne!(short_hash("  return decoded"), short_hash("return decoded"));
+    fn test_trailing_space_does_not_affect_hash() {
+        // After Phase 1: trailing whitespace is stripped before hashing.
+        // This keeps anchors stable across formatter runs (Prettier, Black, gofmt, etc.)
+        assert_eq!(short_hash("return decoded "), short_hash("return decoded"));
+        assert_eq!(short_hash("return decoded   "), short_hash("return decoded"));
+        assert_eq!(short_hash("return decoded\t"), short_hash("return decoded"));
     }
 
     #[test]
-    fn test_trailing_space_differs_from_no_space() {
-        assert_ne!(short_hash("return decoded "), short_hash("return decoded"));
+    fn test_leading_space_still_affects_hash() {
+        // Leading whitespace (indentation) is meaningful — formatter changes
+        // to indentation should still invalidate anchors.
+        assert_ne!(short_hash("  return decoded"), short_hash("return decoded"));
     }
 
     #[test]
@@ -103,7 +115,10 @@ mod tests {
 
     #[test]
     fn test_crlf_content_stripped_before_hashing() {
-        assert_ne!(short_hash("line"), short_hash("line\r\n"));
+        // After Phase 1: trailing CR (and any whitespace) is stripped before hashing.
+        // This makes hashes stable across CRLF/LF newline conversions.
+        assert_eq!(short_hash("line"), short_hash("line\r"));
+        assert_eq!(short_hash("line"), short_hash("line\r\n"));
     }
 
     #[test]
