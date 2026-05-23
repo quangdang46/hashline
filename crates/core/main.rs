@@ -24,7 +24,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
 use crate::cli::{Cli, Commands};
-use crate::context::{CommandContext, SearchDocCache, json_pretty_for, output_mode_for};
+use crate::context::{CommandContext, json_pretty_for, output_mode_for};
 use crate::error::HashlineError;
 use crate::orchestration::command_name;
 use crate::risk::assess_command;
@@ -72,7 +72,6 @@ fn main() {
                 &mut stdout,
                 &mut stderr,
                 output_mode,
-                SearchDocCache::new(64),
             )
             .with_json_pretty(json_pretty);
             let _ = output::write_error(&mut context, &error);
@@ -237,7 +236,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
             "destructive command risk assessed"
         );
     }
-    let mut context = CommandContext::new(stdout, stderr, output_mode, SearchDocCache::new(64))
+    let mut context = CommandContext::new(stdout, stderr, output_mode)
         .with_json_pretty(json_pretty);
 
     match command {
@@ -286,7 +285,6 @@ mod tests {
                 &mut sink_out,
                 &mut sink_err,
                 crate::context::OutputMode::Pretty,
-                crate::context::SearchDocCache::new(0),
             );
             crate::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;
@@ -327,7 +325,6 @@ mod tests {
                 &mut sink_out,
                 &mut sink_err,
                 crate::context::OutputMode::Json,
-                crate::context::SearchDocCache::new(0),
             );
             crate::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;

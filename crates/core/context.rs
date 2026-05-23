@@ -1,11 +1,6 @@
-use lru::LruCache;
-use parking_lot::RwLock;
 use std::io::Write;
-use std::num::NonZero;
-use std::sync::Arc;
 
 use crate::cli::Commands;
-use crate::document::SearchDocument;
 
 /// Coarse output mode. JSON style (compact vs pretty) is tracked separately on
 /// [`CommandContext`] via [`CommandContext::json_pretty`].
@@ -19,77 +14,11 @@ pub enum OutputMode {
     Ndjson,
 }
 
-/// Cache entry for SearchDocument with validation metadata.
-#[derive(Clone)]
-struct SearchDocCacheEntry {
-    search_doc: SearchDocument,
-    mtime: u64,
-    size: u64,
-    content_hash: u64,
-}
-
-/// Thread-safe, LRU-cached SearchDocument cache for grep optimization.
-#[derive(Clone)]
-pub struct SearchDocCache {
-    inner: Arc<RwLock<LruCache<String, SearchDocCacheEntry>>>,
-}
-
-impl SearchDocCache {
-    pub fn new(capacity: usize) -> Self {
-        // Ensure capacity is at least 1 since NonZero::new(0) returns None
-        let non_zero_capacity = NonZero::new(capacity.max(1)).unwrap();
-        Self {
-            inner: Arc::new(RwLock::new(LruCache::new(non_zero_capacity))),
-        }
-    }
-
-    /// Get a cached SearchDocument if still valid.
-    pub fn get(
-        &self,
-        path: &std::path::Path,
-        mtime: u64,
-        size: u64,
-        content_hash: u64,
-    ) -> Option<SearchDocument> {
-        let key = path.display().to_string();
-        let mut cache = self.inner.write();
-        if let Some(entry) = cache.get(&key) {
-            if entry.mtime == mtime && entry.size == size && entry.content_hash == content_hash {
-                return Some(entry.search_doc.clone());
-            }
-        }
-        None
-    }
-
-    /// Insert a SearchDocument into the cache.
-    pub fn put(
-        &self,
-        path: &std::path::Path,
-        search_doc: SearchDocument,
-        mtime: u64,
-        size: u64,
-        content_hash: u64,
-    ) {
-        let key = path.display().to_string();
-        let mut cache = self.inner.write();
-        cache.put(
-            key,
-            SearchDocCacheEntry {
-                search_doc,
-                mtime,
-                size,
-                content_hash,
-            },
-        );
-    }
-}
-
 pub struct CommandContext<'a, W: Write, E: Write> {
     stdout: &'a mut W,
     stderr: &'a mut E,
     output_mode: OutputMode,
     json_pretty: bool,
-    pub search_doc_cache: SearchDocCache,
 }
 
 impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
@@ -97,14 +26,12 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
         stdout: &'a mut W,
         stderr: &'a mut E,
         output_mode: OutputMode,
-        search_doc_cache: SearchDocCache,
     ) -> Self {
         Self {
             stdout,
             stderr,
             output_mode,
             json_pretty: false,
-            search_doc_cache,
         }
     }
 

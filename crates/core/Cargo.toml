@@ -31,10 +31,6 @@ toml = "0.8"
 # Parallel processing for hashing large files
 rayon = "1.10"
 crossbeam = "0.8"
-parking_lot = "0.12"
-
-# LRU cache
-lru = "0.17"
 
 # Cached initialization
 once_cell = "1.19"

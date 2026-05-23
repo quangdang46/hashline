@@ -141,7 +141,7 @@ impl SwapSummary {
 mod tests {
     use super::run;
     use crate::cli::SwapCmd;
-    use crate::context::{CommandContext, OutputMode, SearchDocCache};
+    use crate::context::{CommandContext, OutputMode};
     use crate::document::Document;
     use crate::error::HashlineError;
     use std::fs;
@@ -174,7 +174,6 @@ mod tests {
             &mut stdout,
             &mut stderr,
             OutputMode::Pretty,
-            SearchDocCache::new(0),
         );
 
         run(
@@ -212,7 +211,6 @@ mod tests {
             &mut stdout,
             &mut stderr,
             OutputMode::Pretty,
-            SearchDocCache::new(0),
         );
 
         run(
@@ -250,7 +248,6 @@ mod tests {
             &mut stdout,
             &mut stderr,
             OutputMode::Pretty,
-            SearchDocCache::new(0),
         );
 
         let error = run(
@@ -288,7 +285,6 @@ mod tests {
             &mut stdout,
             &mut stderr,
             OutputMode::Pretty,
-            SearchDocCache::new(0),
         );
 
         run(
