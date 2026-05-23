@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::anchor::ResolvedLine;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::{Document, FileStats, LineView, NewlineStyle, format_short_hash};
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash::write_short_hash_bytes;
 use crate::orchestration::{IndexPayload, ReadPayload};
 use crate::risk::blocked_assessment;
@@ -145,7 +145,7 @@ pub fn write_post_edit_snippet<W: Write, E: Write>(
         // Range too large to inline — agent should re-read.
         writeln!(
             ctx.stdout(),
-            "(snippet omitted: changed range too large; use `linehash read --anchor LINE:HASH` to inspect)"
+            "(snippet omitted: changed range too large; use `hashline read --anchor LINE:HASH` to inspect)"
         )?;
         return Ok(());
     }
@@ -712,7 +712,7 @@ pub fn print_grep_ndjson_streaming(
 
 pub fn write_error<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
-    error: &LinehashError,
+    error: &HashlineError,
 ) -> io::Result<()> {
     match ctx.output_mode() {
         OutputMode::Pretty => {

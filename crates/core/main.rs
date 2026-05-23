@@ -25,7 +25,7 @@ use tracing_subscriber::fmt::writer::MakeWriter;
 
 use crate::cli::{Cli, Commands};
 use crate::context::{CommandContext, SearchDocCache, json_pretty_for, output_mode_for};
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::orchestration::command_name;
 use crate::risk::assess_command;
 
@@ -94,7 +94,7 @@ fn init_tracing() {
     let filter = match tracing_filter() {
         Ok(filter) => filter,
         Err(error) => {
-            eprintln!("warning: invalid LINEHASH_LOG filter: {error}");
+            eprintln!("warning: invalid HASHLINE_LOG filter: {error}");
             return;
         }
     };
@@ -111,7 +111,7 @@ fn init_tracing() {
         Ok(writer) => writer,
         Err(error) => {
             eprintln!(
-                "warning: failed to open linehash log file {}: {error}",
+                "warning: failed to open hashline log file {}: {error}",
                 log_path.display()
             );
             return;
@@ -127,7 +127,7 @@ fn init_tracing() {
 }
 
 fn tracing_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError> {
-    match std::env::var("LINEHASH_LOG") {
+    match std::env::var("HASHLINE_LOG") {
         Ok(value) if !value.trim().is_empty() => EnvFilter::try_new(value),
         Ok(_) | Err(std::env::VarError::NotPresent) => EnvFilter::try_new("info"),
         Err(std::env::VarError::NotUnicode(_)) => EnvFilter::try_new("info"),
@@ -135,16 +135,16 @@ fn tracing_filter() -> Result<EnvFilter, tracing_subscriber::filter::ParseError>
 }
 
 fn resolve_log_path() -> Result<PathBuf, String> {
-    match std::env::var("LINEHASH_LOG_PATH") {
+    match std::env::var("HASHLINE_LOG_PATH") {
         Ok(value) if !value.trim().is_empty() => Ok(PathBuf::from(value)),
-        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(default_log_path(linehash_home_dir()?)),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(default_log_path(hashline_home_dir()?)),
         Err(std::env::VarError::NotUnicode(_)) => {
-            Err("LINEHASH_LOG_PATH is not valid unicode".into())
+            Err("HASHLINE_LOG_PATH is not valid unicode".into())
         }
     }
 }
 
-fn linehash_home_dir() -> Result<PathBuf, String> {
+fn hashline_home_dir() -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
         std::env::var("USERPROFILE")
@@ -161,7 +161,7 @@ fn linehash_home_dir() -> Result<PathBuf, String> {
 }
 
 fn default_log_path(home: PathBuf) -> PathBuf {
-    home.join(".linehash").join("linehash.log")
+    home.join(".hashline").join("hashline.log")
 }
 
 #[derive(Clone)]
@@ -207,12 +207,12 @@ impl<'a> MakeWriter<'a> for SharedFileWriter {
             guard: self
                 .file
                 .lock()
-                .expect("linehash tracing file lock poisoned"),
+                .expect("hashline tracing file lock poisoned"),
         }
     }
 }
 
-fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i32, LinehashError> {
+fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i32, HashlineError> {
     run_command(cli.command, stdout, stderr)
 }
 
@@ -220,7 +220,7 @@ pub(crate) fn run_command<W: Write, E: Write>(
     command: Commands,
     stdout: &mut W,
     stderr: &mut E,
-) -> Result<i32, LinehashError> {
+) -> Result<i32, HashlineError> {
     let output_mode = output_mode_for(&command);
     let json_pretty = json_pretty_for(&command);
     let risk = assess_command(&command);
@@ -361,9 +361,9 @@ mod tests {
     }
 
     #[test]
-    fn default_log_path_is_under_linehash_home_dir() {
+    fn default_log_path_is_under_hashline_home_dir() {
         let path = default_log_path(PathBuf::from("/tmp/test-home"));
-        assert_eq!(path, PathBuf::from("/tmp/test-home/.linehash/linehash.log"));
+        assert_eq!(path, PathBuf::from("/tmp/test-home/.hashline/hashline.log"));
     }
 
     #[test]

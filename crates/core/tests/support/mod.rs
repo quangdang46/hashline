@@ -36,11 +36,11 @@ pub fn mode(path: &Path) -> u32 {
         & 0o777
 }
 
-pub fn run_linehash(args: &[&str]) -> (String, String, i32) {
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("linehash"))
+pub fn run_hashline(args: &[&str]) -> (String, String, i32) {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("hashline"))
         .args(args)
         .output()
-        .expect("run linehash");
+        .expect("run hashline");
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
@@ -48,12 +48,12 @@ pub fn run_linehash(args: &[&str]) -> (String, String, i32) {
     (stdout, stderr, code)
 }
 
-pub fn run_linehash_in(cwd: &Path, args: &[&str]) -> (String, String, i32) {
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("linehash"))
+pub fn run_hashline_in(cwd: &Path, args: &[&str]) -> (String, String, i32) {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("hashline"))
         .current_dir(cwd)
         .args(args)
         .output()
-        .expect("run linehash");
+        .expect("run hashline");
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
     let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
@@ -62,7 +62,7 @@ pub fn run_linehash_in(cwd: &Path, args: &[&str]) -> (String, String, i32) {
 }
 
 pub fn assert_ok_contains(args: &[&str], expected: &str) {
-    let (stdout, stderr, code) = run_linehash(args);
+    let (stdout, stderr, code) = run_hashline(args);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(
         stdout.contains(expected),
@@ -71,7 +71,7 @@ pub fn assert_ok_contains(args: &[&str], expected: &str) {
 }
 
 pub fn assert_err_contains(args: &[&str], expected: &str) {
-    let (_stdout, stderr, code) = run_linehash(args);
+    let (_stdout, stderr, code) = run_hashline(args);
     assert_ne!(code, 0, "expected failure");
     assert!(
         stderr.contains(expected),
@@ -80,7 +80,7 @@ pub fn assert_err_contains(args: &[&str], expected: &str) {
 }
 
 pub fn parse_json(args: &[&str]) -> serde_json::Value {
-    let (stdout, stderr, code) = run_linehash(args);
+    let (stdout, stderr, code) = run_hashline(args);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     serde_json::from_str(&stdout).expect("stdout should be valid json")
 }
@@ -88,7 +88,7 @@ pub fn parse_json(args: &[&str]) -> serde_json::Value {
 pub fn do_edit(content: &str, anchor: &str, new_content: &str) -> String {
     let file = tmpfile(content);
     let file_arg = file.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["edit", &file_arg, anchor, new_content]);
+    let (stdout, stderr, code) = run_hashline(&["edit", &file_arg, anchor, new_content]);
     assert_eq!(code, 0, "expected edit success, stderr: {stderr}");
     assert!(
         stdout == "Edited line 2.\n"

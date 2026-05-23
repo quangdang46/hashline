@@ -7,7 +7,7 @@ use crate::commands::common::{
 };
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::mutation::insert_line;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
@@ -15,7 +15,7 @@ use crate::receipt::{self, ChangeKind, LineChange};
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: InsertCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let mut doc = Document::load(&cmd.file)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
@@ -71,7 +71,7 @@ pub fn run<W: Write, E: Write>(
 
         if let Some(log_path) = &cmd.audit_log {
             if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(HashlineError::from)?;
             }
         }
 
@@ -83,7 +83,7 @@ pub fn run<W: Write, E: Write>(
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => {
-            output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
+            output::write_success_line(ctx, &summary.success_message()).map_err(HashlineError::from)
         }
     }
 }
@@ -92,7 +92,7 @@ fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     file: &std::path::Path,
     summary: &InsertSummary,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => {
             // PR-D: emit a compact mutation receipt instead of the proposed document.
@@ -114,7 +114,7 @@ fn write_dry_run<W: Write, E: Write>(
                 ),
             )?;
             output::write_success_line(ctx, &format!("  + {:?}", summary.content))?;
-            output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+            output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)
         }
     }
 }

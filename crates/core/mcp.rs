@@ -11,7 +11,7 @@ use crate::cli::{
     PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::orchestration::{
     command_name, doctor_payload, index_payload, read_payload, verify_report,
 };
@@ -19,16 +19,16 @@ use crate::risk::{assess_command, blocked_assessment};
 use crate::run_command;
 
 const SERVER_INSTRUCTIONS: &str = "\
-linehash MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\
+hashline MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\
 \n\
 Preferred workflow:\n\
-1. For large or noisy files, do not start with a full-file linehash_read. Use linehash_index, linehash_annotate, or linehash_grep first.\n\
-2. Once you know the target, call linehash_read with anchor plus small context for file-local snippet inspection.\n\
-3. Use linehash_find_block when one tight snippet is not enough structural context.\n\
-4. Call linehash_verify before risky grouped edits or when anchors may be stale.\n\
-5. Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch for mutations once anchors are known.\n\
-6. Call linehash_workflows when you want a repo-local skill pack instead of reconstructing a linehash workflow from scratch.\n\
-7. Use linehash_watch_capabilities before assuming MCP supports a streaming watch loop.\n\
+1. For large or noisy files, do not start with a full-file hashline_read. Use hashline_index, hashline_annotate, or hashline_grep first.\n\
+2. Once you know the target, call hashline_read with anchor plus small context for file-local snippet inspection.\n\
+3. Use hashline_find_block when one tight snippet is not enough structural context.\n\
+4. Call hashline_verify before risky grouped edits or when anchors may be stale.\n\
+5. Use hashline_edit, hashline_insert, hashline_delete, or hashline_patch for mutations once anchors are known.\n\
+6. Call hashline_workflows when you want a repo-local skill pack instead of reconstructing a hashline workflow from scratch.\n\
+7. Use hashline_watch_capabilities before assuming MCP supports a streaming watch loop.\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
@@ -161,7 +161,7 @@ fn handle_request(request: &JsonRpcRequest, session: &mut SessionState) -> JsonR
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
                 "serverInfo": {
-                    "name": "linehash",
+                    "name": "hashline",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
                 "instructions": SERVER_INSTRUCTIONS,
@@ -256,9 +256,9 @@ fn dispatch_tool(
     session: &mut SessionState,
 ) -> Result<Value, JsonRpcError> {
     match tool {
-        "linehash_read" => tool_read(arguments, session),
-        "linehash_index" => tool_index(arguments, session),
-        "linehash_edit" => {
+        "hashline_read" => tool_read(arguments, session),
+        "hashline_index" => tool_index(arguments, session),
+        "hashline_edit" => {
             let mut cmd: EditCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
@@ -268,7 +268,7 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_insert" => {
+        "hashline_insert" => {
             let mut cmd: InsertCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
@@ -278,7 +278,7 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_delete" => {
+        "hashline_delete" => {
             let mut cmd: DeleteCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
@@ -288,8 +288,8 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_verify" => tool_verify(arguments, session),
-        "linehash_patch" => {
+        "hashline_verify" => tool_verify(arguments, session),
+        "hashline_patch" => {
             let mut cmd: PatchCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
@@ -299,7 +299,7 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_swap" => {
+        "hashline_swap" => {
             let cmd: SwapCmd = parse_args(arguments)?;
             let path = cmd.file.clone();
             let result = invoke_command(Commands::Swap(cmd));
@@ -308,7 +308,7 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_move" => {
+        "hashline_move" => {
             let cmd: MoveCmd = parse_args(arguments)?;
             let path = cmd.file.clone();
             let result = invoke_command(Commands::Move(cmd));
@@ -317,7 +317,7 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_indent" => {
+        "hashline_indent" => {
             let mut cmd: IndentCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
@@ -327,8 +327,8 @@ fn dispatch_tool(
             }
             result
         }
-        "linehash_stats" => tool_stats(arguments, session),
-        "linehash_doctor" => tool_doctor(arguments, session),
+        "hashline_stats" => tool_stats(arguments, session),
+        "hashline_doctor" => tool_doctor(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -471,7 +471,7 @@ fn success_payload(command: &str, exit_code: i32, data: Value, cache_used: bool)
     })
 }
 
-fn command_error(error: LinehashError) -> JsonRpcError {
+fn command_error(error: HashlineError) -> JsonRpcError {
     let mut data = serde_json::Map::new();
     if let Some(hint) = error.hint() {
         data.insert("hint".into(), json!(hint));
@@ -522,8 +522,8 @@ fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError {
 fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
-            "linehash_read",
-            "Read a file with current line:hash anchors. For large or noisy files, prefer linehash_index, linehash_grep, or linehash_annotate first; then pass anchor with a small context for snippet-only inspection instead of a full-file read.",
+            "hashline_read",
+            "Read a file with current line:hash anchors. For large or noisy files, prefer hashline_index, hashline_grep, or hashline_annotate first; then pass anchor with a small context for snippet-only inspection instead of a full-file read.",
             json!({
                 "type": "object",
                 "properties": {
@@ -535,7 +535,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_index",
+            "hashline_index",
             "List anchors for every line without content. Prefer this as the first inspection step for large or noisy files when a full read would be too verbose.",
             json!({
                 "type": "object",
@@ -546,8 +546,8 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_grep",
-            "Search file content and return matching lines with anchors. Prefer this before linehash_read when you know a pattern and need to localize the target without dumping the whole file.",
+            "hashline_grep",
+            "Search file content and return matching lines with anchors. Prefer this before hashline_read when you know a pattern and need to localize the target without dumping the whole file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -560,8 +560,8 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_annotate",
-            "Map text or regex matches back to current anchors. Prefer this before linehash_read when you know the target text and want a precise anchor for snippet inspection or mutation.",
+            "hashline_annotate",
+            "Map text or regex matches back to current anchors. Prefer this before hashline_read when you know the target text and want a precise anchor for snippet inspection or mutation.",
             json!({
                 "type": "object",
                 "properties": {
@@ -574,7 +574,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_verify",
+            "hashline_verify",
             "Verify that one or more anchors still resolve. Use this before grouped edits or when another agent may have changed the file.",
             json!({
                 "type": "object",
@@ -586,12 +586,12 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_edit",
+            "hashline_edit",
             "Replace a single line or range at the specified anchor. Use this once anchors are known instead of describing a diff or doing more exploratory reads.",
             mutation_schema("anchor"),
         ),
         tool(
-            "linehash_insert",
+            "hashline_insert",
             "Insert content before or after an anchor. Use this once the insertion anchor is known instead of planning the change in prose.",
             json!({
                 "type": "object",
@@ -600,7 +600,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_delete",
+            "hashline_delete",
             "Delete a line or range at the specified anchor. Use this once the target anchor is known instead of leaving deletion as a suggested diff.",
             json!({
                 "type": "object",
@@ -611,7 +611,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_patch",
+            "hashline_patch",
             "Apply a JSON patch transaction atomically. Prefer this when several related mutations should happen together after you have collected anchors.",
             json!({
                 "type": "object",
@@ -628,7 +628,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_swap",
+            "hashline_swap",
             "Swap the positions of two anchored lines.",
             json!({
                 "type": "object",
@@ -646,7 +646,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_move",
+            "hashline_move",
             "Move one anchored line before or after another anchor.",
             json!({
                 "type": "object",
@@ -669,7 +669,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_indent",
+            "hashline_indent",
             "Adjust indentation for a resolved range.",
             json!({
                 "type": "object",
@@ -687,17 +687,17 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_workflows",
-            "List repo-local markdown skill packs from `.linehash/skills` so agents can follow a bounded read/search/edit workflow instead of improvising command sequences.",
+            "hashline_workflows",
+            "List repo-local markdown skill packs from `.hashline/skills` so agents can follow a bounded read/search/edit workflow instead of improvising command sequences.",
             json!({
                 "type": "object",
                 "properties": {
-                    "root": string_schema("Workspace root that contains `.linehash/skills`. Defaults to the MCP server current working directory.")
+                    "root": string_schema("Workspace root that contains `.hashline/skills`. Defaults to the MCP server current working directory.")
                 }
             }),
         ),
         tool(
-            "linehash_watch_capabilities",
+            "hashline_watch_capabilities",
             "Explain the current watch capability split: the CLI supports continuous watch, while MCP supports only single-event watch calls today.",
             json!({
                 "type": "object",
@@ -705,7 +705,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_find_block",
+            "hashline_find_block",
             "Find a likely structural block around an anchor.",
             json!({
                 "type": "object",
@@ -717,7 +717,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_stats",
+            "hashline_stats",
             "Compute collision and workflow guidance for a file.",
             json!({
                 "type": "object",
@@ -728,7 +728,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_symbol",
+            "hashline_symbol",
             "Search for symbol definitions and usages.",
             json!({
                 "type": "object",
@@ -742,8 +742,8 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_doctor",
-            "Recommend the safest linehash workflow for a file.",
+            "hashline_doctor",
+            "Recommend the safest hashline workflow for a file.",
             json!({
                 "type": "object",
                 "properties": {
@@ -753,7 +753,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_from_diff",
+            "hashline_from_diff",
             "Convert a unified diff into anchor-aware operations.",
             json!({
                 "type": "object",
@@ -765,7 +765,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_merge_patches",
+            "hashline_merge_patches",
             "Merge two patch files against the same base file.",
             json!({
                 "type": "object",
@@ -778,7 +778,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_watch",
+            "hashline_watch",
             "Watch once for the next hash diff event on a file. Continuous mode is intentionally disabled over MCP.",
             json!({
                 "type": "object",
@@ -791,7 +791,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_explode",
+            "hashline_explode",
             "Explode a file into per-line text files plus metadata.",
             json!({
                 "type": "object",
@@ -804,7 +804,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_implode",
+            "hashline_implode",
             "Reassemble an exploded directory back into a file.",
             json!({
                 "type": "object",
@@ -817,7 +817,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_map",
+            "hashline_map",
             "Map directory tree with estimated token counts. Useful for understanding codebase structure and size.",
             json!({
                 "type": "object",
@@ -830,7 +830,7 @@ fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "linehash_callees",
+            "hashline_callees",
             "Find functions called by a given symbol using BFS call graph traversal.",
             json!({
                 "type": "object",
@@ -1002,7 +1002,7 @@ mod tests {
         write_text(&path, "alpha\nbeta\n")?;
 
         let result = dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({
                 "file": path,
             }),
@@ -1024,14 +1024,14 @@ mod tests {
         let mut session = SessionState::default();
 
         let read = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
         let anchor = line_anchor(&read, 2)?;
 
         let snippet = dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({
                 "file": path,
                 "anchor": [anchor],
@@ -1054,21 +1054,21 @@ mod tests {
         let tools = tool_definitions();
         let read = tools
             .iter()
-            .find(|tool| tool["name"] == "linehash_read")
-            .ok_or_else(|| anyhow!("missing linehash_read tool"))?;
+            .find(|tool| tool["name"] == "hashline_read")
+            .ok_or_else(|| anyhow!("missing hashline_read tool"))?;
         let edit = tools
             .iter()
-            .find(|tool| tool["name"] == "linehash_edit")
-            .ok_or_else(|| anyhow!("missing linehash_edit tool"))?;
+            .find(|tool| tool["name"] == "hashline_edit")
+            .ok_or_else(|| anyhow!("missing hashline_edit tool"))?;
         let delete = tools
             .iter()
-            .find(|tool| tool["name"] == "linehash_delete")
-            .ok_or_else(|| anyhow!("missing linehash_delete tool"))?;
+            .find(|tool| tool["name"] == "hashline_delete")
+            .ok_or_else(|| anyhow!("missing hashline_delete tool"))?;
 
         assert!(
             read["description"]
                 .as_str()
-                .is_some_and(|text| text.contains("prefer linehash_index"))
+                .is_some_and(|text| text.contains("prefer hashline_index"))
         );
         assert!(
             edit["description"]
@@ -1078,10 +1078,10 @@ mod tests {
         assert!(delete["description"].as_str().is_some_and(|text| {
             text.contains("instead of leaving deletion as a suggested diff")
         }));
-        assert!(SERVER_INSTRUCTIONS.contains("do not start with a full-file linehash_read"));
+        assert!(SERVER_INSTRUCTIONS.contains("do not start with a full-file hashline_read"));
         assert!(
             SERVER_INSTRUCTIONS
-                .contains("Use linehash_edit, linehash_insert, linehash_delete, or linehash_patch")
+                .contains("Use hashline_edit, hashline_insert, hashline_delete, or hashline_patch")
         );
         Ok(())
     }
@@ -1094,7 +1094,7 @@ mod tests {
         let mut session = SessionState::default();
 
         let first = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
@@ -1103,7 +1103,7 @@ mod tests {
         write_text(&path, "beta\n")?;
 
         let second = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
@@ -1119,7 +1119,7 @@ mod tests {
         let mut session = SessionState::default();
 
         let read = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
@@ -1127,7 +1127,7 @@ mod tests {
         let end = line_anchor(&read, 2)?;
 
         let result = dispatch_tool(
-            "linehash_edit",
+            "hashline_edit",
             &json!({
                 "file": path,
                 "anchor": format!("{start}..{end}"),
@@ -1150,7 +1150,7 @@ mod tests {
         let mut session = SessionState::default();
 
         let read = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
@@ -1158,7 +1158,7 @@ mod tests {
         let end = line_anchor(&read, 2)?;
 
         let result = dispatch_tool(
-            "linehash_delete",
+            "hashline_delete",
             &json!({
                 "file": path,
                 "anchor": format!("{start}..{end}"),
@@ -1186,7 +1186,7 @@ mod tests {
         let mut session = SessionState::default();
 
         let read = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
@@ -1195,7 +1195,7 @@ mod tests {
         let dashed_range = format!("{start}-{end}");
 
         let error = must_err(dispatch_tool(
-            "linehash_edit",
+            "hashline_edit",
             &json!({
                 "file": path,
                 "anchor": dashed_range,
@@ -1221,7 +1221,7 @@ mod tests {
         let mut session = SessionState::default();
 
         let read = must(dispatch_tool(
-            "linehash_read",
+            "hashline_read",
             &json!({ "file": path }),
             &mut session,
         ))?;
@@ -1232,7 +1232,7 @@ mod tests {
         write_text(&path, "alpha\nDELTA-NEW-CONTENT-XYZ\ngamma\n")?;
 
         let error = must_err(dispatch_tool(
-            "linehash_edit",
+            "hashline_edit",
             &json!({
                 "file": path,
                 "anchor": anchor,

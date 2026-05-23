@@ -9,7 +9,7 @@ use crate::cli::PatchCmd;
 use crate::commands::common::{atomic_write, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::{Document, LineRecord};
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash;
 use crate::mutation::validate_single_line_content;
 use crate::output;
@@ -18,7 +18,7 @@ use crate::receipt::{self, ChangeKind, LineChange};
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: PatchCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let patch = read_patch(&cmd.patch)?;
     validate_patch_target(&patch, &cmd.file)?;
 
@@ -50,7 +50,7 @@ pub fn run<W: Write, E: Write>(
 
         if let Some(log_path) = &cmd.audit_log {
             if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(HashlineError::from)?;
             }
         }
 
@@ -62,7 +62,7 @@ pub fn run<W: Write, E: Write>(
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => output::write_success_line(ctx, &result.summary.success_message())
-            .map_err(LinehashError::from),
+            .map_err(HashlineError::from),
     }
 }
 
@@ -166,7 +166,7 @@ impl PatchSummary {
     }
 }
 
-fn read_patch(path: &str) -> Result<PatchFile, LinehashError> {
+fn read_patch(path: &str) -> Result<PatchFile, HashlineError> {
     let raw = if path == "-" {
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;
@@ -175,14 +175,14 @@ fn read_patch(path: &str) -> Result<PatchFile, LinehashError> {
         fs::read_to_string(path)?
     };
 
-    serde_json::from_str(&raw).map_err(LinehashError::from)
+    serde_json::from_str(&raw).map_err(HashlineError::from)
 }
 
-fn validate_patch_target(patch: &PatchFile, file: &std::path::Path) -> Result<(), LinehashError> {
+fn validate_patch_target(patch: &PatchFile, file: &std::path::Path) -> Result<(), HashlineError> {
     if let Some(expected) = &patch.file {
         let actual = file.display().to_string();
         if expected != &actual {
-            return Err(LinehashError::PatchFailed {
+            return Err(HashlineError::PatchFailed {
                 op_index: 0,
                 reason: format!(
                     "patch file target {expected:?} does not match command target {actual:?}"
@@ -198,7 +198,7 @@ fn build_plan(
     patch: &PatchFile,
     original: &Document,
     index: &crate::document::ShortHashIndex,
-) -> Result<Vec<PlannedOp>, LinehashError> {
+) -> Result<Vec<PlannedOp>, HashlineError> {
     let mut plan = Vec::with_capacity(patch.ops.len());
     let mut occupied = vec![None; original.lines.len()];
 
@@ -223,7 +223,7 @@ fn resolve_edit(
     original: &Document,
     index: &crate::document::ShortHashIndex,
     occupied: &mut [Option<Occupancy>],
-) -> Result<PlannedOp, LinehashError> {
+) -> Result<PlannedOp, HashlineError> {
     validate_single_line_content(&edit.content).map_err(|error| patch_error(op_index, error))?;
 
     if let Ok(range) = parse_range(&edit.anchor) {
@@ -264,7 +264,7 @@ fn resolve_insert(
     insert: &InsertOp,
     original: &Document,
     index: &crate::document::ShortHashIndex,
-) -> Result<PlannedOp, LinehashError> {
+) -> Result<PlannedOp, HashlineError> {
     validate_single_line_content(&insert.content).map_err(|error| patch_error(op_index, error))?;
     let anchor = parse_anchor(&insert.anchor).map_err(|error| patch_error(op_index, error))?;
     let resolved =
@@ -290,7 +290,7 @@ fn resolve_delete(
     original: &Document,
     index: &crate::document::ShortHashIndex,
     occupied: &mut [Option<Occupancy>],
-) -> Result<PlannedOp, LinehashError> {
+) -> Result<PlannedOp, HashlineError> {
     let anchor = parse_anchor(&delete.anchor).map_err(|error| patch_error(op_index, error))?;
     let resolved =
         resolve(&anchor, original, index).map_err(|error| patch_error(op_index, error))?;
@@ -312,7 +312,7 @@ fn mark_occupied(
     range: RangeInclusive<usize>,
     next: Occupancy,
     op_index: usize,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     for idx in range {
         if let Some(existing) = occupied[idx] {
             let reason = match existing {
@@ -325,14 +325,14 @@ fn mark_occupied(
                     idx + 1
                 ),
             };
-            return Err(LinehashError::PatchFailed { op_index, reason });
+            return Err(HashlineError::PatchFailed { op_index, reason });
         }
         occupied[idx] = Some(next);
     }
     Ok(())
 }
 
-fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, LinehashError> {
+fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, HashlineError> {
     let mut inserts_before: Vec<Vec<String>> = vec![Vec::new(); original.lines.len() + 1];
     let mut replacement_at: Vec<Option<String>> = vec![None; original.lines.len()];
     let mut skip_until: Vec<bool> = vec![false; original.lines.len()];
@@ -357,7 +357,7 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Li
                 let slot =
                     replacement_at
                         .get_mut(*line)
-                        .ok_or_else(|| LinehashError::PatchFailed {
+                        .ok_or_else(|| HashlineError::PatchFailed {
                             op_index: *op_index,
                             reason: format!("resolved line {} is out of bounds", line + 1),
                         })?;
@@ -387,7 +387,7 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Li
                 let slot =
                     replacement_at
                         .get_mut(start)
-                        .ok_or_else(|| LinehashError::PatchFailed {
+                        .ok_or_else(|| HashlineError::PatchFailed {
                             op_index: *op_index,
                             reason: format!("resolved start line {} is out of bounds", start + 1),
                         })?;
@@ -412,7 +412,7 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Li
                     let skip =
                         skip_until
                             .get_mut(idx)
-                            .ok_or_else(|| LinehashError::PatchFailed {
+                            .ok_or_else(|| HashlineError::PatchFailed {
                                 op_index: *op_index,
                                 reason: format!("resolved line {} is out of bounds", idx + 1),
                             })?;
@@ -455,7 +455,7 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Li
             } => {
                 let slot = deleted
                     .get_mut(*line)
-                    .ok_or_else(|| LinehashError::PatchFailed {
+                    .ok_or_else(|| HashlineError::PatchFailed {
                         op_index: *op_index,
                         reason: format!("resolved line {} is out of bounds", line + 1),
                     })?;
@@ -521,7 +521,7 @@ fn write_dry_run<W: Write, E: Write>(
     file: &std::path::Path,
     summary: &PatchSummary,
     changes: &[LineChange],
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => {
             // PR-D: emit a compact mutation receipt instead of dumping the
@@ -541,13 +541,13 @@ fn write_dry_run<W: Write, E: Write>(
             for action in &summary.actions {
                 output::write_success_line(ctx, &format!("  - {action}"))?;
             }
-            output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+            output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)
         }
     }
 }
 
-fn patch_error(op_index: usize, error: LinehashError) -> LinehashError {
-    LinehashError::PatchFailed {
+fn patch_error(op_index: usize, error: HashlineError) -> HashlineError {
+    HashlineError::PatchFailed {
         op_index,
         reason: error.to_string(),
     }

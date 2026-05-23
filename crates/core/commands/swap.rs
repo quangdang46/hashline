@@ -5,7 +5,7 @@ use crate::cli::SwapCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::CommandContext;
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::mutation::swap_lines;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
@@ -13,7 +13,7 @@ use crate::receipt::{self, ChangeKind, LineChange};
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: SwapCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let mut doc = Document::load(&cmd.file)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
@@ -26,7 +26,7 @@ pub fn run<W: Write, E: Write>(
     let resolved_b = resolve(&anchor_b, &doc, &index)?;
 
     if resolved_a.index == resolved_b.index {
-        return Err(LinehashError::PatchFailed {
+        return Err(HashlineError::PatchFailed {
             op_index: 0,
             reason: "source and target must resolve to different lines".to_owned(),
         });
@@ -72,7 +72,7 @@ pub fn run<W: Write, E: Write>(
 
         if let Some(log_path) = &cmd.audit_log {
             if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(HashlineError::from)?;
             }
         }
 
@@ -81,13 +81,13 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
-    output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
+    output::write_success_line(ctx, &summary.success_message()).map_err(HashlineError::from)
 }
 
 fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     summary: &SwapSummary,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     output::write_success_line(ctx, &summary.preview_message())?;
     output::write_success_line(
         ctx,
@@ -97,7 +97,7 @@ fn write_dry_run<W: Write, E: Write>(
         ctx,
         &format!("  {} ↔ {:?}", summary.line_b_no, summary.line_a_content),
     )?;
-    output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+    output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)
 }
 
 struct SwapSummary {
@@ -143,7 +143,7 @@ mod tests {
     use crate::cli::SwapCmd;
     use crate::context::{CommandContext, OutputMode, SearchDocCache};
     use crate::document::Document;
-    use crate::error::LinehashError;
+    use crate::error::HashlineError;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -270,7 +270,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            LinehashError::PatchFailed { op_index: 0, .. }
+            HashlineError::PatchFailed { op_index: 0, .. }
         ));
         assert!(
             error

@@ -5,14 +5,14 @@ use crate::cli::IndentCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: IndentCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let mut doc = Document::load(&cmd.file)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
@@ -76,7 +76,7 @@ pub fn run<W: Write, E: Write>(
 
         if let Some(log_path) = &cmd.audit_log {
             if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(HashlineError::from)?;
             }
         }
 
@@ -88,7 +88,7 @@ pub fn run<W: Write, E: Write>(
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => {
-            output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
+            output::write_success_line(ctx, &summary.success_message()).map_err(HashlineError::from)
         }
     }
 }
@@ -135,24 +135,24 @@ impl IndentSummary {
     }
 }
 
-fn parse_indent_change(raw: &str) -> Result<IndentChange, LinehashError> {
+fn parse_indent_change(raw: &str) -> Result<IndentChange, HashlineError> {
     if raw.len() < 2 {
-        return Err(LinehashError::InvalidIndentAmount { amount: raw.into() });
+        return Err(HashlineError::InvalidIndentAmount { amount: raw.into() });
     }
     let (sign, amount) = raw.split_at(1);
     let parsed = amount
         .parse::<usize>()
         .ok()
         .filter(|amount| *amount > 0)
-        .ok_or_else(|| LinehashError::InvalidIndentAmount { amount: raw.into() })?;
+        .ok_or_else(|| HashlineError::InvalidIndentAmount { amount: raw.into() })?;
     match sign {
         "+" => Ok(IndentChange::Indent(parsed)),
         "-" => Ok(IndentChange::Dedent(parsed)),
-        _ => Err(LinehashError::InvalidIndentAmount { amount: raw.into() }),
+        _ => Err(HashlineError::InvalidIndentAmount { amount: raw.into() }),
     }
 }
 
-fn validate_range_style(doc: &Document, start: usize, end: usize) -> Result<(), LinehashError> {
+fn validate_range_style(doc: &Document, start: usize, end: usize) -> Result<(), HashlineError> {
     let mut saw_spaces = false;
     let mut saw_tabs = false;
     for idx in start..=end {
@@ -163,13 +163,13 @@ fn validate_range_style(doc: &Document, start: usize, end: usize) -> Result<(), 
             _ => {}
         }
         if saw_spaces && saw_tabs {
-            return Err(LinehashError::MixedIndentation { line_no: idx + 1 });
+            return Err(HashlineError::MixedIndentation { line_no: idx + 1 });
         }
     }
     Ok(())
 }
 
-fn apply_indent(line: &str, change: IndentChange, line_no: usize) -> Result<String, LinehashError> {
+fn apply_indent(line: &str, change: IndentChange, line_no: usize) -> Result<String, HashlineError> {
     match change {
         IndentChange::Indent(amount) => Ok(format!("{}{}", " ".repeat(amount), line)),
         IndentChange::Dedent(amount) => {
@@ -184,7 +184,7 @@ fn apply_indent(line: &str, change: IndentChange, line_no: usize) -> Result<Stri
             }
 
             if available_tabs > 0 {
-                return Err(LinehashError::IndentUnderflow {
+                return Err(HashlineError::IndentUnderflow {
                     line_no,
                     amount,
                     available: available_tabs,
@@ -192,7 +192,7 @@ fn apply_indent(line: &str, change: IndentChange, line_no: usize) -> Result<Stri
                 });
             }
             if available_spaces < amount {
-                return Err(LinehashError::IndentUnderflow {
+                return Err(HashlineError::IndentUnderflow {
                     line_no,
                     amount,
                     available: available_spaces,
@@ -208,7 +208,7 @@ fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     file: &std::path::Path,
     summary: &IndentSummary,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => {
             // PR-D: emit a compact mutation receipt instead of dumping the
@@ -244,7 +244,7 @@ fn write_dry_run<W: Write, E: Write>(
                     ),
                 )?;
             }
-            output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+            output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)
         }
     }
 }

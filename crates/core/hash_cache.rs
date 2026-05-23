@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 
-const HASH_DIR: &str = ".linehash/hashes";
+const HASH_DIR: &str = ".hashline/hashes";
 // LHH2: hash function now strips trailing whitespace before hashing
 // (formerly LHH1 hashed raw line content, breaking anchors after
 // formatter runs).
@@ -103,13 +103,13 @@ impl HashSidecar {
 
 /// Walk up from `path`'s parent directory looking for a project root marker
 /// (`.git`, `.hg`, `Cargo.toml`, `package.json`, `pyproject.toml`,
-/// `go.mod`, `.linehash`). Falls back to the file's parent directory if no
+/// `go.mod`, `.hashline`). Falls back to the file's parent directory if no
 /// marker is found within 16 levels — this matches the agent workflow where
 /// the file usually lives inside a repo but graceful degradation matters
 /// when invoked on standalone files.
 pub fn discover_sidecar_root(path: &Path) -> PathBuf {
     const MARKERS: &[&str] = &[
-        ".linehash",
+        ".hashline",
         ".git",
         ".hg",
         "Cargo.toml",

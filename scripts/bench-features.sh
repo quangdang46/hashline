@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real-feature benchmark for linehash.
+# Real-feature benchmark for hashline.
 #
 # Generates synthetic 100 / 10 000 / 100 000-line Rust source files, then runs
 # `hyperfine` on each public subcommand and prints one tab-separated row
@@ -7,20 +7,20 @@
 #
 # Requirements on PATH: hyperfine, rg, python3.
 # Env knobs:
-#   LINEHASH_BIN  - linehash binary to bench (default: target/release/linehash)
+#   HASHLINE_BIN  - hashline binary to bench (default: target/release/hashline)
 #   FX_DIR        - fixture directory (default: /tmp/lh-bench)
 #   REPO_ROOT     - real-source fixture (default: <repo>/crates/core)
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="${LINEHASH_BIN:-$ROOT/target/release/linehash}"
+BIN="${HASHLINE_BIN:-$ROOT/target/release/hashline}"
 FX="${FX_DIR:-/tmp/lh-bench}"
 REPO="${REPO_ROOT:-$ROOT/crates/core}"
 
 for tool in hyperfine rg python3; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
 done
-[ -x "$BIN" ] || { echo "linehash binary not found at $BIN (build with: cargo build --release)" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "hashline binary not found at $BIN (build with: cargo build --release)" >&2; exit 1; }
 
 mkdir -p "$FX"
 python3 - <<PY
@@ -108,13 +108,13 @@ run "grep · large · --no-index"       "$BIN grep --no-index $FX/large.rs func_
 run "rg · large (baseline)"           "rg --no-config -n func_50000 $FX/large.rs"
 
 # Daemon: warm only. The cold variant (auto-spawn) can block in some sandboxes.
-pkill -f 'linehash daemon' 2>/dev/null; sleep 0.5
+pkill -f 'hashline daemon' 2>/dev/null; sleep 0.5
 "$BIN" daemon >/dev/null 2>&1 &
 DPID=$!
 sleep 1
 run "grep · large · daemon (warm)"    "$BIN grep $FX/large.rs func_50000 --daemon"
 kill $DPID 2>/dev/null
-pkill -f 'linehash daemon' 2>/dev/null
+pkill -f 'hashline daemon' 2>/dev/null
 
 # --- ANNOTATE ---
 run "annotate · large · substring"    "$BIN annotate $FX/large.rs func_50000"

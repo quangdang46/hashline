@@ -2,9 +2,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use support::{parse_json, run_linehash, tmpfile};
+use support::{parse_json, run_hashline, tmpfile};
 
-const PERF_ENV: &str = "LINEHASH_RUN_PERF";
+const PERF_ENV: &str = "HASHLINE_RUN_PERF";
 const RUNS: usize = 5;
 
 #[test]
@@ -17,7 +17,7 @@ fn hash_read_json_10k_lines_stays_within_envelope() {
     let file = tmpfile(&generate_fixture(10_000));
     let file_arg = file.to_string_lossy().into_owned();
     let best = best_duration(|| {
-        let (_stdout, stderr, code) = run_linehash(&["read", &file_arg, "--json"]);
+        let (_stdout, stderr, code) = run_hashline(&["read", &file_arg, "--json"]);
         assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     });
 
@@ -80,7 +80,7 @@ fn verify_json_100_anchors_stays_within_envelope() {
     let best = best_duration(|| {
         let mut args = vec!["verify", file_arg.as_str()];
         args.extend(anchor_refs.iter().copied());
-        let (stdout, stderr, code) = run_linehash(&args);
+        let (stdout, stderr, code) = run_hashline(&args);
         assert_eq!(
             code, 0,
             "expected success, got stderr: {stderr}, stdout: {stdout}"

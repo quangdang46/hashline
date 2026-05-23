@@ -1,7 +1,6 @@
 ---
 source: crates/core/tests/snapshots.rs
-assertion_line: 97
 expression: normalized
 ---
 Error: file '<fixture>' appears to be binary and cannot be edited safely
-Hint: linehash only supports UTF-8 text files
+Hint: hashline only supports UTF-8 text files

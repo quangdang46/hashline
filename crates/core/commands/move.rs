@@ -5,7 +5,7 @@ use crate::cli::{MoveCmd, MoveDirection};
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::CommandContext;
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::mutation::move_line;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
@@ -13,7 +13,7 @@ use crate::receipt::{self, ChangeKind, LineChange};
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: MoveCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let mut doc = Document::load(&cmd.file)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
@@ -65,7 +65,7 @@ pub fn run<W: Write, E: Write>(
 
         if let Some(log_path) = &cmd.audit_log {
             if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(HashlineError::from)?;
             }
         }
 
@@ -74,16 +74,16 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
-    output::write_success_line(ctx, &summary.success_message()).map_err(LinehashError::from)
+    output::write_success_line(ctx, &summary.success_message()).map_err(HashlineError::from)
 }
 
 fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     summary: &MoveSummary,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     output::write_success_line(ctx, &summary.preview_message())?;
     output::write_success_line(ctx, &format!("  ~ {:?}", summary.moved_content))?;
-    output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+    output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)
 }
 
 struct MoveSummary {
@@ -143,7 +143,7 @@ mod tests {
     use crate::cli::{MoveCmd, MoveDirection};
     use crate::context::{CommandContext, OutputMode, SearchDocCache};
     use crate::document::Document;
-    use crate::error::LinehashError;
+    use crate::error::HashlineError;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -273,7 +273,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            LinehashError::PatchFailed { op_index: 0, .. }
+            HashlineError::PatchFailed { op_index: 0, .. }
         ));
         assert!(
             error

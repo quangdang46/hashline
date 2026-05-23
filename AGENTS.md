@@ -147,9 +147,9 @@ Symbol resolution works for: Rust (`.rs`), Go (`.go`), JavaScript (`.js`), TypeS
 - Use `why doctor` to diagnose config/auth issues
 
 ---
-## linehash — Hash-Anchored File Editing
+## hashline — Hash-Anchored File Editing
 
-`linehash` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. It's designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
+`hashline` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. It's designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
 
 ### Why It's Useful
 
@@ -166,7 +166,7 @@ Anchors are `line_number:content_hash` pairs like `42:a3f2`:
 - **line_number**: 1-based line number (for human readability)
 - **content_hash**: First 4+ chars of SHA-256 of line content (for stability)
 
-Example output from `linehash read`:
+Example output from `hashline read`:
 ```
   1:a1b2  fn main() {
   2:c3d4      println!("hello");
@@ -178,75 +178,75 @@ Example output from `linehash read`:
 **Reading:**
 | Command | Purpose |
 |---------|---------|
-| `linehash read <file>` | Show file with line:hash anchors |
-| `linehash read <file> --anchor 42:a3f2` | Show context around specific anchor |
-| `linehash read <file> --context 10` | Set context lines (default: 5) |
-| `linehash index <file>` | Show just anchors, no content |
+| `hashline read <file>` | Show file with line:hash anchors |
+| `hashline read <file> --anchor 42:a3f2` | Show context around specific anchor |
+| `hashline read <file> --context 10` | Set context lines (default: 5) |
+| `hashline index <file>` | Show just anchors, no content |
 
 **Editing:**
 | Command | Purpose |
 |---------|---------|
-| `linehash edit <file> <anchor> <content>` | Replace line at anchor |
-| `linehash edit <file> <start>..<end> <content>` | Replace line range |
-| `linehash insert <file> <anchor> <content>` | Insert after anchor |
-| `linehash insert <file> <anchor> <content> --before` | Insert before anchor |
-| `linehash delete <file> <anchor>` | Delete line at anchor |
-| `linehash delete <file> <start>..<end>` | Delete line range |
+| `hashline edit <file> <anchor> <content>` | Replace line at anchor |
+| `hashline edit <file> <start>..<end> <content>` | Replace line range |
+| `hashline insert <file> <anchor> <content>` | Insert after anchor |
+| `hashline insert <file> <anchor> <content> --before` | Insert before anchor |
+| `hashline delete <file> <anchor>` | Delete line at anchor |
+| `hashline delete <file> <start>..<end>` | Delete line range |
 
 **Searching:**
 | Command | Purpose |
 |---------|---------|
-| `linehash grep <file> <pattern>` | Search with anchor output |
-| `linehash grep <file> <pattern> --case-insensitive` | Case-insensitive search |
-| `linehash annotate <file> <query>` | Find and annotate matching lines |
-| `linehash annotate <file> <regex> --regex` | Regex search |
-| `linehash find-block <file> <anchor>` | Find enclosing block (brace/indent) |
+| `hashline grep <file> <pattern>` | Search with anchor output |
+| `hashline grep <file> <pattern> --case-insensitive` | Case-insensitive search |
+| `hashline annotate <file> <query>` | Find and annotate matching lines |
+| `hashline annotate <file> <regex> --regex` | Regex search |
+| `hashline find-block <file> <anchor>` | Find enclosing block (brace/indent) |
 
 **Utilities:**
 | Command | Purpose |
 |---------|---------|
-| `linehash verify <file>` | Verify file integrity |
-| `linehash stats <file>` | File statistics |
-| `linehash patch <file> <patch-file>` | Apply patch by anchors |
-| `linehash swap <file> <anchor1> <anchor2>` | Swap two lines |
-| `linehash move <file> <anchor> <target-anchor>` | Move line to new position |
-| `linehash indent <file> <anchor> <levels>` | Adjust indentation |
+| `hashline verify <file>` | Verify file integrity |
+| `hashline stats <file>` | File statistics |
+| `hashline patch <file> <patch-file>` | Apply patch by anchors |
+| `hashline swap <file> <anchor1> <anchor2>` | Swap two lines |
+| `hashline move <file> <anchor> <target-anchor>` | Move line to new position |
+| `hashline indent <file> <anchor> <levels>` | Adjust indentation |
 
 **Advanced:**
 | Command | Purpose |
 |---------|---------|
-| `linehash from-diff <diff-file>` | Convert diff to anchor edits |
-| `linehash merge-patches <file> <patch1> <patch2>` | Merge multiple patches |
-| `linehash watch <file>` | Watch file for changes |
-| `linehash explode <file>` | Split file into per-line files |
-| `linehash implode <file>` | Reassemble from per-line files |
+| `hashline from-diff <diff-file>` | Convert diff to anchor edits |
+| `hashline merge-patches <file> <patch1> <patch2>` | Merge multiple patches |
+| `hashline watch <file>` | Watch file for changes |
+| `hashline explode <file>` | Split file into per-line files |
+| `hashline implode <file>` | Reassemble from per-line files |
 
 ### Typical Agent Workflow
 
 1. **Read file with anchors:**
    ```bash
-   linehash read src/main.rs
+   hashline read src/main.rs
    ```
 
 2. **Find specific content:**
    ```bash
-   linehash grep src/main.rs "fn process" --json
+   hashline grep src/main.rs "fn process" --json
    ```
 
 3. **Apply targeted edit:**
    ```bash
-   linehash edit src/main.rs 42:a3f2 "fn process_data(input: &str) -> Result<()> {"
+   hashline edit src/main.rs 42:a3f2 "fn process_data(input: &str) -> Result<()> {"
    ```
 
 4. **Verify change:**
    ```bash
-   linehash read src/main.rs --anchor 42:a3f2
+   hashline read src/main.rs --anchor 42:a3f2
    ```
 
 5. **If anchor is stale, re-read and retry:**
    ```bash
-   linehash read src/main.rs  # Get fresh anchors
-   linehash edit src/main.rs 42:new_hash "..."
+   hashline read src/main.rs  # Get fresh anchors
+   hashline edit src/main.rs 42:new_hash "..."
    ```
 
 ### Range Edits
@@ -255,10 +255,10 @@ Replace multiple lines with range syntax:
 
 ```bash
 # Replace lines 10-15
-linehash edit src/main.rs 10:a1b2..15:c3d4 "new content\nspanning\nmultiple lines"
+hashline edit src/main.rs 10:a1b2..15:c3d4 "new content\nspanning\nmultiple lines"
 
 # Delete lines 20-25
-linehash delete src/main.rs 20:e5f6..25:g7h8
+hashline delete src/main.rs 20:e5f6..25:g7h8
 ```
 
 ### Safety Features
@@ -266,7 +266,7 @@ linehash delete src/main.rs 20:e5f6..25:g7h8
 **Stale anchor detection:**
 ```
 Error: anchor 42:a3f2 is stale (line content changed)
-Hint: re-run `linehash read src/main.rs` to get fresh anchors
+Hint: re-run `hashline read src/main.rs` to get fresh anchors
 ```
 
 **Ambiguous anchor detection:**
@@ -277,12 +277,12 @@ Hint: use more hash characters: 42:a3f2e1
 
 **Dry-run mode:**
 ```bash
-linehash edit src/main.rs 42:a3f2 "new content" --dry-run
+hashline edit src/main.rs 42:a3f2 "new content" --dry-run
 ```
 
 **Audit logging:**
 ```bash
-linehash edit src/main.rs 42:a3f2 "new content" --receipt --audit-log edits.jsonl
+hashline edit src/main.rs 42:a3f2 "new content" --receipt --audit-log edits.jsonl
 ```
 
 ### JSON Output
@@ -290,14 +290,14 @@ linehash edit src/main.rs 42:a3f2 "new content" --receipt --audit-log edits.json
 All commands support `--json` for machine-readable output:
 
 ```bash
-linehash read src/main.rs --json
-linehash grep src/main.rs "fn " --json
-linehash edit src/main.rs 42:a3f2 "new" --json
+hashline read src/main.rs --json
+hashline grep src/main.rs "fn " --json
+hashline edit src/main.rs 42:a3f2 "new" --json
 ```
 
 ### Common Pitfalls
 
-- **Stale anchor:** Content changed since last read → re-run `linehash read`
+- **Stale anchor:** Content changed since last read → re-run `hashline read`
 - **Ambiguous anchor:** Hash too short → use more characters from original hash
 - **Line shifted:** Nearby edits changed line numbers → hash still works, just re-read
 - **File deleted:** Obviously fails → check file exists before editing
@@ -305,19 +305,19 @@ linehash edit src/main.rs 42:a3f2 "new" --json
 
 ### Rules for Agents
 
-- **Always prefer `linehash` over `sed`/`awk`** for targeted line edits
-- **Run `linehash doctor <file>` or `linehash stats <file>` first** on large or collision-heavy files
+- **Always prefer `hashline` over `sed`/`awk`** for targeted line edits
+- **Run `hashline doctor <file>` or `hashline stats <file>` first** on large or collision-heavy files
 - **Re-read before editing** if file may have changed (other agents, user edits)
 - **Treat stale-anchor failures as safety signals**, not errors to bypass
 - **Use `--dry-run` first** when editing critical files
 - **Use `--json` output** for parsing in scripts
 - **Never force an edit** when anchor is stale—always re-read and retry
 
-### When NOT to Use linehash
+### When NOT to Use hashline
 
 - **Large insertions:** For adding many lines, use a heredoc or write the whole file
 - **Whole-file rewrites:** Just use `Write` tool directly
-- **Binary files:** linehash only works on text
+- **Binary files:** hashline only works on text
 - **Complex refactors:** Use tree-sitter based tools for AST-aware changes
 
 ---

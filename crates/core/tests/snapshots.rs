@@ -2,7 +2,7 @@ mod support;
 
 use insta::{assert_json_snapshot, assert_snapshot};
 use serde_json::Value;
-use support::{fixture_path, parse_json, run_linehash};
+use support::{fixture_path, parse_json, run_hashline};
 
 fn normalize_path(input: &str, path: &str, replacement: &str) -> String {
     input.replace(path, replacement)
@@ -27,7 +27,7 @@ fn normalize_read_json(mut value: Value, fixture_arg: &str) -> Value {
 fn snapshot_read_pretty_output() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg]);
+    let (stdout, stderr, code) = run_hashline(&["read", &fixture_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -38,7 +38,7 @@ fn snapshot_read_pretty_output() {
 fn snapshot_index_pretty_output() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["index", &fixture_arg]);
+    let (stdout, stderr, code) = run_hashline(&["index", &fixture_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -97,7 +97,7 @@ fn snapshot_verify_json_output() {
     let fixture_arg = fixture.to_string_lossy().into_owned();
     let full = parse_json(&["read", &fixture_arg, "--json"]);
     let valid = format!("1:{}", full["lines"][0]["hash"].as_str().unwrap());
-    let (stdout, stderr, code) = run_linehash(&["verify", &fixture_arg, &valid, "bogus", "--json"]);
+    let (stdout, stderr, code) = run_hashline(&["verify", &fixture_arg, &valid, "bogus", "--json"]);
     let parsed: Value = serde_json::from_str(&stdout).unwrap();
 
     assert_eq!(code, 1);
@@ -109,7 +109,7 @@ fn snapshot_verify_json_output() {
 fn snapshot_binary_file_error_output() {
     let fixture = fixture_path("binary.bin");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["read", &fixture_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["read", &fixture_arg]);
 
     assert_eq!(code, 1);
     let normalized = normalize_path(&stderr, &fixture_arg, "<fixture>");
@@ -120,7 +120,7 @@ fn snapshot_binary_file_error_output() {
 fn snapshot_mixed_newline_error_output() {
     let fixture = fixture_path("mixed_newlines.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["read", &fixture_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["read", &fixture_arg]);
 
     assert_eq!(code, 1);
     let normalized = normalize_path(&stderr, &fixture_arg, "<fixture>");
@@ -138,7 +138,7 @@ fn snapshot_stale_anchor_error_output() {
     // succeed; we need the hash to disappear from the file entirely.
     std::fs::write(&file, "alpha\nDELTA-NEW-CONTENT-XYZ\ngamma\n").unwrap();
 
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &stale_anchor, "BETA"]);
+    let (_stdout, stderr, code) = run_hashline(&["edit", &file_arg, &stale_anchor, "BETA"]);
 
     assert_eq!(code, 1);
     let normalized = normalize_path(&stderr, &file_arg, "<fixture>");
@@ -153,7 +153,7 @@ fn snapshot_ambiguous_hash_error_output() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let ambiguous = parsed["lines"][0]["hash"].as_str().unwrap();
 
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, ambiguous, "updated"]);
+    let (_stdout, stderr, code) = run_hashline(&["edit", &file_arg, ambiguous, "updated"]);
 
     assert_eq!(code, 1);
     let normalized = normalize_path(&stderr, &file_arg, "<fixture>");

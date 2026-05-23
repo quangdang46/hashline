@@ -1,5 +1,5 @@
 [package]
-name = "linehash"
+name = "hashline"
 version = "0.1.10"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 autobenches = false
 
 [[bin]]
-name = "linehash"
+name = "hashline"
 path = "main.rs"
 
 [dependencies]

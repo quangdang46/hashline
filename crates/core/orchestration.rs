@@ -11,7 +11,7 @@ use crate::document::{
     Document, FileStats, LineView, NewlineStyle, ShortHashIndex, build_index_from_counts,
     count_short_hashes, format_short_hash,
 };
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct IndexLineView {
@@ -91,7 +91,7 @@ pub fn command_name(command: &Commands) -> &'static str {
 pub fn resolve_read_anchors(
     doc: &Document,
     anchors: &[String],
-) -> Result<Vec<ResolvedLine>, LinehashError> {
+) -> Result<Vec<ResolvedLine>, HashlineError> {
     let owned: Option<ShortHashIndex> = if doc.short_hash_index.is_none() {
         let counts = count_short_hashes(&doc.lines);
         Some(build_index_from_counts(&doc.lines, &counts))
@@ -115,7 +115,7 @@ pub fn read_payload(
     doc: &Document,
     anchors: &[String],
     context: usize,
-) -> Result<ReadPayload, LinehashError> {
+) -> Result<ReadPayload, HashlineError> {
     let lines = if anchors.is_empty() {
         doc.lines
             .iter()
@@ -236,19 +236,19 @@ pub fn doctor_payload(path: &Path, stats: &FileStats) -> DoctorPayload {
     }
 }
 
-fn verify_status_for_error(error: &LinehashError) -> &'static str {
+fn verify_status_for_error(error: &HashlineError) -> &'static str {
     match error {
-        LinehashError::HashNotFound { .. } => "not_found",
-        LinehashError::AmbiguousHash { .. } => "ambiguous",
-        LinehashError::StaleAnchor { .. } => "stale",
-        LinehashError::InvalidAnchor { .. } => "parse_error",
+        HashlineError::HashNotFound { .. } => "not_found",
+        HashlineError::AmbiguousHash { .. } => "ambiguous",
+        HashlineError::StaleAnchor { .. } => "stale",
+        HashlineError::InvalidAnchor { .. } => "parse_error",
         _ => "error",
     }
 }
 
-fn verify_line_no_for_error(error: &LinehashError) -> Option<usize> {
+fn verify_line_no_for_error(error: &HashlineError) -> Option<usize> {
     match error {
-        LinehashError::StaleAnchor { line, .. } => Some(*line),
+        HashlineError::StaleAnchor { line, .. } => Some(*line),
         _ => None,
     }
 }
@@ -257,24 +257,24 @@ fn doctor_next_commands(file: &str, stats: &FileStats) -> Vec<String> {
     let mut commands = Vec::new();
 
     if stats.recommended_read_mode == "read" {
-        commands.push(format!("linehash read {file}"));
+        commands.push(format!("hashline read {file}"));
     } else {
-        commands.push(format!("linehash index {file}"));
+        commands.push(format!("hashline index {file}"));
         commands.push(format!(
-            "linehash read {file} --anchor <line:hash> --context {}",
+            "hashline read {file} --anchor <line:hash> --context {}",
             stats.suggested_context_n
         ));
     }
 
-    commands.push(format!("linehash annotate {file} <text>"));
-    commands.push(format!("linehash grep {file} <pattern>"));
+    commands.push(format!("hashline annotate {file} <text>"));
+    commands.push(format!("hashline grep {file} <pattern>"));
 
     if stats.collision_count > 0 || stats.line_count > 2_000 {
-        commands.push(format!("linehash find-block {file} <line:hash>"));
-        commands.push(format!("linehash patch {file} <patch.json> --dry-run"));
+        commands.push(format!("hashline find-block {file} <line:hash>"));
+        commands.push(format!("hashline patch {file} <patch.json> --dry-run"));
     } else {
-        commands.push(format!("linehash verify {file} <line:hash>"));
-        commands.push(format!("linehash edit {file} <line:hash> <new_content>"));
+        commands.push(format!("hashline verify {file} <line:hash>"));
+        commands.push(format!("hashline edit {file} <line:hash> <new_content>"));
     }
 
     commands
@@ -350,7 +350,7 @@ mod tests {
 
         let payload = doctor_payload(Path::new("demo.txt"), &stats);
         assert_eq!(payload.file, "demo.txt");
-        assert_eq!(payload.next_commands[0], "linehash read demo.txt");
+        assert_eq!(payload.next_commands[0], "hashline read demo.txt");
         assert!(
             payload
                 .next_commands

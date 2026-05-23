@@ -9,7 +9,7 @@ fn default_context() -> usize {
 
 #[derive(Parser)]
 #[command(
-    name = "linehash",
+    name = "hashline",
     version,
     about = "Hash-anchored file editing for agents",
     long_about = "Hash-anchored file editing for agents. Typical workflow: read or stats to inspect the file, verify anchors before grouped edits, then mutate with edit/insert/delete or patch."
@@ -309,8 +309,8 @@ pub struct StatsCmd {
 
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(
-    about = "Recommend a safe linehash workflow for a file",
-    long_about = "Recommend a safe linehash workflow for a file. This is a read-only advisor that summarizes read strategy, anchor style, and when to prefer patch/find-block workflows on large or collision-heavy files."
+    about = "Recommend a safe hashline workflow for a file",
+    long_about = "Recommend a safe hashline workflow for a file. This is a read-only advisor that summarizes read strategy, anchor style, and when to prefer patch/find-block workflows on large or collision-heavy files."
 )]
 pub struct DoctorCmd {
     pub file: PathBuf,
@@ -333,7 +333,7 @@ pub struct DoctorCmd {
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(
     about = "Run as an MCP server over stdio",
-    long_about = "Run linehash as a JSON-RPC MCP server over stdio so agents can call the existing linehash feature set without shelling out."
+    long_about = "Run hashline as a JSON-RPC MCP server over stdio so agents can call the existing hashline feature set without shelling out."
 )]
 pub struct McpCmd {}
 

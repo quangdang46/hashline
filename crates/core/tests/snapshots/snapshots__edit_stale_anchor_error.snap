@@ -8,5 +8,5 @@ Error: line 2 content changed since last read in <fixture> (expected hash 89, go
     3:6d|gamma
 
 Risk: blocked - The mutation was blocked because the file changed since the last anchor read.
-Reason: Linehash refuses to apply destructive changes when the file state has drifted.
-Hint: re-read the file with `linehash read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor
+Reason: Hashline refuses to apply destructive changes when the file state has drifted.
+Hint: re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor

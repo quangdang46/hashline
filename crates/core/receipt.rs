@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 
 use crate::context::CommandContext;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash;
 use crate::output;
 
@@ -24,7 +24,7 @@ pub struct Receipt {
 ///
 /// Replaces the historic behavior of emitting the entire proposed document
 /// when `--dry-run --json` was set. Keeps the response O(edit size) instead
-/// of O(file size). See PR-D / linehash-analysis.md §3.2 P4.
+/// of O(file size). See PR-D / hashline-analysis.md §3.2 P4.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DryRunReceipt {
     pub op: String,
@@ -95,18 +95,18 @@ pub fn build_dry_run_receipt(
 pub fn write_dry_run_receipt<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     receipt: &DryRunReceipt,
-) -> Result<(), LinehashError> {
-    output::write_json_success(ctx, receipt).map_err(LinehashError::from)
+) -> Result<(), HashlineError> {
+    output::write_json_success(ctx, receipt).map_err(HashlineError::from)
 }
 
 pub fn write_receipt<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     receipt: &Receipt,
-) -> Result<(), LinehashError> {
-    output::write_json_success(ctx, receipt).map_err(LinehashError::from)
+) -> Result<(), HashlineError> {
+    output::write_json_success(ctx, receipt).map_err(HashlineError::from)
 }
 
-pub fn append_to_audit_log(receipt: &Receipt, log_path: &Path) -> Result<(), LinehashError> {
+pub fn append_to_audit_log(receipt: &Receipt, log_path: &Path) -> Result<(), HashlineError> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -124,7 +124,7 @@ pub fn append_to_audit_log(receipt: &Receipt, log_path: &Path) -> Result<(), Lin
 pub fn write_audit_warning<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     log_path: &Path,
-    error: &LinehashError,
+    error: &HashlineError,
 ) -> io::Result<()> {
     writeln!(
         ctx.stderr(),

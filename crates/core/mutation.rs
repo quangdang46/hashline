@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
 use crate::document::{Document, LineRecord};
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash;
 
-pub fn validate_single_line_content(content: &str) -> Result<(), LinehashError> {
+pub fn validate_single_line_content(content: &str) -> Result<(), HashlineError> {
     if content.contains(['\n', '\r']) {
-        Err(LinehashError::MultiLineContentUnsupported)
+        Err(HashlineError::MultiLineContentUnsupported)
     } else {
         Ok(())
     }
@@ -25,7 +25,7 @@ pub fn split_content_lines(content: &str) -> Vec<Box<str>> {
     }
 }
 
-pub fn replace_line(doc: &mut Document, index: usize, content: &str) -> Result<(), LinehashError> {
+pub fn replace_line(doc: &mut Document, index: usize, content: &str) -> Result<(), HashlineError> {
     validate_single_line_content(content)?;
     ensure_index(doc, index)?;
 
@@ -43,7 +43,7 @@ pub fn replace_range_with_line(
     start: usize,
     end: usize,
     content: &str,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     validate_single_line_content(content)?;
     replace_range(doc, start, end, content)
 }
@@ -53,7 +53,7 @@ pub fn replace_range(
     start: usize,
     end: usize,
     content: &str,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     ensure_range(doc, start, end)?;
     let replacement = split_content_lines(content);
 
@@ -70,7 +70,7 @@ pub fn replace_range(
     Ok(())
 }
 
-pub fn insert_line(doc: &mut Document, index: usize, content: &str) -> Result<(), LinehashError> {
+pub fn insert_line(doc: &mut Document, index: usize, content: &str) -> Result<(), HashlineError> {
     ensure_insert_index(doc, index)?;
 
     let lines = split_content_lines(content);
@@ -85,7 +85,7 @@ pub fn insert_line(doc: &mut Document, index: usize, content: &str) -> Result<()
     Ok(())
 }
 
-pub fn delete_line(doc: &mut Document, index: usize) -> Result<(), LinehashError> {
+pub fn delete_line(doc: &mut Document, index: usize) -> Result<(), HashlineError> {
     ensure_index(doc, index)?;
 
     let removed_len = doc.lines[index].content.len();
@@ -94,7 +94,7 @@ pub fn delete_line(doc: &mut Document, index: usize) -> Result<(), LinehashError
     Ok(())
 }
 
-pub fn delete_range(doc: &mut Document, start: usize, end: usize) -> Result<(), LinehashError> {
+pub fn delete_range(doc: &mut Document, start: usize, end: usize) -> Result<(), HashlineError> {
     ensure_range(doc, start, end)?;
 
     let removed_len: usize = doc.lines[start..=end]
@@ -106,12 +106,12 @@ pub fn delete_range(doc: &mut Document, start: usize, end: usize) -> Result<(), 
     Ok(())
 }
 
-pub fn swap_lines(doc: &mut Document, left: usize, right: usize) -> Result<(), LinehashError> {
+pub fn swap_lines(doc: &mut Document, left: usize, right: usize) -> Result<(), HashlineError> {
     ensure_index(doc, left)?;
     ensure_index(doc, right)?;
 
     if left == right {
-        return Err(LinehashError::PatchFailed {
+        return Err(HashlineError::PatchFailed {
             op_index: 0,
             reason: "source and target must resolve to different lines".to_owned(),
         });
@@ -126,12 +126,12 @@ pub fn move_line(
     source: usize,
     target: usize,
     place_before: bool,
-) -> Result<usize, LinehashError> {
+) -> Result<usize, HashlineError> {
     ensure_index(doc, source)?;
     ensure_index(doc, target)?;
 
     if source == target {
-        return Err(LinehashError::PatchFailed {
+        return Err(HashlineError::PatchFailed {
             op_index: 0,
             reason: "source and target must resolve to different lines".to_owned(),
         });
@@ -161,33 +161,33 @@ fn new_line_record(content: &str) -> LineRecord {
     }
 }
 
-fn ensure_index(doc: &Document, index: usize) -> Result<(), LinehashError> {
+fn ensure_index(doc: &Document, index: usize) -> Result<(), HashlineError> {
     if index < doc.lines.len() {
         Ok(())
     } else {
-        Err(LinehashError::MutationIndexOutOfBounds {
+        Err(HashlineError::MutationIndexOutOfBounds {
             index,
             len: doc.lines.len(),
         })
     }
 }
 
-fn ensure_insert_index(doc: &Document, index: usize) -> Result<(), LinehashError> {
+fn ensure_insert_index(doc: &Document, index: usize) -> Result<(), HashlineError> {
     if index <= doc.lines.len() {
         Ok(())
     } else {
-        Err(LinehashError::MutationIndexOutOfBounds {
+        Err(HashlineError::MutationIndexOutOfBounds {
             index,
             len: doc.lines.len(),
         })
     }
 }
 
-fn ensure_range(doc: &Document, start: usize, end: usize) -> Result<(), LinehashError> {
+fn ensure_range(doc: &Document, start: usize, end: usize) -> Result<(), HashlineError> {
     if start <= end && end < doc.lines.len() {
         Ok(())
     } else {
-        Err(LinehashError::InvalidMutationRange {
+        Err(HashlineError::InvalidMutationRange {
             start,
             end,
             len: doc.lines.len(),
@@ -202,7 +202,7 @@ mod tests {
         replace_range_with_line, split_content_lines, swap_lines, validate_single_line_content,
     };
     use crate::document::{Document, NewlineStyle};
-    use crate::error::LinehashError;
+    use crate::error::HashlineError;
     use std::path::Path;
 
     #[test]
@@ -361,7 +361,7 @@ mod tests {
         let error = swap_lines(&mut doc, 1, 1).unwrap_err();
         assert!(matches!(
             error,
-            LinehashError::PatchFailed { op_index: 0, .. }
+            HashlineError::PatchFailed { op_index: 0, .. }
         ));
     }
 
@@ -409,7 +409,7 @@ mod tests {
         let error = move_line(&mut doc, 1, 1, true).unwrap_err();
         assert!(matches!(
             error,
-            LinehashError::PatchFailed { op_index: 0, .. }
+            HashlineError::PatchFailed { op_index: 0, .. }
         ));
     }
 
@@ -429,7 +429,7 @@ mod tests {
         let mut doc = Document::from_str(Path::new("demo.txt"), "alpha\n").unwrap();
 
         let error = replace_line(&mut doc, 0, "beta\ngamma").unwrap_err();
-        assert!(matches!(error, LinehashError::MultiLineContentUnsupported));
+        assert!(matches!(error, HashlineError::MultiLineContentUnsupported));
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
         let error = delete_line(&mut doc, 1).unwrap_err();
         assert!(matches!(
             error,
-            LinehashError::MutationIndexOutOfBounds { index: 1, len: 1 }
+            HashlineError::MutationIndexOutOfBounds { index: 1, len: 1 }
         ));
     }
 
@@ -462,7 +462,7 @@ mod tests {
         let error = replace_range_with_line(&mut doc, 1, 2, "gamma").unwrap_err();
         assert!(matches!(
             error,
-            LinehashError::InvalidMutationRange {
+            HashlineError::InvalidMutationRange {
                 start: 1,
                 end: 2,
                 len: 2
@@ -473,6 +473,6 @@ mod tests {
     #[test]
     fn validate_single_line_content_rejects_carriage_return() {
         let error = validate_single_line_content("alpha\rbeta").unwrap_err();
-        assert!(matches!(error, LinehashError::MultiLineContentUnsupported));
+        assert!(matches!(error, HashlineError::MultiLineContentUnsupported));
     }
 }

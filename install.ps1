@@ -1,23 +1,23 @@
 ﻿<#
-install.ps1 — one-shot installer for linehash on Windows.
+install.ps1 — one-shot installer for hashline on Windows.
 
 Usage:
-  irm https://raw.githubusercontent.com/quangdang46/linehash/main/install.ps1 | iex
-  iwr https://raw.githubusercontent.com/quangdang46/linehash/main/install.ps1 -UseBasicParsing | iex
+  irm https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1 | iex
+  iwr https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1 -UseBasicParsing | iex
 
 Pinning a version or passing flags through `irm | iex` requires a wrapper:
-  & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/quangdang46/linehash/main/install.ps1'))) -Version v0.1.10 -EasyMode
+  & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1'))) -Version v0.1.10 -EasyMode
 
 Or download once and run directly:
-  irm https://raw.githubusercontent.com/quangdang46/linehash/main/install.ps1 -OutFile install.ps1
+  irm https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1 -OutFile install.ps1
   .\install.ps1 -Version v0.1.10 -EasyMode -Verify
 
 Flags:
   -Dest <path>          Install location. Default: $env:USERPROFILE\.local\bin
-  -System               Shortcut for -Dest "$env:ProgramFiles\linehash" (admin)
+  -System               Shortcut for -Dest "$env:ProgramFiles\hashline" (admin)
   -Version <vX.Y.Z>     Pin a specific release. Default: latest
   -EasyMode             Append the install dir to the *user* PATH if missing
-  -Verify               Run `linehash --version` after install
+  -Verify               Run `hashline --version` after install
   -NoMcp                Skip the auto-install of MCP provider configs
   -Quiet                Suppress info logs
   -Uninstall            Remove the binary and any easy-mode PATH entry
@@ -46,10 +46,10 @@ $ProgressPreference    = 'SilentlyContinue'
 # Configuration
 # ════════════════════════════════════════════════════════════════════════════
 
-$BinaryName = 'linehash'
+$BinaryName = 'hashline'
 $BinaryFile = "$BinaryName.exe"
 $Owner      = 'quangdang46'
-$Repo       = 'linehash'
+$Repo       = 'hashline'
 
 if ($System) { $Dest = "$env:ProgramFiles\$BinaryName" }
 
@@ -73,7 +73,7 @@ if ($Help) {
         $content = Get-Content -Raw $self
         if ($content -match '(?s)<#(.*?)#>') { Write-Host $matches[1].Trim() }
     } else {
-        Write-Host "linehash installer for Windows. Run with -Help on a downloaded copy for full text."
+        Write-Host "hashline installer for Windows. Run with -Help on a downloaded copy for full text."
     }
     exit 0
 }
@@ -238,12 +238,12 @@ function Install-BinaryAtomic {
 # MCP auto-install — mirrors install.sh: best-effort, never fatal.
 #
 # Detect installed MCP providers (Claude Code, Cursor, Codex, etc.) and
-# upsert a `linehash` server entry into each provider's config file.
-# Replicates the logic that used to live in `linehash install-mcp`.
+# upsert a `hashline` server entry into each provider's config file.
+# Replicates the logic that used to live in `hashline install-mcp`.
 # Failures here just print a hint; the binary install has already succeeded.
 # ════════════════════════════════════════════════════════════════════════════
 
-function Update-LinehashMcpConfig {
+function Update-HashlineMcpConfig {
     param(
         [string]$Path,
         [string]$ServersKey,
@@ -280,7 +280,7 @@ function Update-LinehashMcpConfig {
     $serversObj = $config.$ServersKey
 
     # Compare existing entry (if any) for unchanged/updated signal.
-    $existing = $serversObj.PSObject.Properties['linehash']
+    $existing = $serversObj.PSObject.Properties['hashline']
     if ($existing) {
         $existingJson = $existing.Value | ConvertTo-Json -Compress
         $entryJson    = $entry          | ConvertTo-Json -Compress
@@ -292,7 +292,7 @@ function Update-LinehashMcpConfig {
 
     # Upsert entry and write file (pretty JSON for human inspection).
     Add-Member -InputObject $serversObj -MemberType NoteProperty `
-        -Name 'linehash' -Value $entry -Force
+        -Name 'hashline' -Value $entry -Force
 
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path $dir)) {
@@ -303,10 +303,10 @@ function Update-LinehashMcpConfig {
     return @{ Status = $status; Path = $Path }
 }
 
-function Update-LinehashCodexConfig {
+function Update-HashlineCodexConfig {
     param([string]$Path, [string]$BinaryPath)
 
-    $marker = '[mcp_servers.linehash]'
+    $marker = '[mcp_servers.hashline]'
     $cmdEsc = $BinaryPath -replace '\\', '\\\\'
     $section = "$marker`r`ncommand = `"$cmdEsc`"`r`nargs = [`"mcp`"]"
 
@@ -327,7 +327,7 @@ function Update-LinehashCodexConfig {
         return @{ Status = 'installed'; Path = $Path }
     }
 
-    # Replace the existing [mcp_servers.linehash] block.
+    # Replace the existing [mcp_servers.hashline] block.
     $pattern = '(?ms)' + [regex]::Escape($marker) + '.*?(?=^\[|\z)'
     $updated = [regex]::Replace($existing, $pattern, "$section`r`n", 1)
     if ($updated -eq $existing) {
@@ -366,7 +366,7 @@ function Invoke-McpAutoInstall {
     foreach ($h in $jsonHosts) {
         if (-not (& $h.Cond)) { continue }
         try {
-            $r = Update-LinehashMcpConfig -Path $h.Path -ServersKey $h.Key -BinaryPath $bin
+            $r = Update-HashlineMcpConfig -Path $h.Path -ServersKey $h.Key -BinaryPath $bin
             if ($r) { $results += "- $($h.Name): $($r.Status) ($($r.Path))" }
         } catch {
             Write-Warn "$($h.Name): $($_.Exception.Message)"
@@ -376,7 +376,7 @@ function Invoke-McpAutoInstall {
     # TOML host: codex.
     if (Test-Path "$home\.codex" -PathType Container) {
         try {
-            $r = Update-LinehashCodexConfig -Path "$home\.codex\config.toml" -BinaryPath $bin
+            $r = Update-HashlineCodexConfig -Path "$home\.codex\config.toml" -BinaryPath $bin
             if ($r) { $results += "- codex: $($r.Status) ($($r.Path))" }
         } catch {
             Write-Warn "codex: $($_.Exception.Message)"
@@ -387,7 +387,7 @@ function Invoke-McpAutoInstall {
         Write-Warn "No supported MCP providers detected."
         return
     }
-    Write-Info "linehash MCP auto-install results:"
+    Write-Info "hashline MCP auto-install results:"
     foreach ($line in $results) { Write-Host $line }
 }
 
@@ -395,7 +395,7 @@ function Invoke-McpAutoInstall {
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 
-$tempDir = Join-Path $env:TEMP "linehash-install-$PID"
+$tempDir = Join-Path $env:TEMP "hashline-install-$PID"
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 try {
@@ -437,7 +437,7 @@ The version you asked for ($Version) does not include $archive. Either:
         Write-Warn "no checksum file at $archive.sha256 — skipping verification"
     }
 
-    # Extract. The archive root contains either linehash.exe directly or a
+    # Extract. The archive root contains either hashline.exe directly or a
     # single subdir holding it; Get-ChildItem -Recurse handles both layouts.
     $extractDir = Join-Path $tempDir 'extract'
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
@@ -470,7 +470,7 @@ The version you asked for ($Version) does not include $archive. Either:
     Write-Host "     $BinaryName read <file>"
     Write-Host ""
     Write-Host "   uninstall:"
-    Write-Host "     irm https://raw.githubusercontent.com/$Owner/$Repo/main/install.ps1 -OutFile `$env:TEMP\linehash-uninstall.ps1; & `$env:TEMP\linehash-uninstall.ps1 -Uninstall"
+    Write-Host "     irm https://raw.githubusercontent.com/$Owner/$Repo/main/install.ps1 -OutFile `$env:TEMP\hashline-uninstall.ps1; & `$env:TEMP\hashline-uninstall.ps1 -Uninstall"
     Write-Host ""
 }
 finally {

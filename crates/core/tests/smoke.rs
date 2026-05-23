@@ -4,14 +4,14 @@ use std::fs;
 use tempfile::TempDir;
 
 use support::{
-    assert_err_contains, do_edit, fixture_path, parse_json, run_linehash, run_linehash_in, tmpfile,
+    assert_err_contains, do_edit, fixture_path, parse_json, run_hashline, run_hashline_in, tmpfile,
 };
 #[cfg(unix)]
 use support::{chmod, mode};
 
 #[test]
 fn missing_file_read_reports_io_error() {
-    let (_stdout, stderr, code) = run_linehash(&["read", "/definitely/missing/file.txt"]);
+    let (_stdout, stderr, code) = run_hashline(&["read", "/definitely/missing/file.txt"]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("Error: I/O error:"));
@@ -21,7 +21,7 @@ fn missing_file_read_reports_io_error() {
 fn read_fixture_pretty_output_includes_anchors() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg]);
+    let (stdout, stderr, code) = run_hashline(&["read", &fixture_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -58,7 +58,7 @@ fn read_anchor_context_only_shows_neighborhood() {
     let full = parse_json(&["read", &fixture_arg, "--json"]);
     let anchor = format!("7:{}", full["lines"][6]["hash"].as_str().unwrap());
     let (stdout, stderr, code) =
-        run_linehash(&["read", &fixture_arg, "--anchor", &anchor, "--context", "1"]);
+        run_hashline(&["read", &fixture_arg, "--anchor", &anchor, "--context", "1"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -73,7 +73,7 @@ fn read_anchor_context_only_shows_neighborhood() {
 fn index_pretty_output_shows_hashes_only() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["index", &fixture_arg]);
+    let (stdout, stderr, code) = run_hashline(&["index", &fixture_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -105,11 +105,11 @@ fn invalid_anchor_still_errors_for_read_context() {
 fn read_binary_fixture_reports_binary_error_with_hint() {
     let fixture = fixture_path("binary.bin");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["read", &fixture_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["read", &fixture_arg]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("appears to be binary and cannot be edited safely"));
-    assert!(stderr.contains("linehash only supports UTF-8 text files"));
+    assert!(stderr.contains("hashline only supports UTF-8 text files"));
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn verify_all_valid_anchors_exits_zero() {
     let full = parse_json(&["read", &fixture_arg, "--json"]);
     let anchor_a = format!("1:{}", full["lines"][0]["hash"].as_str().unwrap());
     let anchor_b = format!("7:{}", full["lines"][6]["hash"].as_str().unwrap());
-    let (stdout, stderr, code) = run_linehash(&["verify", &fixture_arg, &anchor_a, &anchor_b]);
+    let (stdout, stderr, code) = run_hashline(&["verify", &fixture_arg, &anchor_a, &anchor_b]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -134,7 +134,7 @@ fn verify_mixed_results_exit_nonzero() {
     let full = parse_json(&["read", &fixture_arg, "--json"]);
     let valid = format!("1:{}", full["lines"][0]["hash"].as_str().unwrap());
     let stale = "7:ff";
-    let (stdout, stderr, code) = run_linehash(&["verify", &fixture_arg, &valid, stale]);
+    let (stdout, stderr, code) = run_hashline(&["verify", &fixture_arg, &valid, stale]);
 
     assert_eq!(code, 1);
     assert!(stderr.is_empty());
@@ -149,7 +149,7 @@ fn verify_json_output_is_structured() {
     let fixture_arg = fixture.to_string_lossy().into_owned();
     let full = parse_json(&["read", &fixture_arg, "--json"]);
     let valid = format!("1:{}", full["lines"][0]["hash"].as_str().unwrap());
-    let (stdout, stderr, code) = run_linehash(&["verify", &fixture_arg, &valid, "bogus", "--json"]);
+    let (stdout, stderr, code) = run_hashline(&["verify", &fixture_arg, &valid, "bogus", "--json"]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
     assert_eq!(code, 1);
@@ -172,7 +172,7 @@ fn verify_stale_anchor_with_unique_hash_succeeds_via_fuzzy_relocation() {
     let full = parse_json(&["read", &file_arg, "--json"]);
     let moved_hash = full["lines"][0]["hash"].as_str().unwrap();
     let stale = format!("2:{moved_hash}");
-    let (_stdout, stderr, code) = run_linehash(&["verify", &file_arg, &stale]);
+    let (_stdout, stderr, code) = run_hashline(&["verify", &file_arg, &stale]);
 
     // Unique hash at line 1, requested line 2 → relocates → verify passes.
     assert_eq!(code, 0, "expected success after fuzzy relocation, stderr: {stderr}");
@@ -194,14 +194,14 @@ fn stats_json_includes_workflow_guidance_fields() {
 fn doctor_pretty_recommends_next_commands() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["doctor", &fixture_arg]);
+    let (stdout, stderr, code) = run_hashline(&["doctor", &fixture_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
     assert!(stdout.contains("Recommended read mode:"));
     assert!(stdout.contains("Recommended workflow:"));
     assert!(stdout.contains("Next commands:"));
-    assert!(stdout.contains("linehash annotate"));
+    assert!(stdout.contains("hashline annotate"));
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn edit_single_line_preserves_newline_edges() {
             3 => "GAMMA",
             _ => unreachable!(),
         };
-        let (stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, replacement]);
+        let (stdout, stderr, code) = run_hashline(&["edit", &file_arg, &anchor, replacement]);
 
         assert_eq!(code, 0, "{name}: expected success, stderr: {stderr}");
         assert!(
@@ -348,7 +348,7 @@ fn edit_dry_run_reports_change_without_writing_file() {
     let file = tmpfile("alpha\nbeta\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, "gamma", "--dry-run"]);
+    let (stdout, stderr, code) = run_hashline(&["edit", &file_arg, &anchor, "gamma", "--dry-run"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -387,7 +387,7 @@ fn edit_expect_mtime_rejects_stale_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_mtime = parsed["mtime"].as_i64().unwrap() - 1;
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -408,7 +408,7 @@ fn edit_expect_inode_rejects_stale_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_inode = parsed["inode"].as_u64().unwrap() + 1;
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -428,7 +428,7 @@ fn edit_accepts_matching_mtime_and_inode_guards() {
     let file_arg = file.to_string_lossy().into_owned();
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&[
+    let (stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -457,7 +457,7 @@ fn edit_qualified_anchor_fuzzy_relocates_when_line_shifts() {
     // "beta" moves from line 2 to line 3 — anchor's hash is unique → relocate.
     fs::write(&file, "alpha\ngamma\nbeta\n").unwrap();
 
-    let (_stdout, _stderr, code) = run_linehash(&["edit", &file_arg, &stale_anchor, "BETA"]);
+    let (_stdout, _stderr, code) = run_hashline(&["edit", &file_arg, &stale_anchor, "BETA"]);
 
     assert_eq!(code, 0);
     // The edit landed on the relocated line (the one with the matching hash).
@@ -472,7 +472,7 @@ fn edit_ambiguous_hash_rejects_without_changing_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let ambiguous = parsed["lines"][0]["hash"].as_str().unwrap();
 
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, ambiguous, "updated"]);
+    let (_stdout, stderr, code) = run_hashline(&["edit", &file_arg, ambiguous, "updated"]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("matches 2 lines"));
@@ -488,7 +488,7 @@ fn insert_after_anchor_updates_file_contents() {
     let file = tmpfile("alpha\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 1);
-    let (stdout, stderr, code) = run_linehash(&["insert", &file_arg, &anchor, "beta"]);
+    let (stdout, stderr, code) = run_hashline(&["insert", &file_arg, &anchor, "beta"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -501,7 +501,7 @@ fn insert_before_anchor_updates_file_contents() {
     let file = tmpfile("alpha\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&["insert", &file_arg, &anchor, "beta", "--before"]);
+    let (stdout, stderr, code) = run_hashline(&["insert", &file_arg, &anchor, "beta", "--before"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -514,7 +514,7 @@ fn insert_dry_run_reports_change_without_writing_file() {
     let file = tmpfile("alpha\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 1);
-    let (stdout, stderr, code) = run_linehash(&["insert", &file_arg, &anchor, "beta", "--dry-run"]);
+    let (stdout, stderr, code) = run_hashline(&["insert", &file_arg, &anchor, "beta", "--dry-run"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -548,7 +548,7 @@ fn insert_expect_mtime_rejects_stale_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_mtime = parsed["mtime"].as_i64().unwrap() - 1;
     let anchor = anchor_from_file(&file_arg, 1);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "insert",
         &file_arg,
         &anchor,
@@ -569,7 +569,7 @@ fn insert_expect_inode_rejects_stale_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_inode = parsed["inode"].as_u64().unwrap() + 1;
     let anchor = anchor_from_file(&file_arg, 1);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "insert",
         &file_arg,
         &anchor,
@@ -589,7 +589,7 @@ fn insert_accepts_matching_mtime_and_inode_guards() {
     let file_arg = file.to_string_lossy().into_owned();
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let anchor = anchor_from_file(&file_arg, 1);
-    let (stdout, stderr, code) = run_linehash(&[
+    let (stdout, stderr, code) = run_hashline(&[
         "insert",
         &file_arg,
         &anchor,
@@ -611,7 +611,7 @@ fn insert_preserves_crlf_and_trailing_newline() {
     let file = tmpfile("alpha\r\ngamma\r\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 1);
-    let (_stdout, stderr, code) = run_linehash(&["insert", &file_arg, &anchor, "beta"]);
+    let (_stdout, stderr, code) = run_hashline(&["insert", &file_arg, &anchor, "beta"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -626,7 +626,7 @@ fn delete_removes_resolved_line() {
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&["delete", &file_arg, &anchor]);
+    let (stdout, stderr, code) = run_hashline(&["delete", &file_arg, &anchor]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -639,7 +639,7 @@ fn delete_dry_run_reports_change_without_writing_file() {
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&["delete", &file_arg, &anchor, "--dry-run"]);
+    let (stdout, stderr, code) = run_hashline(&["delete", &file_arg, &anchor, "--dry-run"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -673,7 +673,7 @@ fn delete_range_removes_resolved_lines() {
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
     let range = format!("{start}..{end}");
-    let (stdout, stderr, code) = run_linehash(&["delete", &file_arg, &range]);
+    let (stdout, stderr, code) = run_hashline(&["delete", &file_arg, &range]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -688,7 +688,7 @@ fn delete_range_dry_run_reports_change_without_writing_file() {
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
     let range = format!("{start}..{end}");
-    let (stdout, stderr, code) = run_linehash(&["delete", &file_arg, &range, "--dry-run"]);
+    let (stdout, stderr, code) = run_hashline(&["delete", &file_arg, &range, "--dry-run"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -709,7 +709,7 @@ fn delete_expect_mtime_rejects_stale_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_mtime = parsed["mtime"].as_i64().unwrap() - 1;
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "delete",
         &file_arg,
         &anchor,
@@ -729,7 +729,7 @@ fn delete_expect_inode_rejects_stale_file() {
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let stale_inode = parsed["inode"].as_u64().unwrap() + 1;
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "delete",
         &file_arg,
         &anchor,
@@ -748,7 +748,7 @@ fn delete_accepts_matching_mtime_and_inode_guards() {
     let file_arg = file.to_string_lossy().into_owned();
     let parsed = parse_json(&["read", &file_arg, "--json"]);
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&[
+    let (stdout, stderr, code) = run_hashline(&[
         "delete",
         &file_arg,
         &anchor,
@@ -769,7 +769,7 @@ fn delete_last_remaining_line_produces_empty_file() {
     let file = tmpfile("alpha");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 1);
-    let (_stdout, stderr, code) = run_linehash(&["delete", &file_arg, &anchor]);
+    let (_stdout, stderr, code) = run_hashline(&["delete", &file_arg, &anchor]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -781,7 +781,7 @@ fn edit_preserves_missing_trailing_newline() {
     let file = tmpfile("alpha\nbeta");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, "gamma"]);
+    let (_stdout, stderr, code) = run_hashline(&["edit", &file_arg, &anchor, "gamma"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -794,7 +794,7 @@ fn swap_exchanges_two_lines() {
     let file_arg = file.to_string_lossy().into_owned();
     let anchor_a = anchor_from_file(&file_arg, 2);
     let anchor_b = anchor_from_file(&file_arg, 4);
-    let (stdout, stderr, code) = run_linehash(&["swap", &file_arg, &anchor_a, &anchor_b]);
+    let (stdout, stderr, code) = run_hashline(&["swap", &file_arg, &anchor_a, &anchor_b]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -812,7 +812,7 @@ fn swap_dry_run_reports_change_without_writing_file() {
     let anchor_a = anchor_from_file(&file_arg, 1);
     let anchor_b = anchor_from_file(&file_arg, 3);
     let (stdout, stderr, code) =
-        run_linehash(&["swap", &file_arg, &anchor_a, &anchor_b, "--dry-run"]);
+        run_hashline(&["swap", &file_arg, &anchor_a, &anchor_b, "--dry-run"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -832,12 +832,12 @@ fn swap_round_trips_back_to_original_bytes() {
 
     let anchor_a = anchor_from_file(&file_arg, 2);
     let anchor_b = anchor_from_file(&file_arg, 4);
-    let (_stdout, stderr, code) = run_linehash(&["swap", &file_arg, &anchor_a, &anchor_b]);
+    let (_stdout, stderr, code) = run_hashline(&["swap", &file_arg, &anchor_a, &anchor_b]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
 
     let anchor_a = anchor_from_file(&file_arg, 2);
     let anchor_b = anchor_from_file(&file_arg, 4);
-    let (_stdout, stderr, code) = run_linehash(&["swap", &file_arg, &anchor_a, &anchor_b]);
+    let (_stdout, stderr, code) = run_hashline(&["swap", &file_arg, &anchor_a, &anchor_b]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
 
     assert_eq!(fs::read(&file).unwrap(), original);
@@ -848,7 +848,7 @@ fn swap_rejects_same_line() {
     let file = tmpfile("alpha\nbeta\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&["swap", &file_arg, &anchor, &anchor]);
+    let (_stdout, stderr, code) = run_hashline(&["swap", &file_arg, &anchor, &anchor]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("source and target must resolve to different lines"));
@@ -863,7 +863,7 @@ fn edit_preserves_existing_file_permissions() {
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
 
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, "gamma"]);
+    let (_stdout, stderr, code) = run_hashline(&["edit", &file_arg, &anchor, "gamma"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -879,7 +879,7 @@ fn delete_to_empty_file_preserves_existing_permissions() {
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 1);
 
-    let (_stdout, stderr, code) = run_linehash(&["delete", &file_arg, &anchor]);
+    let (_stdout, stderr, code) = run_hashline(&["delete", &file_arg, &anchor]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -899,7 +899,7 @@ fn patch_applies_edit_insert_and_delete_atomically() {
         file_arg, edit_anchor, insert_anchor, delete_anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -920,7 +920,7 @@ fn patch_dry_run_does_not_modify_file() {
         edit_anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg, "--dry-run"]);
+    let (stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg, "--dry-run"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -964,7 +964,7 @@ fn patch_respects_matching_guards() {
         edit_anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&[
+    let (stdout, stderr, code) = run_hashline(&[
         "patch",
         &file_arg,
         &patch_arg,
@@ -991,7 +991,7 @@ fn patch_rejects_stale_guard_without_writing() {
         edit_anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "patch",
         &file_arg,
         &patch_arg,
@@ -1010,7 +1010,7 @@ fn patch_rejects_bad_anchor_without_writing() {
     let file_arg = file.to_string_lossy().into_owned();
     let patch_file = tmpfile("{\"ops\":[{\"op\":\"delete\",\"anchor\":\"9:ff\"}]}");
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("patch failed at operation 1"));
@@ -1027,7 +1027,7 @@ fn patch_reports_failing_operation_index() {
         anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("patch failed at operation 2"));
@@ -1047,7 +1047,7 @@ fn patch_rejects_overlapping_operations_without_writing() {
         delete_anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("overlaps an earlier edit"));
@@ -1067,7 +1067,7 @@ fn patch_rejects_mismatched_embedded_file_without_writing() {
         anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("operation 0"));
@@ -1085,7 +1085,7 @@ fn patch_uses_original_snapshot_for_later_ops() {
         first_anchor, second_anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert_eq!(
@@ -1104,7 +1104,7 @@ fn patch_multiple_inserts_at_same_anchor_preserve_order() {
         anchor, anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert_eq!(
@@ -1123,7 +1123,7 @@ fn patch_preserves_crlf_and_trailing_newline() {
         anchor
     ));
     let patch_arg = patch_file.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&["patch", &file_arg, &patch_arg]);
+    let (_stdout, stderr, code) = run_hashline(&["patch", &file_arg, &patch_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\r\ngamma\r\n");
@@ -1134,7 +1134,7 @@ fn edit_receipt_prints_json_and_updates_file() {
     let file = tmpfile("alpha\nbeta\n");
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, "gamma", "--receipt"]);
+    let (stdout, stderr, code) = run_hashline(&["edit", &file_arg, &anchor, "gamma", "--receipt"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -1238,7 +1238,7 @@ fn audit_log_appends_on_success() {
     let file_arg = file.to_string_lossy().into_owned();
     let audit_arg = audit.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -1264,7 +1264,7 @@ fn audit_log_appends_two_entries_without_truncation() {
     let audit_arg = audit.to_string_lossy().into_owned();
 
     let first_anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &first_anchor,
@@ -1275,7 +1275,7 @@ fn audit_log_appends_two_entries_without_truncation() {
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
 
     let second_anchor = anchor_from_file(&file_arg, 2);
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &second_anchor,
@@ -1300,7 +1300,7 @@ fn failed_edit_does_not_append_audit_log() {
     let audit = tmpfile("");
     let file_arg = file.to_string_lossy().into_owned();
     let audit_arg = audit.to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         "2:ff",
@@ -1321,7 +1321,7 @@ fn dry_run_does_not_append_audit_log_or_emit_receipt() {
     let file_arg = file.to_string_lossy().into_owned();
     let audit_arg = audit.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 2);
-    let (stdout, stderr, code) = run_linehash(&[
+    let (stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -1346,7 +1346,7 @@ fn audit_log_append_failure_warns_but_edit_succeeds() {
     let anchor = anchor_from_file(&file_arg, 2);
     let audit_dir = tempfile::TempDir::new().unwrap();
     let audit_arg = audit_dir.path().to_string_lossy().into_owned();
-    let (_stdout, stderr, code) = run_linehash(&[
+    let (_stdout, stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -1367,7 +1367,7 @@ fn indent_command_updates_file_contents() {
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
     let (stdout, stderr, code) =
-        run_linehash(&["indent", &file_arg, &format!("{start}..{end}"), "+2"]);
+        run_hashline(&["indent", &file_arg, &format!("{start}..{end}"), "+2"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -1386,13 +1386,13 @@ fn indent_dedent_round_trips_back_to_original_bytes() {
     let end = anchor_from_file(&file_arg, 3);
 
     let (_stdout, stderr, code) =
-        run_linehash(&["indent", &file_arg, &format!("{start}..{end}"), "+2"]);
+        run_hashline(&["indent", &file_arg, &format!("{start}..{end}"), "+2"]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
 
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
     let (_stdout, stderr, code) =
-        run_linehash(&["indent", &file_arg, &format!("{start}..{end}"), "-2"]);
+        run_hashline(&["indent", &file_arg, &format!("{start}..{end}"), "-2"]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
@@ -1406,7 +1406,7 @@ fn indent_dry_run_reports_change_without_writing_file() {
     let file_arg = file.to_string_lossy().into_owned();
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
-    let (stdout, stderr, code) = run_linehash(&[
+    let (stdout, stderr, code) = run_hashline(&[
         "indent",
         &file_arg,
         &format!("{start}..{end}"),
@@ -1459,7 +1459,7 @@ fn indent_rejects_mixed_indentation_in_range() {
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
     let (_stdout, stderr, code) =
-        run_linehash(&["indent", &file_arg, &format!("{start}..{end}"), "+2"]);
+        run_hashline(&["indent", &file_arg, &format!("{start}..{end}"), "+2"]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("mixed indentation styles"));
@@ -1476,7 +1476,7 @@ fn indent_dedent_rejects_underflow_and_names_line() {
     let start = anchor_from_file(&file_arg, 2);
     let end = anchor_from_file(&file_arg, 3);
     let (_stdout, stderr, code) =
-        run_linehash(&["indent", &file_arg, &format!("{start}..{end}"), "-2"]);
+        run_hashline(&["indent", &file_arg, &format!("{start}..{end}"), "-2"]);
 
     assert_eq!(code, 1);
     assert!(stderr.contains("dedent by 2 would underflow line 2"));
@@ -1511,7 +1511,7 @@ fn indent_receipt_reports_modified_lines() {
 fn stats_pretty_output_reports_summary_fields() {
     let file = tmpfile("alpha\nbeta\ngamma\n");
     let file_arg = file.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["stats", &file_arg]);
+    let (stdout, stderr, code) = run_hashline(&["stats", &file_arg]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -1594,7 +1594,7 @@ fn edit_succeeds_with_bare_relative_path() {
     let anchor = format!("1:{}", parsed["lines"][0]["hash"].as_str().unwrap());
 
     let (stdout, stderr, code) =
-        run_linehash_in(dir.path(), &["edit", "sample.txt", &anchor, "beta"]);
+        run_hashline_in(dir.path(), &["edit", "sample.txt", &anchor, "beta"]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty(), "expected no stderr, got: {stderr:?}");
     assert!(
@@ -1616,7 +1616,7 @@ fn insert_succeeds_with_bare_relative_path() {
     let anchor = format!("1:{}", parsed["lines"][0]["hash"].as_str().unwrap());
 
     let (stdout, stderr, code) =
-        run_linehash_in(dir.path(), &["insert", "sample.txt", &anchor, "beta"]);
+        run_hashline_in(dir.path(), &["insert", "sample.txt", &anchor, "beta"]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty(), "expected no stderr, got: {stderr:?}");
     assert!(
@@ -1637,7 +1637,7 @@ fn delete_succeeds_with_bare_relative_path() {
     let parsed = parse_json(&["read", path.to_str().unwrap(), "--json"]);
     let anchor = format!("2:{}", parsed["lines"][1]["hash"].as_str().unwrap());
 
-    let (stdout, stderr, code) = run_linehash_in(dir.path(), &["delete", "sample.txt", &anchor]);
+    let (stdout, stderr, code) = run_hashline_in(dir.path(), &["delete", "sample.txt", &anchor]);
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty(), "expected no stderr, got: {stderr:?}");
     assert!(
@@ -1658,7 +1658,7 @@ fn read_json_default_is_compact() {
     // PR-C: --json without --pretty produces compact (single-line) JSON.
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg, "--json"]);
+    let (stdout, stderr, code) = run_hashline(&["read", &fixture_arg, "--json"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -1679,7 +1679,7 @@ fn read_json_default_is_compact() {
 fn read_json_pretty_flag_enables_pretty_printing() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg, "--json", "--pretty"]);
+    let (stdout, stderr, code) = run_hashline(&["read", &fixture_arg, "--json", "--pretty"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -1693,7 +1693,7 @@ fn read_json_pretty_flag_enables_pretty_printing() {
 fn index_json_default_is_compact() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, _stderr, code) = run_linehash(&["index", &fixture_arg, "--json"]);
+    let (stdout, _stderr, code) = run_hashline(&["index", &fixture_arg, "--json"]);
     assert_eq!(code, 0);
     let trimmed = stdout.trim_end_matches('\n');
     assert!(!trimmed.contains('\n'));
@@ -1703,7 +1703,7 @@ fn index_json_default_is_compact() {
 fn stats_json_default_is_compact() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, _stderr, code) = run_linehash(&["stats", &fixture_arg, "--json"]);
+    let (stdout, _stderr, code) = run_hashline(&["stats", &fixture_arg, "--json"]);
     assert_eq!(code, 0);
     let trimmed = stdout.trim_end_matches('\n');
     assert!(!trimmed.contains('\n'));
@@ -1725,7 +1725,7 @@ fn dry_run_json_does_not_dump_full_file() {
     let file = tmpfile(&content);
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_from_file(&file_arg, 100);
-    let (stdout, _stderr, code) = run_linehash(&[
+    let (stdout, _stderr, code) = run_hashline(&[
         "edit",
         &file_arg,
         &anchor,
@@ -1759,7 +1759,7 @@ fn dry_run_json_does_not_dump_full_file() {
 fn read_ndjson_emits_header_and_line_per_line() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, stderr, code) = run_linehash(&["read", &fixture_arg, "--ndjson"]);
+    let (stdout, stderr, code) = run_hashline(&["read", &fixture_arg, "--ndjson"]);
 
     assert_eq!(code, 0, "expected success, got stderr: {stderr}");
     assert!(stderr.is_empty());
@@ -1783,7 +1783,7 @@ fn read_ndjson_emits_header_and_line_per_line() {
 fn index_ndjson_emits_header_and_anchors_only() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
-    let (stdout, _stderr, code) = run_linehash(&["index", &fixture_arg, "--ndjson"]);
+    let (stdout, _stderr, code) = run_hashline(&["index", &fixture_arg, "--ndjson"]);
 
     assert_eq!(code, 0);
     let lines: Vec<&str> = stdout.lines().collect();
@@ -1805,7 +1805,7 @@ fn ndjson_takes_precedence_over_json() {
     let fixture = fixture_path("simple_lf.js");
     let fixture_arg = fixture.to_string_lossy().into_owned();
     let (stdout, _stderr, code) =
-        run_linehash(&["read", &fixture_arg, "--json", "--pretty", "--ndjson"]);
+        run_hashline(&["read", &fixture_arg, "--json", "--pretty", "--ndjson"]);
 
     assert_eq!(code, 0);
     // First line should parse as a JSON object (NDJSON header), not a fragment
@@ -1822,7 +1822,7 @@ fn edit_interpret_escapes_expands_newline_into_multiple_lines() {
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_for_line(content, 2);
     let (stdout, stderr, code) =
-        run_linehash(&["edit", "-e", &file_arg, &anchor, "BETA-1\\nBETA-2"]);
+        run_hashline(&["edit", "-e", &file_arg, &anchor, "BETA-1\\nBETA-2"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
         stdout.starts_with("Edited line") || stdout.starts_with("Edited lines"),
@@ -1840,7 +1840,7 @@ fn edit_without_interpret_escapes_leaves_backslash_n_literal() {
     let file = tmpfile(content);
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_for_line(content, 2);
-    let (_stdout, stderr, code) = run_linehash(&["edit", &file_arg, &anchor, "BETA-1\\nBETA-2"]);
+    let (_stdout, stderr, code) = run_hashline(&["edit", &file_arg, &anchor, "BETA-1\\nBETA-2"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(
         fs::read_to_string(&file).unwrap(),
@@ -1855,7 +1855,7 @@ fn insert_interpret_escapes_expands_newline() {
     let file_arg = file.to_string_lossy().into_owned();
     let anchor = anchor_for_line(content, 1);
     let (_stdout, stderr, code) =
-        run_linehash(&["insert", "--interpret-escapes", &file_arg, &anchor, "x\\ny"]);
+        run_hashline(&["insert", "--interpret-escapes", &file_arg, &anchor, "x\\ny"]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nx\ny\nbeta\n");
 }

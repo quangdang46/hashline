@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::cli::Commands;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -97,18 +97,18 @@ pub fn assess_command(command: &Commands) -> Option<RiskAssessment> {
     }
 }
 
-pub fn blocked_assessment(error: &LinehashError) -> Option<RiskAssessment> {
+pub fn blocked_assessment(error: &HashlineError) -> Option<RiskAssessment> {
     match error {
-        LinehashError::AmbiguousHash { .. } => Some(RiskAssessment {
+        HashlineError::AmbiguousHash { .. } => Some(RiskAssessment {
             operation: "anchor_resolution",
             level: RiskLevel::Blocked,
             summary: "The mutation was blocked because the target hash is ambiguous.".into(),
             reasons: vec![RiskReason {
                 code: "ambiguous_anchor",
-                message: "Use a line-qualified anchor so linehash does not guess which matching line you meant.".into(),
+                message: "Use a line-qualified anchor so hashline does not guess which matching line you meant.".into(),
             }],
         }),
-        LinehashError::HashNotFound { .. } => Some(RiskAssessment {
+        HashlineError::HashNotFound { .. } => Some(RiskAssessment {
             operation: "anchor_resolution",
             level: RiskLevel::Blocked,
             summary: "The mutation was blocked because the target hash no longer exists in the file.".into(),
@@ -117,21 +117,21 @@ pub fn blocked_assessment(error: &LinehashError) -> Option<RiskAssessment> {
                 message: "Re-read the file to collect a fresh anchor before retrying the destructive operation.".into(),
             }],
         }),
-        LinehashError::StaleAnchor { .. } | LinehashError::StaleFile { .. } => {
+        HashlineError::StaleAnchor { .. } | HashlineError::StaleFile { .. } => {
             Some(RiskAssessment {
                 operation: "anchor_resolution",
                 level: RiskLevel::Blocked,
                 summary: "The mutation was blocked because the file changed since the last anchor read.".into(),
                 reasons: vec![RiskReason {
                     code: "stale_state",
-                    message: "Linehash refuses to apply destructive changes when the file state has drifted.".into(),
+                    message: "Hashline refuses to apply destructive changes when the file state has drifted.".into(),
                 }],
             })
         }
-        LinehashError::PatchFailed { reason, .. } => Some(RiskAssessment {
+        HashlineError::PatchFailed { reason, .. } => Some(RiskAssessment {
             operation: "patch",
             level: RiskLevel::Blocked,
-            summary: "The patch transaction was blocked before linehash could safely apply every operation.".into(),
+            summary: "The patch transaction was blocked before hashline could safely apply every operation.".into(),
             reasons: vec![RiskReason {
                 code: "patch_validation",
                 message: format!("Patch validation failed: {reason}"),
@@ -145,7 +145,7 @@ pub fn blocked_assessment(error: &LinehashError) -> Option<RiskAssessment> {
 mod tests {
     use super::{RiskLevel, assess_command, blocked_assessment};
     use crate::cli::{Commands, DeleteCmd, MoveCmd, MoveDirection, PatchCmd};
-    use crate::error::LinehashError;
+    use crate::error::HashlineError;
     use std::path::PathBuf;
 
     #[test]
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn stale_anchor_maps_to_blocked_risk() {
-        let assessment = blocked_assessment(&LinehashError::StaleAnchor {
+        let assessment = blocked_assessment(&HashlineError::StaleAnchor {
             anchor: "2:aa".into(),
             line: 2,
             expected: "aa".into(),

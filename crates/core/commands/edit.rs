@@ -9,7 +9,7 @@ use crate::commands::common::{
 };
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::mutation::{replace_line, replace_range, split_content_lines};
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
@@ -17,7 +17,7 @@ use crate::receipt::{self, ChangeKind, LineChange};
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: EditCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let mut doc = Document::load(&cmd.file)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
@@ -114,7 +114,7 @@ pub fn run<W: Write, E: Write>(
 
         if let Some(log_path) = &cmd.audit_log {
             if let Err(error) = receipt::append_to_audit_log(&receipt, log_path) {
-                receipt::write_audit_warning(ctx, log_path, &error).map_err(LinehashError::from)?;
+                receipt::write_audit_warning(ctx, log_path, &error).map_err(HashlineError::from)?;
             }
         }
 
@@ -127,7 +127,7 @@ pub fn run<W: Write, E: Write>(
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
         OutputMode::Pretty => {
             output::write_success_line(ctx, &summary.success_message())
-                .map_err(LinehashError::from)?;
+                .map_err(HashlineError::from)?;
             // Phase 2.3: emit fresh anchors of the changed region so the
             // agent doesn't need a follow-up `read` call to verify the edit
             // or anchor a subsequent edit.
@@ -143,7 +143,7 @@ pub fn run<W: Write, E: Write>(
                 }
             };
             output::write_post_edit_snippet(ctx, &doc, first, last)
-                .map_err(LinehashError::from)?;
+                .map_err(HashlineError::from)?;
             Ok(())
         }
     }
@@ -155,7 +155,7 @@ fn atomic_write_single_line_edit(
     line_index: usize,
     before: &str,
     after: &str,
-) -> Result<bool, LinehashError> {
+) -> Result<bool, HashlineError> {
     let file = std::fs::File::open(path)?;
     let mmap = unsafe { Mmap::map(&file) }?;
     let Some((start, end)) = original_line_byte_span(doc, line_index, before.len()) else {
@@ -229,7 +229,7 @@ fn write_dry_run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     file: &std::path::Path,
     summary: &EditSummary,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => {
             // PR-D: emit a compact mutation receipt instead of dumping the
@@ -271,7 +271,7 @@ fn write_dry_run<W: Write, E: Write>(
                     }
                 }
             }
-            output::write_success_line(ctx, "No file was written.").map_err(LinehashError::from)
+            output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)
         }
     }
 }

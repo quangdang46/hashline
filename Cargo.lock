@@ -517,6 +517,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashline"
+version = "0.1.10"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "clap",
+ "criterion",
+ "crossbeam",
+ "ignore",
+ "insta",
+ "itoa",
+ "lru",
+ "memchr",
+ "memmap2",
+ "notify",
+ "once_cell",
+ "parking_lot",
+ "predicates",
+ "rayon",
+ "regex",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "walkdir",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -687,39 +720,6 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.7.3",
-]
-
-[[package]]
-name = "linehash"
-version = "0.1.10"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "criterion",
- "crossbeam",
- "ignore",
- "insta",
- "itoa",
- "lru",
- "memchr",
- "memmap2",
- "notify",
- "once_cell",
- "parking_lot",
- "predicates",
- "rayon",
- "regex",
- "rustc-hash",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "toml",
- "tracing",
- "tracing-subscriber",
- "walkdir",
- "xxhash-rust",
 ]
 
 [[package]]

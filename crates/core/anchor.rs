@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::document::{Document, ShortHashIndex, format_short_hash};
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash::ShortHash;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,11 +23,11 @@ pub struct ResolvedLine {
     pub short_hash: String,
 }
 
-pub fn parse_anchor(s: &str) -> Result<Anchor, LinehashError> {
+pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
     let normalized = normalize_anchor_input(s);
 
     if normalized.contains("..") {
-        return Err(LinehashError::InvalidAnchor {
+        return Err(HashlineError::InvalidAnchor {
             anchor: s.trim().to_owned(),
         });
     }
@@ -42,29 +42,29 @@ pub fn parse_anchor(s: &str) -> Result<Anchor, LinehashError> {
     Ok(Anchor::Hash { short })
 }
 
-pub fn parse_range(s: &str) -> Result<RangeAnchor, LinehashError> {
+pub fn parse_range(s: &str) -> Result<RangeAnchor, HashlineError> {
     let normalized = normalize_anchor_input(s);
     let (left, right) = normalized
         .split_once("..")
-        .ok_or_else(|| LinehashError::InvalidRange {
+        .ok_or_else(|| HashlineError::InvalidRange {
             range: s.trim().to_owned(),
         })?;
 
     if right.contains("..") {
-        return Err(LinehashError::InvalidRange {
+        return Err(HashlineError::InvalidRange {
             range: s.trim().to_owned(),
         });
     }
 
-    let start = parse_anchor(left).map_err(|_| LinehashError::InvalidRange {
+    let start = parse_anchor(left).map_err(|_| HashlineError::InvalidRange {
         range: s.trim().to_owned(),
     })?;
-    let end = parse_anchor(right).map_err(|_| LinehashError::InvalidRange {
+    let end = parse_anchor(right).map_err(|_| HashlineError::InvalidRange {
         range: s.trim().to_owned(),
     })?;
 
     if !matches!(start, Anchor::LineHash { .. }) || !matches!(end, Anchor::LineHash { .. }) {
-        return Err(LinehashError::InvalidRange {
+        return Err(HashlineError::InvalidRange {
             range: s.trim().to_owned(),
         });
     }
@@ -87,7 +87,7 @@ pub fn resolve(
     anchor: &Anchor,
     doc: &Document,
     index: &ShortHashIndex,
-) -> Result<ResolvedLine, LinehashError> {
+) -> Result<ResolvedLine, HashlineError> {
     match anchor {
         Anchor::Hash { short } => resolve_unqualified(*short, doc, index),
         Anchor::LineHash { line, short } => resolve_qualified(*line, *short, doc, Some(index)),
@@ -97,7 +97,7 @@ pub fn resolve(
 pub fn resolve_without_index(
     anchor: &Anchor,
     doc: &Document,
-) -> Result<ResolvedLine, LinehashError> {
+) -> Result<ResolvedLine, HashlineError> {
     match anchor {
         Anchor::Hash { short } => {
             let index = doc.build_index();
@@ -105,7 +105,7 @@ pub fn resolve_without_index(
         }
         Anchor::LineHash { line, short } => match resolve_qualified(*line, *short, doc, None) {
             Ok(resolved) => Ok(resolved),
-            Err(LinehashError::StaleAnchor { .. }) => {
+            Err(HashlineError::StaleAnchor { .. }) => {
                 let index = doc.build_index();
                 resolve_qualified(*line, *short, doc, Some(&index))
             }
@@ -118,12 +118,12 @@ pub fn resolve_range(
     range: &RangeAnchor,
     doc: &Document,
     index: &ShortHashIndex,
-) -> Result<(ResolvedLine, ResolvedLine), LinehashError> {
+) -> Result<(ResolvedLine, ResolvedLine), HashlineError> {
     let start = resolve(&range.start, doc, index)?;
     let end = resolve(&range.end, doc, index)?;
 
     if start.index > end.index {
-        return Err(LinehashError::InvalidRange {
+        return Err(HashlineError::InvalidRange {
             range: format!(
                 "{}..{}",
                 display_anchor(&range.start),
@@ -139,7 +139,7 @@ pub fn resolve_all(
     anchors: &[Anchor],
     doc: &Document,
     index: &ShortHashIndex,
-) -> Vec<Result<ResolvedLine, LinehashError>> {
+) -> Vec<Result<ResolvedLine, HashlineError>> {
     anchors
         .iter()
         .map(|anchor| resolve(anchor, doc, index))
@@ -150,11 +150,11 @@ fn resolve_unqualified(
     short: ShortHash,
     doc: &Document,
     index: &ShortHashIndex,
-) -> Result<ResolvedLine, LinehashError> {
+) -> Result<ResolvedLine, HashlineError> {
     let path = doc.path.display().to_string();
     let rendered_short = format_short_hash(short);
     match index[short as usize].as_slice() {
-        [] => Err(LinehashError::HashNotFound {
+        [] => Err(HashlineError::HashNotFound {
             hash: rendered_short,
             path,
         }),
@@ -163,7 +163,7 @@ fn resolve_unqualified(
             line_no: resolved_index + 1,
             short_hash: rendered_short,
         }),
-        matches => Err(LinehashError::AmbiguousHash {
+        matches => Err(HashlineError::AmbiguousHash {
             hash: rendered_short,
             count: matches.len(),
             lines: matches
@@ -181,19 +181,19 @@ fn resolve_qualified(
     short: ShortHash,
     doc: &Document,
     index: Option<&ShortHashIndex>,
-) -> Result<ResolvedLine, LinehashError> {
+) -> Result<ResolvedLine, HashlineError> {
     let path = doc.path.display().to_string();
     let rendered_short = format_short_hash(short);
     let idx = line
         .checked_sub(1)
-        .ok_or_else(|| LinehashError::InvalidAnchor {
+        .ok_or_else(|| HashlineError::InvalidAnchor {
             anchor: format!("{line}:{rendered_short}"),
         })?;
 
     let actual = doc
         .lines
         .get(idx)
-        .ok_or_else(|| LinehashError::InvalidAnchor {
+        .ok_or_else(|| HashlineError::InvalidAnchor {
             anchor: format!("{line}:{rendered_short}"),
         })?;
 
@@ -299,7 +299,7 @@ fn resolve_qualified(
         }
     }
     let relocated_suffix = context;
-    Err(LinehashError::StaleAnchor {
+    Err(HashlineError::StaleAnchor {
         anchor: format!("{line}:{rendered_short}").into_boxed_str(),
         line,
         expected: rendered_short.into_boxed_str(),
@@ -313,27 +313,27 @@ fn normalize_anchor_input(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 
-fn parse_short_hash(short: &str, original: &str) -> Result<ShortHash, LinehashError> {
+fn parse_short_hash(short: &str, original: &str) -> Result<ShortHash, HashlineError> {
     if short.len() == 2 && short.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        u8::from_str_radix(short, 16).map_err(|_| LinehashError::InvalidAnchor {
+        u8::from_str_radix(short, 16).map_err(|_| HashlineError::InvalidAnchor {
             anchor: original.trim().to_owned(),
         })
     } else {
-        Err(LinehashError::InvalidAnchor {
+        Err(HashlineError::InvalidAnchor {
             anchor: original.trim().to_owned(),
         })
     }
 }
 
-fn parse_line_number(raw: &str, original: &str) -> Result<usize, LinehashError> {
+fn parse_line_number(raw: &str, original: &str) -> Result<usize, HashlineError> {
     let line = raw
         .parse::<usize>()
-        .map_err(|_| LinehashError::InvalidAnchor {
+        .map_err(|_| HashlineError::InvalidAnchor {
             anchor: original.trim().to_owned(),
         })?;
 
     if line == 0 {
-        return Err(LinehashError::InvalidAnchor {
+        return Err(HashlineError::InvalidAnchor {
             anchor: original.trim().to_owned(),
         });
     }
@@ -355,7 +355,7 @@ mod tests {
         resolve_all, resolve_range,
     };
     use crate::document::Document;
-    use crate::error::LinehashError;
+    use crate::error::HashlineError;
     use crate::hash::format_short_hash;
     use anyhow::{Result, anyhow};
     use std::fmt::Display;
@@ -440,7 +440,7 @@ mod tests {
     fn test_parse_invalid_hash_length_3_chars_fails() {
         assert!(matches!(
             parse_anchor("abc"),
-            Err(LinehashError::InvalidAnchor { .. })
+            Err(HashlineError::InvalidAnchor { .. })
         ));
     }
 
@@ -448,7 +448,7 @@ mod tests {
     fn test_parse_invalid_hash_non_hex_fails() {
         assert!(matches!(
             parse_anchor("zz"),
-            Err(LinehashError::InvalidAnchor { .. })
+            Err(HashlineError::InvalidAnchor { .. })
         ));
     }
 
@@ -456,7 +456,7 @@ mod tests {
     fn test_parse_line_number_zero_fails() {
         assert!(matches!(
             parse_anchor("0:aa"),
-            Err(LinehashError::InvalidAnchor { .. })
+            Err(HashlineError::InvalidAnchor { .. })
         ));
     }
 
@@ -464,7 +464,7 @@ mod tests {
     fn test_parse_line_number_negative_fails() {
         assert!(matches!(
             parse_anchor("-1:aa"),
-            Err(LinehashError::InvalidAnchor { .. })
+            Err(HashlineError::InvalidAnchor { .. })
         ));
     }
 
@@ -474,7 +474,7 @@ mod tests {
         let index = doc.build_index();
         let error = must_err(resolve(&Anchor::Hash { short: 0xff }, &doc, &index))?;
 
-        assert!(matches!(error, LinehashError::HashNotFound { .. }));
+        assert!(matches!(error, HashlineError::HashNotFound { .. }));
         Ok(())
     }
 
@@ -502,7 +502,7 @@ mod tests {
         let short = doc.lines[0].short_hash;
         let error = must_err(resolve(&Anchor::Hash { short }, &doc, &index))?;
 
-        assert!(matches!(error, LinehashError::AmbiguousHash { .. }));
+        assert!(matches!(error, HashlineError::AmbiguousHash { .. }));
         Ok(())
     }
 
@@ -536,7 +536,7 @@ mod tests {
             &index,
         ))?;
 
-        assert!(matches!(error, LinehashError::StaleAnchor { .. }));
+        assert!(matches!(error, HashlineError::StaleAnchor { .. }));
         Ok(())
     }
 
@@ -601,7 +601,7 @@ mod tests {
             &doc,
             &index,
         ))?;
-        assert!(matches!(error, LinehashError::StaleAnchor { .. }));
+        assert!(matches!(error, HashlineError::StaleAnchor { .. }));
         Ok(())
     }
 
@@ -618,7 +618,7 @@ mod tests {
             &index,
         ))?;
 
-        assert!(matches!(error, LinehashError::InvalidAnchor { .. }));
+        assert!(matches!(error, HashlineError::InvalidAnchor { .. }));
         Ok(())
     }
 
@@ -645,7 +645,7 @@ mod tests {
         let range = must(parse_range(&format!("{start}..{end}")))?;
 
         let error = must_err(resolve_range(&range, &doc, &index))?;
-        assert!(matches!(error, LinehashError::InvalidRange { .. }));
+        assert!(matches!(error, HashlineError::InvalidRange { .. }));
         Ok(())
     }
 
@@ -666,11 +666,11 @@ mod tests {
 
         assert!(matches!(
             results[0],
-            Err(LinehashError::AmbiguousHash { .. })
+            Err(HashlineError::AmbiguousHash { .. })
         ));
         assert!(matches!(
             results[1],
-            Err(LinehashError::HashNotFound { .. })
+            Err(HashlineError::HashNotFound { .. })
         ));
         Ok(())
     }

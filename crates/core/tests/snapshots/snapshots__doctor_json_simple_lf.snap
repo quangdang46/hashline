@@ -7,11 +7,11 @@ expression: parsed
   "file": "<fixture>",
   "line_count": 9,
   "next_commands": [
-    "linehash read <fixture>",
-    "linehash annotate <fixture> <text>",
-    "linehash grep <fixture> <pattern>",
-    "linehash find-block <fixture> <line:hash>",
-    "linehash patch <fixture> <patch.json> --dry-run"
+    "hashline read <fixture>",
+    "hashline annotate <fixture> <text>",
+    "hashline grep <fixture> <pattern>",
+    "hashline find-block <fixture> <line:hash>",
+    "hashline patch <fixture> <patch.json> --dry-run"
   ],
   "recommended_anchor_mode": "qualified",
   "recommended_read_mode": "read",

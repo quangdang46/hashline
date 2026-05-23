@@ -5,7 +5,7 @@ use std::path::Path;
 use tempfile::NamedTempFile;
 
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 
 /// Interpret a small set of C-style escape sequences in `input`.
 ///
@@ -43,7 +43,7 @@ pub fn check_guard(
     doc: &Document,
     expect_mtime: Option<i64>,
     expect_inode: Option<u64>,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     let Some(meta) = &doc.file_meta else {
         return Ok(());
     };
@@ -51,7 +51,7 @@ pub fn check_guard(
     if expect_mtime.is_some_and(|expected| expected != meta.mtime_secs)
         || expect_inode.is_some_and(|expected| expected != meta.inode)
     {
-        return Err(LinehashError::StaleFile {
+        return Err(HashlineError::StaleFile {
             path: doc.path.display().to_string(),
         });
     }
@@ -59,15 +59,15 @@ pub fn check_guard(
     Ok(())
 }
 
-pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), LinehashError> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }
 
-pub fn atomic_write_document(path: &Path, doc: &Document) -> Result<(), LinehashError> {
+pub fn atomic_write_document(path: &Path, doc: &Document) -> Result<(), HashlineError> {
     atomic_write_with(path, |file| doc.write_to(file))
 }
 
-pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), LinehashError>
+pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), HashlineError>
 where
     F: FnOnce(&mut fs::File) -> io::Result<()>,
 {
@@ -101,7 +101,7 @@ where
 }
 
 #[cfg(windows)]
-fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), LinehashError> {
+fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), HashlineError> {
     use std::io::Read;
     use std::io::Seek;
     use std::thread;
@@ -133,7 +133,7 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Lineha
                             Err(_) if write_attempt < 4 => {
                                 thread::sleep(Duration::from_millis(50));
                             }
-                            Err(e) => return Err(LinehashError::Io(e)),
+                            Err(e) => return Err(HashlineError::Io(e)),
                         }
                     }
                     unreachable!()
@@ -145,19 +145,19 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Lineha
 }
 
 #[cfg(not(windows))]
-fn persist_with_retry(temp: NamedTempFile, path: &Path) -> Result<(), LinehashError> {
+fn persist_with_retry(temp: NamedTempFile, path: &Path) -> Result<(), HashlineError> {
     temp.persist(path)
-        .map_err(|error| LinehashError::Io(error.error))?;
+        .map_err(|error| HashlineError::Io(error.error))?;
     Ok(())
 }
 
 #[cfg(unix)]
-fn sync_parent_directory(path: &Path) -> Result<(), LinehashError> {
+fn sync_parent_directory(path: &Path) -> Result<(), HashlineError> {
     fs::File::open(path)?.sync_all()?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn sync_parent_directory(_path: &Path) -> Result<(), LinehashError> {
+fn sync_parent_directory(_path: &Path) -> Result<(), HashlineError> {
     Ok(())
 }

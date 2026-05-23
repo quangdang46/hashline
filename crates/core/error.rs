@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum LinehashError {
+pub enum HashlineError {
     #[error("{command} is not implemented yet")]
     NotImplemented { command: &'static str },
 
@@ -141,100 +141,100 @@ pub enum LinehashError {
     },
 }
 
-impl LinehashError {
+impl HashlineError {
     pub fn hint(&self) -> Option<&'static str> {
         match self {
-            LinehashError::NotImplemented { .. } => {
+            HashlineError::NotImplemented { .. } => {
                 Some("continue with the next planned implementation bead")
             }
-            LinehashError::InvalidUtf8 { .. } => {
-                Some("convert the file to UTF-8 before using linehash")
+            HashlineError::InvalidUtf8 { .. } => {
+                Some("convert the file to UTF-8 before using hashline")
             }
-            LinehashError::BinaryFile { .. } => Some("linehash only supports UTF-8 text files"),
-            LinehashError::MixedNewlines { .. } => {
+            HashlineError::BinaryFile { .. } => Some("hashline only supports UTF-8 text files"),
+            HashlineError::MixedNewlines { .. } => {
                 Some("run `dos2unix <file>` or `unix2dos <file>` to normalize first")
             }
-            LinehashError::InvalidAnchor { .. } => {
+            HashlineError::InvalidAnchor { .. } => {
                 Some("use a 2-char hash like 'f1' or a qualified anchor like '2:f1'")
             }
-            LinehashError::InvalidRange { .. } => Some("use a range like '2:f1..4:9c'"),
-            LinehashError::HashNotFound { .. } => {
-                Some("run `linehash read <file>` to get current hashes")
+            HashlineError::InvalidRange { .. } => Some("use a range like '2:f1..4:9c'"),
+            HashlineError::HashNotFound { .. } => {
+                Some("run `hashline read <file>` to get current hashes")
             }
-            LinehashError::AmbiguousHash { .. } => {
+            HashlineError::AmbiguousHash { .. } => {
                 Some("use a line-qualified hash like '2:f1' to disambiguate")
             }
-            LinehashError::StaleAnchor { .. } => Some(
-                "re-read the file with `linehash read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor",
+            HashlineError::StaleAnchor { .. } => Some(
+                "re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor",
             ),
-            LinehashError::StaleFile { .. } => Some(
+            HashlineError::StaleFile { .. } => Some(
                 "re-read the file metadata and retry with fresh --expect-mtime/--expect-inode values",
             ),
-            LinehashError::InvalidIndentAmount { .. } => {
+            HashlineError::InvalidIndentAmount { .. } => {
                 Some("use an amount like '+4' to indent or '-2' to dedent")
             }
-            LinehashError::InvalidIndentRange { .. } => {
+            HashlineError::InvalidIndentRange { .. } => {
                 Some("use a range where the start anchor resolves before the end anchor")
             }
-            LinehashError::IndentUnderflow { .. } => {
+            HashlineError::IndentUnderflow { .. } => {
                 Some("reduce the dedent amount or narrow the target range")
             }
-            LinehashError::MixedIndentation { .. } => {
+            HashlineError::MixedIndentation { .. } => {
                 Some("normalize indentation in the target range before retrying the command")
             }
-            LinehashError::UnbalancedBlock { .. } => Some(
+            HashlineError::UnbalancedBlock { .. } => Some(
                 "check the surrounding braces or block delimiters and retry on a well-formed file",
             ),
-            LinehashError::AmbiguousBlockLanguage { .. } => {
+            HashlineError::AmbiguousBlockLanguage { .. } => {
                 Some("rename the file to a supported extension or pass an explicit range instead")
             }
-            LinehashError::InvalidPattern { .. } => Some("fix the pattern syntax and try again"),
-            LinehashError::OutlineInputTooLarge { .. } => Some(
-                "use `linehash read --anchor` for a focused view, or run on a smaller file region",
+            HashlineError::InvalidPattern { .. } => Some("fix the pattern syntax and try again"),
+            HashlineError::OutlineInputTooLarge { .. } => Some(
+                "use `hashline read --anchor` for a focused view, or run on a smaller file region",
             ),
-            LinehashError::DiffHunkMismatch { .. } => {
+            HashlineError::DiffHunkMismatch { .. } => {
                 Some("re-generate the diff from the current file and retry the command")
             }
-            LinehashError::DiffFileMismatch { .. } => {
+            HashlineError::DiffFileMismatch { .. } => {
                 Some("check that the diff target matches the file argument and retry")
             }
-            LinehashError::ExplodeTargetExists { .. } => {
+            HashlineError::ExplodeTargetExists { .. } => {
                 Some("remove the output directory first or rerun with --force")
             }
-            LinehashError::ImplodeMissingMeta { .. } => Some(
-                "run `linehash explode <file> --out <dir>` first or restore the missing .meta.json",
+            HashlineError::ImplodeMissingMeta { .. } => Some(
+                "run `hashline explode <file> --out <dir>` first or restore the missing .meta.json",
             ),
-            LinehashError::ImplodeInvalidMeta { .. } => {
-                Some("recreate the exploded directory from a fresh `linehash explode` and retry")
+            HashlineError::ImplodeInvalidMeta { .. } => {
+                Some("recreate the exploded directory from a fresh `hashline explode` and retry")
             }
-            LinehashError::ImplodeDirtyDirectory { .. } => {
+            HashlineError::ImplodeDirtyDirectory { .. } => {
                 Some("remove unexpected files from the explode directory and retry the implode")
             }
-            LinehashError::ImplodeMissingLineFile { .. } => Some(
+            HashlineError::ImplodeMissingLineFile { .. } => Some(
                 "restore the missing line file or regenerate the explode directory before retrying",
             ),
-            LinehashError::InvalidWorkflowPack { .. } => Some(
-                "fix the markdown frontmatter fields in `.linehash/skills` and retry `linehash workflows`",
+            HashlineError::InvalidWorkflowPack { .. } => Some(
+                "fix the markdown frontmatter fields in `.hashline/skills` and retry `hashline workflows`",
             ),
-            LinehashError::PatchFailed { .. } => {
+            HashlineError::PatchFailed { .. } => {
                 Some("fix the failing patch operation and retry the transaction")
             }
-            LinehashError::MultiLineContentUnsupported => Some(
-                "use a range anchor like '2:f1..4:9c' for multi-line replacement, or use `linehash patch` for mixed edits",
+            HashlineError::MultiLineContentUnsupported => Some(
+                "use a range anchor like '2:f1..4:9c' for multi-line replacement, or use `hashline patch` for mixed edits",
             ),
-            LinehashError::MutationIndexOutOfBounds { .. } => {
+            HashlineError::MutationIndexOutOfBounds { .. } => {
                 Some("re-check the resolved line number against the current document and retry")
             }
-            LinehashError::InvalidMutationRange { .. } => {
+            HashlineError::InvalidMutationRange { .. } => {
                 Some("use a valid in-bounds range where the start line is not after the end line")
             }
-            LinehashError::ServerError { .. } => {
-                Some("ensure the daemon is running with `linehash daemon`")
+            HashlineError::ServerError { .. } => {
+                Some("ensure the daemon is running with `hashline daemon`")
             }
-            LinehashError::Io(_) => {
+            HashlineError::Io(_) => {
                 Some("check the file path and permissions, then retry the command")
             }
-            LinehashError::Json(_) => {
+            HashlineError::Json(_) => {
                 Some("fix the JSON input or output handling and retry the command")
             }
         }
@@ -242,88 +242,88 @@ impl LinehashError {
 
     pub fn command(&self) -> Option<&'static str> {
         match self {
-            LinehashError::NotImplemented { command } => Some(command),
-            LinehashError::Io(_)
-            | LinehashError::Json(_)
-            | LinehashError::InvalidUtf8 { .. }
-            | LinehashError::BinaryFile { .. }
-            | LinehashError::MixedNewlines { .. }
-            | LinehashError::InvalidAnchor { .. }
-            | LinehashError::InvalidRange { .. }
-            | LinehashError::HashNotFound { .. }
-            | LinehashError::AmbiguousHash { .. }
-            | LinehashError::StaleAnchor { .. }
-            | LinehashError::StaleFile { .. }
-            | LinehashError::InvalidIndentAmount { .. }
-            | LinehashError::InvalidIndentRange { .. }
-            | LinehashError::IndentUnderflow { .. }
-            | LinehashError::MixedIndentation { .. }
-            | LinehashError::UnbalancedBlock { .. }
-            | LinehashError::AmbiguousBlockLanguage { .. }
-            | LinehashError::InvalidPattern { .. }
-            | LinehashError::OutlineInputTooLarge { .. }
-            | LinehashError::DiffHunkMismatch { .. }
-            | LinehashError::DiffFileMismatch { .. }
-            | LinehashError::ExplodeTargetExists { .. }
-            | LinehashError::ImplodeMissingMeta { .. }
-            | LinehashError::ImplodeInvalidMeta { .. }
-            | LinehashError::ImplodeDirtyDirectory { .. }
-            | LinehashError::ImplodeMissingLineFile { .. }
-            | LinehashError::InvalidWorkflowPack { .. }
-            | LinehashError::PatchFailed { .. }
-            | LinehashError::MultiLineContentUnsupported
-            | LinehashError::MutationIndexOutOfBounds { .. }
-            | LinehashError::InvalidMutationRange { .. }
-            | LinehashError::ServerError { .. } => None,
+            HashlineError::NotImplemented { command } => Some(command),
+            HashlineError::Io(_)
+            | HashlineError::Json(_)
+            | HashlineError::InvalidUtf8 { .. }
+            | HashlineError::BinaryFile { .. }
+            | HashlineError::MixedNewlines { .. }
+            | HashlineError::InvalidAnchor { .. }
+            | HashlineError::InvalidRange { .. }
+            | HashlineError::HashNotFound { .. }
+            | HashlineError::AmbiguousHash { .. }
+            | HashlineError::StaleAnchor { .. }
+            | HashlineError::StaleFile { .. }
+            | HashlineError::InvalidIndentAmount { .. }
+            | HashlineError::InvalidIndentRange { .. }
+            | HashlineError::IndentUnderflow { .. }
+            | HashlineError::MixedIndentation { .. }
+            | HashlineError::UnbalancedBlock { .. }
+            | HashlineError::AmbiguousBlockLanguage { .. }
+            | HashlineError::InvalidPattern { .. }
+            | HashlineError::OutlineInputTooLarge { .. }
+            | HashlineError::DiffHunkMismatch { .. }
+            | HashlineError::DiffFileMismatch { .. }
+            | HashlineError::ExplodeTargetExists { .. }
+            | HashlineError::ImplodeMissingMeta { .. }
+            | HashlineError::ImplodeInvalidMeta { .. }
+            | HashlineError::ImplodeDirtyDirectory { .. }
+            | HashlineError::ImplodeMissingLineFile { .. }
+            | HashlineError::InvalidWorkflowPack { .. }
+            | HashlineError::PatchFailed { .. }
+            | HashlineError::MultiLineContentUnsupported
+            | HashlineError::MutationIndexOutOfBounds { .. }
+            | HashlineError::InvalidMutationRange { .. }
+            | HashlineError::ServerError { .. } => None,
         }
     }
 
     pub fn log_as_error(&self) -> bool {
         matches!(
             self,
-            LinehashError::NotImplemented { .. }
-                | LinehashError::MutationIndexOutOfBounds { .. }
-                | LinehashError::InvalidMutationRange { .. }
+            HashlineError::NotImplemented { .. }
+                | HashlineError::MutationIndexOutOfBounds { .. }
+                | HashlineError::InvalidMutationRange { .. }
         )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::LinehashError;
+    use super::HashlineError;
 
     #[test]
     fn every_error_variant_has_a_recovery_hint() {
         let errors = vec![
-            LinehashError::NotImplemented { command: "patch" },
-            LinehashError::Io(std::io::Error::other("boom")),
-            LinehashError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
-            LinehashError::InvalidUtf8 {
+            HashlineError::NotImplemented { command: "patch" },
+            HashlineError::Io(std::io::Error::other("boom")),
+            HashlineError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
+            HashlineError::InvalidUtf8 {
                 path: "demo.txt".into(),
             },
-            LinehashError::BinaryFile {
+            HashlineError::BinaryFile {
                 path: "demo.bin".into(),
             },
-            LinehashError::MixedNewlines {
+            HashlineError::MixedNewlines {
                 path: "demo.txt".into(),
             },
-            LinehashError::InvalidAnchor {
+            HashlineError::InvalidAnchor {
                 anchor: "bogus".into(),
             },
-            LinehashError::InvalidRange {
+            HashlineError::InvalidRange {
                 range: "1:aa..0:bb".into(),
             },
-            LinehashError::HashNotFound {
+            HashlineError::HashNotFound {
                 hash: "ff".into(),
                 path: "demo.txt".into(),
             },
-            LinehashError::AmbiguousHash {
+            HashlineError::AmbiguousHash {
                 hash: "aa".into(),
                 count: 2,
                 lines: "1, 3".into(),
                 path: "demo.txt".into(),
             },
-            LinehashError::StaleAnchor {
+            HashlineError::StaleAnchor {
                 anchor: "2:aa".into(),
                 line: 2,
                 expected: "aa".into(),
@@ -331,61 +331,61 @@ mod tests {
                 path: "demo.txt".into(),
                 relocated_suffix: "".into(),
             },
-            LinehashError::StaleFile {
+            HashlineError::StaleFile {
                 path: "demo.txt".into(),
             },
-            LinehashError::InvalidIndentAmount {
+            HashlineError::InvalidIndentAmount {
                 amount: "sideways".into(),
             },
-            LinehashError::InvalidIndentRange { start: 4, end: 2 },
-            LinehashError::IndentUnderflow {
+            HashlineError::InvalidIndentRange { start: 4, end: 2 },
+            HashlineError::IndentUnderflow {
                 line_no: 2,
                 amount: 2,
                 available: 1,
                 kind: "spaces",
             },
-            LinehashError::MixedIndentation { line_no: 3 },
-            LinehashError::UnbalancedBlock { line_no: 8 },
-            LinehashError::AmbiguousBlockLanguage { line_no: 5 },
-            LinehashError::InvalidPattern {
+            HashlineError::MixedIndentation { line_no: 3 },
+            HashlineError::UnbalancedBlock { line_no: 8 },
+            HashlineError::AmbiguousBlockLanguage { line_no: 5 },
+            HashlineError::InvalidPattern {
                 pattern: "(".into(),
                 message: "unclosed group".into(),
             },
-            LinehashError::DiffHunkMismatch { hunk_line: 12 },
-            LinehashError::DiffFileMismatch {
+            HashlineError::DiffHunkMismatch { hunk_line: 12 },
+            HashlineError::DiffFileMismatch {
                 diff_file: "a/demo.txt".into(),
                 given_file: "demo.txt".into(),
             },
-            LinehashError::ExplodeTargetExists {
+            HashlineError::ExplodeTargetExists {
                 path: "out/dir".into(),
             },
-            LinehashError::ImplodeMissingMeta {
+            HashlineError::ImplodeMissingMeta {
                 path: "out/dir".into(),
             },
-            LinehashError::ImplodeInvalidMeta {
+            HashlineError::ImplodeInvalidMeta {
                 path: "out/dir/.meta.json".into(),
                 reason: "missing newline".into(),
             },
-            LinehashError::ImplodeDirtyDirectory {
+            HashlineError::ImplodeDirtyDirectory {
                 path: "out/dir".into(),
                 entry: "notes.txt".into(),
             },
-            LinehashError::ImplodeMissingLineFile {
+            HashlineError::ImplodeMissingLineFile {
                 path: "out/dir".into(),
                 line_no: 2,
             },
-            LinehashError::PatchFailed {
+            HashlineError::PatchFailed {
                 op_index: 1,
                 reason: "bad op".into(),
             },
-            LinehashError::MultiLineContentUnsupported,
-            LinehashError::MutationIndexOutOfBounds { index: 5, len: 2 },
-            LinehashError::InvalidMutationRange {
+            HashlineError::MultiLineContentUnsupported,
+            HashlineError::MutationIndexOutOfBounds { index: 5, len: 2 },
+            HashlineError::InvalidMutationRange {
                 start: 3,
                 end: 1,
                 len: 2,
             },
-            LinehashError::ServerError {
+            HashlineError::ServerError {
                 message: "connection refused".into(),
                 kind: "not_running".into(),
             },
@@ -401,13 +401,13 @@ mod tests {
 
     #[test]
     fn not_implemented_reports_command_name() {
-        let error = LinehashError::NotImplemented { command: "patch" };
+        let error = HashlineError::NotImplemented { command: "patch" };
         assert_eq!(error.command(), Some("patch"));
     }
 
     #[test]
     fn stale_anchor_hint_mentions_relocated_lines() {
-        let error = LinehashError::StaleAnchor {
+        let error = HashlineError::StaleAnchor {
             anchor: "2:aa".into(),
             line: 2,
             expected: "aa".into(),
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(
             error.hint(),
             Some(
-                "re-read the file with `linehash read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor"
+                "re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor"
             )
         );
         assert!(error.to_string().contains("hash still exists at line(s) 9"));
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn recoverable_validation_errors_do_not_log_as_error() {
-        let error = LinehashError::StaleAnchor {
+        let error = HashlineError::StaleAnchor {
             anchor: "2:aa".into(),
             line: 2,
             expected: "aa".into(),
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn invariant_failures_log_as_error() {
         assert!(
-            LinehashError::InvalidMutationRange {
+            HashlineError::InvalidMutationRange {
                 start: 3,
                 end: 1,
                 len: 2,
@@ -454,12 +454,12 @@ mod tests {
     #[test]
     fn implode_errors_have_recovery_hints() {
         assert!(
-            LinehashError::ImplodeMissingMeta { path: "out".into() }
+            HashlineError::ImplodeMissingMeta { path: "out".into() }
                 .hint()
                 .is_some()
         );
         assert!(
-            LinehashError::ImplodeInvalidMeta {
+            HashlineError::ImplodeInvalidMeta {
                 path: "out/.meta.json".into(),
                 reason: "bad".into()
             }
@@ -467,7 +467,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            LinehashError::ImplodeDirtyDirectory {
+            HashlineError::ImplodeDirtyDirectory {
                 path: "out".into(),
                 entry: "notes.txt".into()
             }
@@ -475,7 +475,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            LinehashError::ImplodeMissingLineFile {
+            HashlineError::ImplodeMissingLineFile {
                 path: "out".into(),
                 line_no: 2
             }

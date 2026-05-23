@@ -3,7 +3,7 @@ use std::io::Write;
 use crate::cli::ReadCmd;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash_cache::discover_sidecar_root;
 use crate::orchestration::{read_payload, resolve_read_anchors};
 use crate::output;
@@ -11,7 +11,7 @@ use crate::output;
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: ReadCmd,
-) -> Result<(), LinehashError> {
+) -> Result<(), HashlineError> {
     // Pure read: use the hash sidecar so repeated reads of the same file
     // skip the per-line hashing pass on cache hit. First read writes the
     // sidecar in a background thread, so cold-cache latency is unchanged.

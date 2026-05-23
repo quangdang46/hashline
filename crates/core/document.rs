@@ -10,7 +10,7 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::error::LinehashError;
+use crate::error::HashlineError;
 use crate::hash::{self, ShortHash};
 
 /// Files with at least this many lines hash their lines in parallel
@@ -126,7 +126,7 @@ pub struct SearchDocument {
 }
 
 impl SearchDocument {
-    pub fn load(path: &Path) -> Result<SearchDocument, LinehashError> {
+    pub fn load(path: &Path) -> Result<SearchDocument, HashlineError> {
         let file = fs::File::open(path)?;
         let metadata = file.metadata()?;
         let path_string = path.display().to_string();
@@ -145,11 +145,11 @@ impl SearchDocument {
         let bytes = &mmap[..];
 
         if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
-            return Err(LinehashError::BinaryFile { path: path_string });
+            return Err(HashlineError::BinaryFile { path: path_string });
         }
 
         let content_owned = std::str::from_utf8(bytes)
-            .map_err(|_| LinehashError::InvalidUtf8 {
+            .map_err(|_| HashlineError::InvalidUtf8 {
                 path: path_string.clone(),
             })?
             .to_owned();
@@ -236,7 +236,7 @@ impl SearchDocument {
 }
 
 impl Document {
-    pub fn load(path: &Path) -> Result<Document, LinehashError> {
+    pub fn load(path: &Path) -> Result<Document, HashlineError> {
         let file = fs::File::open(path)?;
         let metadata = file.metadata()?;
         let path_string = path.display().to_string();
@@ -257,10 +257,10 @@ impl Document {
         let bytes = &mmap[..];
 
         if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
-            return Err(LinehashError::BinaryFile { path: path_string });
+            return Err(HashlineError::BinaryFile { path: path_string });
         }
 
-        let content = std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+        let content = std::str::from_utf8(bytes).map_err(|_| HashlineError::InvalidUtf8 {
             path: path_string.clone(),
         })?;
 
@@ -279,7 +279,7 @@ impl Document {
         })
     }
 
-    pub fn from_str(path: &Path, content: &str) -> Result<Document, LinehashError> {
+    pub fn from_str(path: &Path, content: &str) -> Result<Document, HashlineError> {
         let (newline, trailing_newline, lines, content_len) =
             parse_document_content(content, path)?;
 
@@ -294,7 +294,7 @@ impl Document {
         })
     }
 
-    pub fn load_with_hash_cache(path: &Path, root: &Path) -> Result<Document, LinehashError> {
+    pub fn load_with_hash_cache(path: &Path, root: &Path) -> Result<Document, HashlineError> {
         use crate::hash_cache::HashSidecar;
 
         let file = fs::File::open(path)?;
@@ -317,7 +317,7 @@ impl Document {
         let bytes = &mmap[..];
 
         if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
-            return Err(LinehashError::BinaryFile { path: path_string });
+            return Err(HashlineError::BinaryFile { path: path_string });
         }
 
         let content_hash = crate::hash::full_hash_bytes(bytes);
@@ -335,7 +335,7 @@ impl Document {
                     && sidecar.content_hash == content_hash
                 {
                     let content =
-                        std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+                        std::str::from_utf8(bytes).map_err(|_| HashlineError::InvalidUtf8 {
                             path: path_string.clone(),
                         })?;
                     // Single-pass build: collects newline style, trailing
@@ -362,7 +362,7 @@ impl Document {
             }
         }
 
-        let content = std::str::from_utf8(bytes).map_err(|_| LinehashError::InvalidUtf8 {
+        let content = std::str::from_utf8(bytes).map_err(|_| HashlineError::InvalidUtf8 {
             path: path_string.clone(),
         })?;
         let file_meta = Some(FileMeta::from_metadata(&metadata)?);
@@ -509,7 +509,7 @@ impl Document {
 }
 
 impl FileMeta {
-    fn from_metadata(metadata: &fs::Metadata) -> Result<Self, LinehashError> {
+    fn from_metadata(metadata: &fs::Metadata) -> Result<Self, HashlineError> {
         let modified = metadata.modified()?;
         let duration = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
         let (change_secs, change_nanos) = change_time_from_metadata(metadata);
@@ -525,7 +525,7 @@ impl FileMeta {
     }
 }
 
-pub fn read_file_meta(path: &Path) -> Result<FileMeta, LinehashError> {
+pub fn read_file_meta(path: &Path) -> Result<FileMeta, HashlineError> {
     let metadata = fs::metadata(path)?;
     FileMeta::from_metadata(&metadata)
 }
@@ -537,7 +537,7 @@ pub fn format_short_hash(short_hash: ShortHash) -> String {
 fn parse_document_content(
     content: &str,
     path: &Path,
-) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), HashlineError> {
     if content.is_empty() {
         return Ok((NewlineStyle::Lf, false, Vec::new(), 0));
     }
@@ -579,7 +579,7 @@ fn parse_document_content_sequential(
     path: &Path,
     trailing_newline: bool,
     estimated_line_count: usize,
-) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), HashlineError> {
     let mut saw_lf = false;
     let mut saw_crlf = false;
     let mut saw_bare_cr = false;
@@ -619,7 +619,7 @@ fn parse_document_content_sequential(
     }
 
     if saw_bare_cr || (saw_crlf && saw_lf) {
-        return Err(LinehashError::MixedNewlines {
+        return Err(HashlineError::MixedNewlines {
             path: path.display().to_string(),
         });
     }
@@ -639,7 +639,7 @@ fn parse_document_content_parallel(
     path: &Path,
     trailing_newline: bool,
     estimated_line_count: usize,
-) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), LinehashError> {
+) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), HashlineError> {
     // Phase 1: scan for line boundaries with memchr — fast, single pass,
     // no hashing here. We record (start, end) byte ranges so the hashing
     // phase can run in parallel without mutating shared state.
@@ -678,7 +678,7 @@ fn parse_document_content_parallel(
     }
 
     if saw_bare_cr || (saw_crlf && saw_lf) {
-        return Err(LinehashError::MixedNewlines {
+        return Err(HashlineError::MixedNewlines {
             path: path.display().to_string(),
         });
     }
@@ -1118,7 +1118,7 @@ fn change_time_from_metadata(_metadata: &fs::Metadata) -> (i64, u32) {
 #[cfg(test)]
 mod tests {
     use super::{Document, FileStats, NewlineStyle, format_short_hash};
-    use crate::error::LinehashError;
+    use crate::error::HashlineError;
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -1190,7 +1190,7 @@ mod tests {
         let (_dir, path) = write_temp_file("alpha\r\nbeta\n");
         let error = Document::load(&path).unwrap_err();
 
-        assert!(matches!(error, LinehashError::MixedNewlines { .. }));
+        assert!(matches!(error, HashlineError::MixedNewlines { .. }));
     }
 
     #[test]
@@ -1200,7 +1200,7 @@ mod tests {
         fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
 
         let error = Document::load(&path).unwrap_err();
-        assert!(matches!(error, LinehashError::InvalidUtf8 { .. }));
+        assert!(matches!(error, HashlineError::InvalidUtf8 { .. }));
     }
 
     #[test]
@@ -1210,7 +1210,7 @@ mod tests {
         fs::write(&path, b"abc\0def").unwrap();
 
         let error = Document::load(&path).unwrap_err();
-        assert!(matches!(error, LinehashError::BinaryFile { .. }));
+        assert!(matches!(error, HashlineError::BinaryFile { .. }));
     }
 
     #[test]
@@ -1221,17 +1221,17 @@ mod tests {
         fs::write(&path, bytes).unwrap();
 
         let error = Document::load(&path).unwrap_err();
-        assert!(matches!(error, LinehashError::BinaryFile { .. }));
+        assert!(matches!(error, HashlineError::BinaryFile { .. }));
     }
 
     #[test]
     fn test_binary_file_hint_matches_product_wording() {
-        let error = LinehashError::BinaryFile {
+        let error = HashlineError::BinaryFile {
             path: "demo.bin".to_owned(),
         };
         assert_eq!(
             error.hint(),
-            Some("linehash only supports UTF-8 text files")
+            Some("hashline only supports UTF-8 text files")
         );
     }
 

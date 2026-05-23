@@ -2,9 +2,9 @@
 set -euo pipefail
 umask 022
 
-BINARY_NAME="linehash"
+BINARY_NAME="hashline"
 OWNER="quangdang46"
-REPO="linehash"
+REPO="hashline"
 DEST="${DEST:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 QUIET=0
@@ -49,7 +49,7 @@ sed_in_place() {
 
 usage() {
     cat <<'EOF'
-Install linehash from GitHub releases.
+Install hashline from GitHub releases.
 
 Usage:
   install.sh [options]

@@ -1,9 +1,8 @@
 ---
 source: crates/core/tests/snapshots.rs
-assertion_line: 157
 expression: normalized
 ---
 Error: hash '61' matches 2 lines in <fixture> (lines 1, 3)
 Risk: blocked - The mutation was blocked because the target hash is ambiguous.
-Reason: Use a line-qualified anchor so linehash does not guess which matching line you meant.
+Reason: Use a line-qualified anchor so hashline does not guess which matching line you meant.
 Hint: use a line-qualified hash like '2:f1' to disambiguate
