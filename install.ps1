@@ -1,4 +1,4 @@
-﻿<#
+<#
 install.ps1 — one-shot installer for hashline on Windows.
 
 Usage:
