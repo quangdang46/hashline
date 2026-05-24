@@ -1,5 +1,5 @@
 <#
-install.ps1 — one-shot installer for hashline on Windows.
+install.ps1 -- one-shot installer for hashline on Windows.
 
 Usage:
   irm https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1 | iex
@@ -42,9 +42,19 @@ $ErrorActionPreference = 'Stop'
 # slow large downloads from a couple of seconds to several minutes.
 $ProgressPreference    = 'SilentlyContinue'
 
-# ════════════════════════════════════════════════════════════════════════════
+# Force TLS 1.2 (and 1.3 if available). Windows PowerShell 5.1 still defaults
+# to TLS 1.0/1.1 for .NET HTTP clients, which GitHub releases / api.github.com
+# now reject -- surfaces as "The request was aborted: The connection was
+# closed unexpectedly." The -bor preserves any newer protocols the runtime
+# already has enabled.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
+
+# ============================================================================
 # Configuration
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 $BinaryName = 'hashline'
 $BinaryFile = "$BinaryName.exe"
@@ -53,18 +63,18 @@ $Repo       = 'hashline'
 
 if ($System) { $Dest = "$env:ProgramFiles\$BinaryName" }
 
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # Logging
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Write-Info { param($msg) if (-not $Quiet) { Write-Host "==> [$BinaryName] $msg" -ForegroundColor Cyan } }
 function Write-Warn { param($msg) Write-Host "!! [$BinaryName] $msg" -ForegroundColor Yellow }
 function Write-Ok   { param($msg) if (-not $Quiet) { Write-Host "[OK] $msg" -ForegroundColor Green } }
 function Die        { param($msg) Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 
-# ════════════════════════════════════════════════════════════════════════════
-# Help — print the doc-comment block at the top of this file.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# Help -- print the doc-comment block at the top of this file.
+# ============================================================================
 
 if ($Help) {
     $self = $MyInvocation.MyCommand.Path
@@ -78,10 +88,10 @@ if ($Help) {
     exit 0
 }
 
-# ════════════════════════════════════════════════════════════════════════════
-# Platform detection — Windows only. Anything else: bail with a hint at the
+# ============================================================================
+# Platform detection -- Windows only. Anything else: bail with a hint at the
 # Unix installer instead of silently producing a broken binary.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Get-Platform {
     if ($IsLinux -or $IsMacOS) {
@@ -99,9 +109,9 @@ function Get-Platform {
     }
 }
 
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # Uninstall
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Invoke-Uninstall {
     $target = Join-Path $Dest $BinaryFile
@@ -127,12 +137,12 @@ function Invoke-Uninstall {
 
 if ($Uninstall) { Invoke-Uninstall }
 
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # Version resolution
 #
 # Primary path is the GitHub releases API. If that's rate-limited or blocked,
 # fall back to a HEAD against /releases/latest and parse the redirect target.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Resolve-Version {
     if ($script:Version) {
@@ -165,9 +175,9 @@ function Resolve-Version {
     Die "could not resolve latest version. Pass -Version vX.Y.Z to pin."
 }
 
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # Download with retry
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Get-FileWithRetry {
     param(
@@ -193,9 +203,9 @@ function Get-FileWithRetry {
     return $false
 }
 
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # PATH update (opt-in via -EasyMode)
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Update-UserPath {
     $current = $env:Path -split ';'
@@ -217,10 +227,10 @@ function Update-UserPath {
     }
 }
 
-# ════════════════════════════════════════════════════════════════════════════
-# Atomic install — write to a sibling temp file in the destination dir, then
+# ============================================================================
+# Atomic install -- write to a sibling temp file in the destination dir, then
 # rename. Keeps an in-use binary intact if the move fails.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Install-BinaryAtomic {
     param([string] $SourcePath, [string] $DestPath)
@@ -234,14 +244,14 @@ function Install-BinaryAtomic {
     }
 }
 
-# ════════════════════════════════════════════════════════════════════════════
-# MCP auto-install — mirrors install.sh: best-effort, never fatal.
+# ============================================================================
+# MCP auto-install -- mirrors install.sh: best-effort, never fatal.
 #
 # Detect installed MCP providers (Claude Code, Cursor, Codex, etc.) and
 # upsert a `hashline` server entry into each provider's config file.
 # Replicates the logic that used to live in `hashline install-mcp`.
 # Failures here just print a hint; the binary install has already succeeded.
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 function Update-HashlineMcpConfig {
     param(
@@ -347,20 +357,23 @@ function Invoke-McpAutoInstall {
         if ($resolved) { $bin = $resolved }
     } catch { } # Fall back to the joined path if resolution fails.
 
-    $home = $env:USERPROFILE
-    $cwd  = (Get-Location).Path
-    $results = @()
+    # NB: do NOT use $home -- it's a read-only automatic variable in
+    # PowerShell and assignment fails with
+    #   "Cannot overwrite variable HOME because it is read-only or constant."
+    $userHome = $env:USERPROFILE
+    $cwd      = (Get-Location).Path
+    $results  = @()
 
     # JSON-based hosts. Each entry: name, path, servers_key, condition.
     $jsonHosts = @(
-        @{ Name = 'claude-code'; Path = "$home\.claude.json";                       Key = 'mcpServers';     Cond = { Test-Path "$home\.claude.json" } },
-        @{ Name = 'cursor';      Path = "$home\.cursor\mcp.json";                   Key = 'mcpServers';     Cond = { Test-Path "$home\.cursor" -PathType Container } },
-        @{ Name = 'windsurf';    Path = "$home\.codeium\windsurf\mcp_config.json";  Key = 'mcpServers';     Cond = { Test-Path "$home\.codeium\windsurf" -PathType Container } },
-        @{ Name = 'vscode';      Path = "$cwd\.vscode\mcp.json";                    Key = 'servers';        Cond = { Test-Path "$cwd\.vscode" -PathType Container } },
-        @{ Name = 'gemini';      Path = "$home\.gemini\settings.json";              Key = 'mcpServers';     Cond = { Test-Path "$home\.gemini" -PathType Container } },
-        @{ Name = 'opencode';    Path = "$home\.opencode.json";                     Key = 'mcpServers';     Cond = { Test-Path "$home\.opencode.json" } },
-        @{ Name = 'amp';         Path = "$home\.config\amp\settings.json";          Key = 'amp.mcpServers'; Cond = { Test-Path "$home\.config\amp" -PathType Container } },
-        @{ Name = 'droid';       Path = "$home\.factory\mcp.json";                  Key = 'mcpServers';     Cond = { Test-Path "$home\.factory" -PathType Container } }
+        @{ Name = 'claude-code'; Path = "$userHome\.claude.json";                       Key = 'mcpServers';     Cond = { Test-Path "$userHome\.claude.json" } },
+        @{ Name = 'cursor';      Path = "$userHome\.cursor\mcp.json";                   Key = 'mcpServers';     Cond = { Test-Path "$userHome\.cursor" -PathType Container } },
+        @{ Name = 'windsurf';    Path = "$userHome\.codeium\windsurf\mcp_config.json";  Key = 'mcpServers';     Cond = { Test-Path "$userHome\.codeium\windsurf" -PathType Container } },
+        @{ Name = 'vscode';      Path = "$cwd\.vscode\mcp.json";                        Key = 'servers';        Cond = { Test-Path "$cwd\.vscode" -PathType Container } },
+        @{ Name = 'gemini';      Path = "$userHome\.gemini\settings.json";              Key = 'mcpServers';     Cond = { Test-Path "$userHome\.gemini" -PathType Container } },
+        @{ Name = 'opencode';    Path = "$userHome\.opencode.json";                     Key = 'mcpServers';     Cond = { Test-Path "$userHome\.opencode.json" } },
+        @{ Name = 'amp';         Path = "$userHome\.config\amp\settings.json";          Key = 'amp.mcpServers'; Cond = { Test-Path "$userHome\.config\amp" -PathType Container } },
+        @{ Name = 'droid';       Path = "$userHome\.factory\mcp.json";                  Key = 'mcpServers';     Cond = { Test-Path "$userHome\.factory" -PathType Container } }
     )
 
     foreach ($h in $jsonHosts) {
@@ -374,9 +387,9 @@ function Invoke-McpAutoInstall {
     }
 
     # TOML host: codex.
-    if (Test-Path "$home\.codex" -PathType Container) {
+    if (Test-Path "$userHome\.codex" -PathType Container) {
         try {
-            $r = Update-HashlineCodexConfig -Path "$home\.codex\config.toml" -BinaryPath $bin
+            $r = Update-HashlineCodexConfig -Path "$userHome\.codex\config.toml" -BinaryPath $bin
             if ($r) { $results += "- codex: $($r.Status) ($($r.Path))" }
         } catch {
             Write-Warn "codex: $($_.Exception.Message)"
@@ -391,9 +404,9 @@ function Invoke-McpAutoInstall {
     foreach ($line in $results) { Write-Host $line }
 }
 
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # Main
-# ════════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 $tempDir = Join-Path $env:TEMP "hashline-install-$PID"
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
@@ -423,7 +436,7 @@ The version you asked for ($Version) does not include $archive. Either:
     }
 
     # Verify SHA-256 against the sidecar if release.yml published one. The
-    # sidecar may be either "<hash>" or "<hash>  <filename>" — Split() picks
+    # sidecar may be either "<hash>" or "<hash>  <filename>" -- Split() picks
     # the first whitespace-delimited token either way.
     $sumPath = "$archivePath.sha256"
     if (Get-FileWithRetry -Url "$base/$archive.sha256" -OutPath $sumPath -MaxRetries 1 -TimeoutSec 30) {
@@ -434,7 +447,7 @@ The version you asked for ($Version) does not include $archive. Either:
         }
         Write-Info "checksum verified"
     } else {
-        Write-Warn "no checksum file at $archive.sha256 — skipping verification"
+        Write-Warn "no checksum file at $archive.sha256 -- skipping verification"
     }
 
     # Extract. The archive root contains either hashline.exe directly or a
