@@ -187,7 +187,7 @@ fn build_base_edit_scenario(line_count: usize, long_lines: bool) -> EditScenario
         target_anchor: format!(
             "{}:{}",
             target_line_number,
-            crate::hash::short_hash(&target_line)
+            hashline::hash::short_hash(&target_line)
         ),
         replacement_line: replacement_line.clone(),
         expected_target_line: replacement_line.clone(),

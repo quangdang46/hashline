@@ -12,11 +12,11 @@ use crate::cli::{
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::HashlineError;
+use crate::orchestration::run_command;
 use crate::orchestration::{
     command_name, doctor_payload, index_payload, read_payload, verify_report,
 };
 use crate::risk::{assess_command, blocked_assessment};
-use crate::run_command;
 
 const SERVER_INSTRUCTIONS: &str = "\
 hashline MCP server. Use hash-anchored file operations when exact text edits are unsafe.\n\

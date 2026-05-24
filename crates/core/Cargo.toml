@@ -1,10 +1,10 @@
 [package]
 name = "hashline"
-version = "0.1.11"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Hash-anchored line editing CLI for AI coding agents. Provides O(1) line addressing via 2-char xxh32 hashes, surgical edits with drift detection, and patch-safe text mutations."
+description = "Hash-anchored line editing for AI coding agents. Library + CLI providing O(1) line addressing via 2-char xxh32 hashes, surgical edits with drift detection, and patch-safe text mutations."
 repository = "https://github.com/quangdang46/hashline"
 homepage = "https://github.com/quangdang46/hashline"
 documentation = "https://docs.rs/hashline"
@@ -12,21 +12,7 @@ readme = "../../README.md"
 keywords = ["editing", "patch", "anchor", "hash", "agent"]
 categories = ["command-line-utilities", "text-editors", "development-tools"]
 include = [
-    "main.rs",
-    "anchor.rs",
-    "cli.rs",
-    "commands/**/*.rs",
-    "context.rs",
-    "document.rs",
-    "error.rs",
-    "hash.rs",
-    "hash_cache.rs",
-    "mcp.rs",
-    "mutation.rs",
-    "orchestration.rs",
-    "output.rs",
-    "receipt.rs",
-    "risk.rs",
+    "src/**/*.rs",
     "Cargo.toml",
     "LICENSE-MIT",
     "LICENSE-APACHE",
@@ -34,9 +20,13 @@ include = [
 ]
 autobenches = false
 
+[lib]
+name = "hashline"
+path = "src/lib.rs"
+
 [[bin]]
 name = "hashline"
-path = "main.rs"
+path = "src/main.rs"
 
 [dependencies]
 xxhash-rust = { workspace = true }

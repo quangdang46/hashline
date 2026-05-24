@@ -368,3 +368,68 @@ mod tests {
         assert_eq!(payload.lines[0].n, 1);
     }
 }
+
+// ---- run_command (moved from main.rs in 0.2.0 lib split) ----
+//
+// Top-level command dispatch. Used by:
+//   - the bin (`hashline` CLI)
+//   - the MCP server module (which translates JSON-RPC into Commands)
+//   - any future library consumer that wants to drive the same dispatch
+//     path with their own stdout/stderr writers.
+
+use std::io::Write;
+
+use crate::cli::Cli;
+use crate::commands;
+use crate::context::{CommandContext, json_pretty_for, output_mode_for};
+use crate::risk::assess_command;
+use tracing::{debug, info};
+
+pub fn run<W: Write, E: Write>(
+    cli: Cli,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, HashlineError> {
+    run_command(cli.command, stdout, stderr)
+}
+
+pub fn run_command<W: Write, E: Write>(
+    command: Commands,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<i32, HashlineError> {
+    let output_mode = output_mode_for(&command);
+    let json_pretty = json_pretty_for(&command);
+    let risk = assess_command(&command);
+    debug!(
+        command = command_name(&command),
+        ?output_mode,
+        "dispatching command"
+    );
+    if let Some(risk) = risk.as_ref() {
+        info!(
+            command = command_name(&command),
+            risk_level = risk.level.as_str(),
+            risk_summary = %risk.summary,
+            "destructive command risk assessed"
+        );
+    }
+    let mut context =
+        CommandContext::new(stdout, stderr, output_mode).with_json_pretty(json_pretty);
+
+    match command {
+        Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
+        Commands::Index(cmd) => commands::index::run(&mut context, cmd).map(|_| 0),
+        Commands::Edit(cmd) => commands::edit::run(&mut context, cmd).map(|_| 0),
+        Commands::Insert(cmd) => commands::insert::run(&mut context, cmd).map(|_| 0),
+        Commands::Delete(cmd) => commands::delete::run(&mut context, cmd).map(|_| 0),
+        Commands::Verify(cmd) => commands::verify::run(&mut context, cmd),
+        Commands::Patch(cmd) => commands::patch::run(&mut context, cmd).map(|_| 0),
+        Commands::Swap(cmd) => commands::swap::run(&mut context, cmd).map(|_| 0),
+        Commands::Move(cmd) => commands::r#move::run(&mut context, cmd).map(|_| 0),
+        Commands::Indent(cmd) => commands::indent::run(&mut context, cmd).map(|_| 0),
+        Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
+        Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
+        Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
+    }
+}
