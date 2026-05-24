@@ -1,163 +1,185 @@
 #!/usr/bin/env bash
-# Real-feature benchmark for hashline.
+# hashline feature benchmark — outputs a single Markdown report.
 #
-# Generates synthetic 100 / 10 000 / 100 000-line Rust source files, then runs
-# `hyperfine` on each public subcommand and prints one tab-separated row
-# (label, mean_ms, min_ms, max_ms) per benchmark to stdout.
+# Usage:
+#   scripts/bench-features.sh                    # writes bench-results/bench-YYYY-MM-DD.md
+#   HASHLINE_BIN=./target/release/hashline scripts/bench-features.sh
 #
-# Requirements on PATH: hyperfine, rg, python3.
-# Env knobs:
-#   HASHLINE_BIN  - hashline binary to bench (default: target/release/hashline)
-#   FX_DIR        - fixture directory (default: /tmp/lh-bench)
-#   REPO_ROOT     - real-source fixture (default: <repo>/crates/core)
-set -u
+# Requirements: hyperfine, python3
+# Env:
+#   HASHLINE_BIN  binary to bench (default: target/release/hashline)
+#   FX_DIR        fixture directory (default: /tmp/hashline-bench)
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${HASHLINE_BIN:-$ROOT/target/release/hashline}"
-FX="${FX_DIR:-/tmp/lh-bench}"
-REPO="${REPO_ROOT:-$ROOT/crates/core}"
+FX="${FX_DIR:-/tmp/hashline-bench}"
+OUT="$ROOT/bench-results/bench-$(date +%Y-%m-%d).md"
 
-for tool in hyperfine rg python3; do
-  command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
+for tool in hyperfine python3; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool" >&2; exit 1; }
 done
-[ -x "$BIN" ] || { echo "hashline binary not found at $BIN (build with: cargo build --release)" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "binary not found: $BIN  (run: cargo build --release)" >&2; exit 1; }
 
-mkdir -p "$FX"
+mkdir -p "$FX" "$ROOT/bench-results"
+
+# ── Generate fixtures ────────────────────────────────────────────────────────
 python3 - <<PY
-import random, string, os
+import random, os
 random.seed(0)
 def gen(n, path):
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return
-    lines = []
-    for i in range(n):
-        token = ''.join(random.choices(string.ascii_lowercase, k=random.randint(4,12)))
-        lines.append(f'pub fn func_{i}_{token}(arg_{i}: i32) -> i32 {{ arg_{i} + {i} }}')
-    open(path,'w').write('\n'.join(lines)+'\n')
-gen(100,           "$FX/small.rs")
-gen(10_000,        "$FX/medium.rs")
-gen(100_000,       "$FX/large.rs")
+    lines = [f'pub fn func_{i}(x: i32) -> i32 {{ x + {i} }}' for i in range(n)]
+    open(path, 'w').write('\n'.join(lines) + '\n')
+gen(100,     "$FX/small.rs")
+gen(10_000,  "$FX/medium.rs")
+gen(100_000, "$FX/large.rs")
+print("fixtures ready")
 PY
 
-pick_anchor() {
-  local file="$1" line="$2"
-  "$BIN" index "$file" 2>/dev/null | awk -v ln="$line" 'NR==ln{print $1}'
+# ── Pick anchors ─────────────────────────────────────────────────────────────
+pick() { "$BIN" index "$1" 2>/dev/null | awk -v n="$2" 'NR==n{print $1}'; }
+A_SMALL=$(pick "$FX/small.rs"  50)
+A_MED=$(pick   "$FX/medium.rs" 5000)
+A_LARGE=$(pick "$FX/large.rs"  50000)
+A_LARGE2=$(pick "$FX/large.rs" 50010)
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+HF_JSON=/tmp/hashline-hf.json
+
+hf_run() {
+  hyperfine --warmup 2 --runs 5 --export-json "$HF_JSON" "$@" >/dev/null 2>&1 \
+  || hyperfine --warmup 1 --runs 3 --export-json "$HF_JSON" "$@" >/dev/null 2>&1
 }
 
-A_SMALL=$(pick_anchor "$FX/small.rs" 50)
-A_MED=$(pick_anchor "$FX/medium.rs" 5000)
-A_LARGE=$(pick_anchor "$FX/large.rs" 50000)
-RANGE_LARGE_S=$(pick_anchor "$FX/large.rs" 40000)
-RANGE_LARGE_E=$(pick_anchor "$FX/large.rs" 60000)
+hf_mutate() {
+  local src="$1" dst="$2"; shift 2
+  hyperfine --warmup 1 --runs 5 \
+    --prepare "cp $src $dst" \
+    --export-json "$HF_JSON" "$@" >/dev/null 2>&1 \
+  || hyperfine --warmup 1 --runs 3 \
+    --prepare "cp $src $dst" \
+    --export-json "$HF_JSON" "$@" >/dev/null 2>&1
+}
 
-emit() {
+# Read mean/min/max from last hyperfine JSON, print as "| label | Xms | X–Xms |"
+row() {
   local label="$1"
-  local mean min max
-  mean=$(python3 -c "import json; r=json.load(open('/tmp/hf.json'))['results'][0]; print(f\"{r['mean']*1000:.2f}\")")
-  min=$(python3 -c "import json; r=json.load(open('/tmp/hf.json'))['results'][0]; print(f\"{r['min']*1000:.2f}\")")
-  max=$(python3 -c "import json; r=json.load(open('/tmp/hf.json'))['results'][0]; print(f\"{r['max']*1000:.2f}\")")
-  printf '%s\t%s\t%s\t%s\n' "$label" "$mean" "$min" "$max"
+  python3 - "$label" <<'PY'
+import json, sys
+r = json.load(open("/tmp/hashline-hf.json"))["results"][0]
+mean = r["mean"] * 1000
+lo   = r["min"]  * 1000
+hi   = r["max"]  * 1000
+print(f"| {sys.argv[1]} | {mean:.1f} ms | {lo:.1f}–{hi:.1f} ms |")
+PY
 }
 
-run() {
+FAIL() { echo "| $1 | FAIL | — |"; }
+
+bench() {
   local label="$1"; shift
-  local cmd="$*"
-  echo "## $label" >&2
-  if hyperfine --warmup 2 --runs 5 --export-json /tmp/hf.json "$cmd" >/dev/null 2>&1 \
-     || hyperfine --warmup 1 --runs 3 --export-json /tmp/hf.json "$cmd" >/dev/null 2>&1; then
-    emit "$label"
-  else
-    echo "FAIL: $cmd" >&2
-  fi
+  echo "  $label" >&2
+  if hf_run "$@"; then row "$label"; else FAIL "$label"; fi
 }
 
-mutate() {
-  local label="$1" src="$2" tgt="$3"; shift 3
-  echo "## $label" >&2
-  if hyperfine --warmup 1 --runs 5 --prepare "cp $src $tgt" --export-json /tmp/hf.json "$@" >/dev/null 2>&1; then
-    emit "$label"
-  else
-    echo "FAIL: $*" >&2
-  fi
+mutbench() {
+  local label="$1" src="$2" dst="$3"; shift 3
+  echo "  $label" >&2
+  if hf_mutate "$src" "$dst" "$@"; then row "$label"; else FAIL "$label"; fi
 }
 
-# --- READ ---
-run "read · small (100 L)"            "$BIN read $FX/small.rs"
-run "read · medium (10k L)"           "$BIN read $FX/medium.rs"
-run "read · large (100k L)"           "$BIN read $FX/large.rs"
-run "read --json · large (100k L)"    "$BIN read $FX/large.rs --json"
-run "read --anchor+ctx · large"       "$BIN read $FX/large.rs --anchor $A_LARGE --context 5"
+# ── Report ───────────────────────────────────────────────────────────────────
+{
+VERSION=$("$BIN" --version 2>/dev/null || echo "unknown")
+DATE=$(date +"%Y-%m-%d %H:%M")
+HOST=$(uname -srm)
 
-# --- INDEX ---
-run "index · small"                   "$BIN index $FX/small.rs"
-run "index · medium"                  "$BIN index $FX/medium.rs"
-run "index · large"                   "$BIN index $FX/large.rs"
+cat <<MD
+# hashline benchmark — $DATE
 
-# --- VERIFY ---
-run "verify · 1 anchor · large"       "$BIN verify $FX/large.rs $A_LARGE"
-run "verify · 10 anchors · large"     "$BIN verify $FX/large.rs $A_LARGE $A_LARGE $A_LARGE $A_LARGE $A_LARGE $A_LARGE $A_LARGE $A_LARGE $A_LARGE $A_LARGE"
+**Binary:** \`$BIN\`  
+**Version:** $VERSION  
+**Host:** $HOST  
+**Fixtures:** small=100L, medium=10kL, large=100kL
 
-# --- GREP variants + rg baseline ---
-hyperfine --warmup 1 --runs 5 --prepare 'rm -rf /tmp/lh-cache && mkdir -p /tmp/lh-cache' \
-  --export-json /tmp/hf.json \
-  "env XDG_CACHE_HOME=/tmp/lh-cache $BIN grep $FX/large.rs func_50000" >/dev/null 2>&1 \
-  && emit "grep · large · trigram (cold)" || echo "FAIL: grep cold" >&2
+---
 
-run "grep · large · trigram (warm)"   "env XDG_CACHE_HOME=/tmp/lh-cache $BIN grep $FX/large.rs func_50000"
-run "grep · large · --no-index"       "$BIN grep --no-index $FX/large.rs func_50000"
-run "rg · large (baseline)"           "rg --no-config -n func_50000 $FX/large.rs"
+## Read & orient
 
-# Daemon: warm only. The cold variant (auto-spawn) can block in some sandboxes.
-pkill -f 'hashline daemon' 2>/dev/null; sleep 0.5
-"$BIN" daemon >/dev/null 2>&1 &
-DPID=$!
-sleep 1
-run "grep · large · daemon (warm)"    "$BIN grep $FX/large.rs func_50000 --daemon"
-kill $DPID 2>/dev/null
-pkill -f 'hashline daemon' 2>/dev/null
+| Command | Mean | Range |
+|---------|-----:|------:|
+MD
 
-# --- ANNOTATE ---
-run "annotate · large · substring"    "$BIN annotate $FX/large.rs func_50000"
+echo "=== Read & orient ===" >&2
+bench "read small.rs (100 L)"         "$BIN read $FX/small.rs"
+bench "read medium.rs (10k L)"        "$BIN read $FX/medium.rs"
+bench "read large.rs (100k L)"        "$BIN read $FX/large.rs"
+bench "read large.rs --json"          "$BIN read $FX/large.rs --json"
+bench "read large.rs --anchor+ctx"    "$BIN read $FX/large.rs --anchor $A_LARGE --context 5"
+bench "index large.rs"                "$BIN index $FX/large.rs"
 
-# --- MUTATIONS ---
-mutate "edit · small · 1 line"     "$FX/small.rs"  "$FX/m_small.rs"  "$BIN edit $FX/m_small.rs $A_SMALL replaced"
-mutate "edit · medium · 1 line"    "$FX/medium.rs" "$FX/m_medium.rs" "$BIN edit $FX/m_medium.rs $A_MED replaced"
-mutate "edit · large · 1 line"     "$FX/large.rs"  "$FX/m_large.rs"  "$BIN edit $FX/m_large.rs $A_LARGE replaced"
-mutate "edit · large · range 2k L" "$FX/large.rs"  "$FX/m_large.rs"  "$BIN edit $FX/m_large.rs ${RANGE_LARGE_S}..${RANGE_LARGE_E} merged"
-mutate "insert · large"            "$FX/large.rs"  "$FX/m_large.rs"  "$BIN insert $FX/m_large.rs $A_LARGE inserted"
-mutate "delete · large"            "$FX/large.rs"  "$FX/m_large.rs"  "$BIN delete $FX/m_large.rs $A_LARGE"
-mutate "swap · large"              "$FX/large.rs"  "$FX/m_large.rs"  "$BIN swap $FX/m_large.rs $A_LARGE $RANGE_LARGE_S"
-mutate "move · large"              "$FX/large.rs"  "$FX/m_large.rs"  "$BIN move $FX/m_large.rs $A_LARGE after $RANGE_LARGE_S"
-mutate "indent · large · range"    "$FX/large.rs"  "$FX/m_large.rs"  "$BIN indent $FX/m_large.rs ${RANGE_LARGE_S}..${RANGE_LARGE_E} +2"
+cat <<MD
 
-# --- PATCH (10 ops) ---
+## Verify
+
+| Command | Mean | Range |
+|---------|-----:|------:|
+MD
+
+echo "=== Verify ===" >&2
+bench "verify large.rs 1 anchor"      "$BIN verify $FX/large.rs $A_LARGE"
+bench "verify large.rs 10 anchors"    "$BIN verify $FX/large.rs $(printf "$A_LARGE %.0s" {1..10})"
+
+cat <<MD
+
+## Mutations
+
+> Single-line \`edit\` uses an mmap fast-path; all others rewrite the whole file via atomic-rename.
+
+| Command | Mean | Range |
+|---------|-----:|------:|
+MD
+
+echo "=== Mutations ===" >&2
+mutbench "edit small.rs 1 line"    "$FX/small.rs"  "$FX/m.rs" "$BIN edit $FX/m.rs $A_SMALL replaced"
+mutbench "edit medium.rs 1 line"   "$FX/medium.rs" "$FX/m.rs" "$BIN edit $FX/m.rs $A_MED replaced"
+mutbench "edit large.rs 1 line"    "$FX/large.rs"  "$FX/m.rs" "$BIN edit $FX/m.rs $A_LARGE replaced"
+mutbench "insert large.rs"         "$FX/large.rs"  "$FX/m.rs" "$BIN insert $FX/m.rs $A_LARGE inserted"
+mutbench "delete large.rs"         "$FX/large.rs"  "$FX/m.rs" "$BIN delete $FX/m.rs $A_LARGE"
+mutbench "swap large.rs"           "$FX/large.rs"  "$FX/m.rs" "$BIN swap $FX/m.rs $A_LARGE $A_LARGE2"
+mutbench "move large.rs"           "$FX/large.rs"  "$FX/m.rs" "$BIN move $FX/m.rs $A_LARGE after $A_LARGE2"
+mutbench "indent large.rs range"   "$FX/large.rs"  "$FX/m.rs" "$BIN indent $FX/m.rs ${A_LARGE}..${A_LARGE2} +2"
+
+# patch: 10 ops
 python3 - <<PY
 import json, subprocess
-out = subprocess.check_output(['$BIN','index','$FX/large.rs']).decode().splitlines()
-ops = []
-for ln in [1000,5000,10000,20000,30000,40000,50000,60000,70000,80000]:
-    a = out[ln-1].split()[0]
-    ops.append({'op':'edit','anchor':a,'content':f'patched_{ln}'})
+lines = subprocess.check_output(['$BIN','index','$FX/large.rs']).decode().splitlines()
+ops = [{'op':'edit','anchor':lines[ln-1].split()[0],'content':f'p{ln}'}
+       for ln in [1000,5000,10000,20000,30000,40000,50000,60000,70000,80000]]
 open('$FX/patch.json','w').write(json.dumps({'ops':ops}))
 PY
-mutate "patch · large · 10 ops"    "$FX/large.rs"  "$FX/m_large.rs"  "$BIN patch $FX/m_large.rs $FX/patch.json"
+mutbench "patch large.rs 10 ops"   "$FX/large.rs"  "$FX/m.rs" "$BIN patch $FX/m.rs $FX/patch.json"
 
-# --- BLOCK / DIAGNOSTICS ---
-run "find-block · large"              "$BIN find-block $FX/large.rs $A_LARGE"
-run "stats · large"                   "$BIN stats $FX/large.rs"
-run "doctor · large"                  "$BIN doctor $FX/large.rs"
+cat <<MD
 
-# --- MAP / LANGUAGE TOOLS (real source) ---
-run "map · core/ (real repo)"         "$BIN map $REPO --json"
-run "outline · cli.rs"                "$BIN outline $REPO/cli.rs"
-run "outline · context.rs"            "$BIN outline $REPO/context.rs"
-run "symbol · 'EditCmd' --scope core" "$BIN symbol EditCmd --scope $REPO --json"
-run "callers · 'parse_anchor'"        "$BIN callers parse_anchor --scope $REPO --depth 3 --json"
-run "callees · 'run' --depth 2"       "$BIN callees run --scope $REPO --depth 2 --json"
-run "deps · cli.rs"                   "$BIN deps --file $REPO/cli.rs --json"
+## Diagnostics
 
-# --- MISC ---
-run "workflows · --root core"         "$BIN workflows --root $REPO/.."
-run "watch-capabilities --json"       "$BIN watch-capabilities --json"
+| Command | Mean | Range |
+|---------|-----:|------:|
+MD
 
-echo "DONE" >&2
+echo "=== Diagnostics ===" >&2
+bench "stats large.rs"   "$BIN stats $FX/large.rs"
+bench "doctor large.rs"  "$BIN doctor $FX/large.rs"
+
+echo ""
+echo "---"
+echo ""
+echo "_Generated by \`scripts/bench-features.sh\` — $(date)_"
+
+} | tee "$OUT"
+
+echo "" >&2
+echo "Report written to: $OUT" >&2
