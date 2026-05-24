@@ -35,6 +35,12 @@ pub mod hash;
 pub mod hash_cache;
 pub mod mutation;
 
+/// SHA-256 window-hash anchors (backward-compat with jcode and other
+/// tools that pre-date hashline's xxh32 anchor format). Available
+/// only with the `sha256-anchors` feature enabled.
+#[cfg(feature = "sha256-anchors")]
+pub mod sha256_window;
+
 // ---- Binary-supporting internals (public for the bin, not for consumers) ----
 
 #[doc(hidden)]
