@@ -81,7 +81,10 @@ mod tests {
         // After Phase 1: trailing whitespace is stripped before hashing.
         // This keeps anchors stable across formatter runs (Prettier, Black, gofmt, etc.)
         assert_eq!(short_hash("return decoded "), short_hash("return decoded"));
-        assert_eq!(short_hash("return decoded   "), short_hash("return decoded"));
+        assert_eq!(
+            short_hash("return decoded   "),
+            short_hash("return decoded")
+        );
         assert_eq!(short_hash("return decoded\t"), short_hash("return decoded"));
     }
 

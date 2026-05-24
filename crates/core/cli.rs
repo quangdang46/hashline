@@ -186,8 +186,6 @@ pub struct VerifyCmd {
     pub pretty: bool,
 }
 
-
-
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(
     about = "Apply a JSON patch transaction atomically",
@@ -290,7 +288,6 @@ pub struct IndentCmd {
     pub pretty: bool,
 }
 
-
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(
     about = "Show file size, collision, and workflow guidance",
@@ -323,22 +320,9 @@ pub struct DoctorCmd {
     pub pretty: bool,
 }
 
-
-
-
-
-
-
-
 #[derive(Clone, Debug, Deserialize, Parser)]
 #[command(
     about = "Run as an MCP server over stdio",
     long_about = "Run hashline as a JSON-RPC MCP server over stdio so agents can call the existing hashline feature set without shelling out."
 )]
 pub struct McpCmd {}
-
-
-
-
-
-

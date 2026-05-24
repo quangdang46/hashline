@@ -295,7 +295,9 @@ fn resolve_qualified(
                 .map(|idx| (idx + 1).to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            context.push_str(&format!("(hash {rendered_short} also at line(s) {lines})\n"));
+            context.push_str(&format!(
+                "(hash {rendered_short} also at line(s) {lines})\n"
+            ));
         }
     }
     let relocated_suffix = context;

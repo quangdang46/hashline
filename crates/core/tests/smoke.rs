@@ -175,7 +175,10 @@ fn verify_stale_anchor_with_unique_hash_succeeds_via_fuzzy_relocation() {
     let (_stdout, stderr, code) = run_hashline(&["verify", &file_arg, &stale]);
 
     // Unique hash at line 1, requested line 2 → relocates → verify passes.
-    assert_eq!(code, 0, "expected success after fuzzy relocation, stderr: {stderr}");
+    assert_eq!(
+        code, 0,
+        "expected success after fuzzy relocation, stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -1859,4 +1862,3 @@ fn insert_interpret_escapes_expands_newline() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(fs::read_to_string(&file).unwrap(), "alpha\nx\ny\nbeta\n");
 }
-

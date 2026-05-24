@@ -134,16 +134,13 @@ pub fn run<W: Write, E: Write>(
             let (first, last) = match &summary {
                 EditSummary::Single { line_no, .. } => (*line_no, *line_no),
                 EditSummary::Range {
-                    start_line,
-                    after,
-                    ..
+                    start_line, after, ..
                 } => {
-                    let last = start_line + after.len().saturating_sub(1).max(0);
+                    let last = start_line + after.len().saturating_sub(1);
                     (*start_line, last.max(*start_line))
                 }
             };
-            output::write_post_edit_snippet(ctx, &doc, first, last)
-                .map_err(HashlineError::from)?;
+            output::write_post_edit_snippet(ctx, &doc, first, last).map_err(HashlineError::from)?;
             Ok(())
         }
     }

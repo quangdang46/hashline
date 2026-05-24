@@ -22,11 +22,7 @@ pub struct CommandContext<'a, W: Write, E: Write> {
 }
 
 impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
-    pub fn new(
-        stdout: &'a mut W,
-        stderr: &'a mut E,
-        output_mode: OutputMode,
-    ) -> Self {
+    pub fn new(stdout: &'a mut W, stderr: &'a mut E, output_mode: OutputMode) -> Self {
         Self {
             stdout,
             stderr,
@@ -121,9 +117,7 @@ fn json_pretty_flag(json: bool, pretty: bool, ndjson: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{OutputMode, json_pretty_for, output_mode_for};
-    use crate::cli::{
-        Commands, DeleteCmd, DoctorCmd, EditCmd, IndentCmd, InsertCmd, ReadCmd,
-    };
+    use crate::cli::{Commands, DeleteCmd, DoctorCmd, EditCmd, IndentCmd, InsertCmd, ReadCmd};
     use std::path::PathBuf;
 
     #[test]

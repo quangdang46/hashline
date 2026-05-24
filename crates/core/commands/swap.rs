@@ -170,11 +170,7 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\ngamma\ndelta\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(
-            &mut stdout,
-            &mut stderr,
-            OutputMode::Pretty,
-        );
+        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
 
         run(
             &mut ctx,
@@ -207,11 +203,7 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\ngamma\ndelta\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(
-            &mut stdout,
-            &mut stderr,
-            OutputMode::Pretty,
-        );
+        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
 
         run(
             &mut ctx,
@@ -244,11 +236,7 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(
-            &mut stdout,
-            &mut stderr,
-            OutputMode::Pretty,
-        );
+        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
 
         let error = run(
             &mut ctx,
@@ -281,11 +269,7 @@ mod tests {
         let (_dir, path) = temp_file("alpha\nbeta\ngamma\n");
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ctx = CommandContext::new(
-            &mut stdout,
-            &mut stderr,
-            OutputMode::Pretty,
-        );
+        let mut ctx = CommandContext::new(&mut stdout, &mut stderr, OutputMode::Pretty);
 
         run(
             &mut ctx,

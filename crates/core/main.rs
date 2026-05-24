@@ -68,12 +68,8 @@ fn main() {
             } else {
                 warn!(%error, "command rejected");
             }
-            let mut context = CommandContext::new(
-                &mut stdout,
-                &mut stderr,
-                output_mode,
-            )
-            .with_json_pretty(json_pretty);
+            let mut context = CommandContext::new(&mut stdout, &mut stderr, output_mode)
+                .with_json_pretty(json_pretty);
             let _ = output::write_error(&mut context, &error);
             1
         }
@@ -236,8 +232,8 @@ pub(crate) fn run_command<W: Write, E: Write>(
             "destructive command risk assessed"
         );
     }
-    let mut context = CommandContext::new(stdout, stderr, output_mode)
-        .with_json_pretty(json_pretty);
+    let mut context =
+        CommandContext::new(stdout, stderr, output_mode).with_json_pretty(json_pretty);
 
     match command {
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
