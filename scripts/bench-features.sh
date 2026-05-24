@@ -174,6 +174,90 @@ echo "=== Diagnostics ===" >&2
 bench "stats large.rs"   "$BIN stats $FX/large.rs"
 bench "doctor large.rs"  "$BIN doctor $FX/large.rs"
 
+# ── hashline vs sed (str-replace) comparison ─────────────────────────────────
+# Fixture lines used for sed pattern matching:
+#   line 50    → "pub fn func_49(x: i32) -> i32 { x + 49 }"
+#   line 5000  → "pub fn func_4999(x: i32) -> i32 { x + 4999 }"
+#   line 50000 → "pub fn func_49999(x: i32) -> i32 { x + 49999 }"
+
+SED_REPLACE="REPLACED_BY_BENCHMARK"
+
+cat <<'MD'
+
+## hashline vs sed (str-replace) comparison
+
+> hashline adds content-hash safety (stale anchor detection, atomic transactions)
+> at comparable raw speed to sed. sed is a pure text-stream tool with no safety checks.
+
+### Single-line edit by line number
+
+| Tool | File | Mean | Range |
+|------|------|-----:|------:|
+MD
+
+echo "=== hashline vs sed ===" >&2
+mutbench "hashline edit \| small.rs (100 L)"    "$FX/small.rs"  "$FX/m.rs" "$BIN edit $FX/m.rs $A_SMALL $SED_REPLACE"
+mutbench "sed -i \| small.rs (100 L)"           "$FX/small.rs"  "$FX/m.rs" "sed -i '50s/.*/$SED_REPLACE/' $FX/m.rs"
+mutbench "hashline edit \| medium.rs (10k L)"   "$FX/medium.rs" "$FX/m.rs" "$BIN edit $FX/m.rs $A_MED $SED_REPLACE"
+mutbench "sed -i \| medium.rs (10k L)"          "$FX/medium.rs" "$FX/m.rs" "sed -i '5000s/.*/$SED_REPLACE/' $FX/m.rs"
+mutbench "hashline edit \| large.rs (100k L)"   "$FX/large.rs"  "$FX/m.rs" "$BIN edit $FX/m.rs $A_LARGE $SED_REPLACE"
+mutbench "sed -i \| large.rs (100k L)"          "$FX/large.rs"  "$FX/m.rs" "sed -i '50000s/.*/$SED_REPLACE/' $FX/m.rs"
+
+cat <<'MD'
+
+### Content-based replacement (100k lines)
+
+> sed scans every line with regex; hashline jumps directly to the anchor.
+
+| Tool | Operation | Mean | Range |
+|------|-----------|-----:|------:|
+MD
+
+mutbench "sed 's/…/…/' \| content match"       "$FX/large.rs"  "$FX/m.rs" "sed -i 's/pub fn func_49999(x: i32) -> i32 { x + 49999 }/$SED_REPLACE/' $FX/m.rs"
+mutbench "hashline edit \| anchor match"        "$FX/large.rs"  "$FX/m.rs" "$BIN edit $FX/m.rs $A_LARGE $SED_REPLACE"
+
+cat <<'MD'
+
+### Multi-line operations (100k lines)
+
+> Multi-line mutations are slower in hashline because it rewrites via atomic-rename
+> for crash safety. Single-line `edit` uses an mmap fast-path and is competitive.
+
+| Tool | Operation | Mean | Range |
+|------|-----------|-----:|------:|
+MD
+
+mutbench "sed -i range delete \| 11 lines"      "$FX/large.rs"  "$FX/m.rs" "sed -i '50000,50010d' $FX/m.rs"
+mutbench "hashline delete range \| 11 lines"     "$FX/large.rs"  "$FX/m.rs" "$BIN delete $FX/m.rs ${A_LARGE}..${A_LARGE2}"
+mutbench "sed -i insert after line"              "$FX/large.rs"  "$FX/m.rs" "sed -i '50000a\\$SED_REPLACE' $FX/m.rs"
+mutbench "hashline insert after anchor"          "$FX/large.rs"  "$FX/m.rs" "$BIN insert $FX/m.rs $A_LARGE $SED_REPLACE"
+
+cat <<'MD'
+
+### Safety features (no sed equivalent)
+
+> sed silently applies edits even when the file has changed — no way to detect
+> stale targets. hashline rejects the edit and shows what changed.
+
+| Operation | Mean | Range |
+|-----------|-----:|------:|
+MD
+
+bench "verify anchor before edit (100k)"    "$BIN verify $FX/large.rs $A_LARGE"
+mutbench "patch 10 ops atomic (100k)"       "$FX/large.rs"  "$FX/m.rs" "$BIN patch $FX/m.rs $FX/patch.json"
+
+# Stale anchor rejection — hashline exits non-zero on purpose, so wrap in a
+# subshell that inverts the exit code for hyperfine (it expects success).
+echo "  stale anchor rejection" >&2
+cp "$FX/large.rs" "$FX/stale.rs"
+sed -i '50000s/.*/MODIFIED_LINE/' "$FX/stale.rs"
+if hf_run "! $BIN edit $FX/stale.rs $A_LARGE new_content 2>/dev/null"; then
+  row "stale anchor rejection (100k)"
+else
+  FAIL "stale anchor rejection (100k)"
+fi
+rm -f "$FX/stale.rs"
+
 echo ""
 echo "---"
 echo ""
