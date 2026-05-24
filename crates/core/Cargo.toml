@@ -1,6 +1,6 @@
 [package]
 name = "hashline"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,6 +19,14 @@ include = [
     "../../README.md",
 ]
 autobenches = false
+
+[features]
+default = []
+# Enable SHA-256 window-hash anchor support — used by external tools
+# (notably jcode pre-0.2.x) that need to call into hashline as a
+# library while keeping their existing anchor schema. Pulls in the
+# `sha2` crate. Disabled by default to keep the lean library footprint.
+sha256-anchors = ["dep:sha2"]
 
 [lib]
 name = "hashline"
@@ -56,6 +64,9 @@ once_cell = "1.19"
 # File walking (used by hash sidecar discovery)
 ignore = "0.4"
 rustc-hash = "2.1.2"
+
+# Optional SHA-256 backward-compat anchors (gated by `sha256-anchors` feature)
+sha2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -139,6 +139,12 @@ pub enum HashlineError {
         limit: usize,
         unit: &'static str,
     },
+
+    /// Free-form error for the SHA-256 backward-compat module
+    /// (`sha256_window`). Not used by the native xxh32 path.
+    #[cfg(feature = "sha256-anchors")]
+    #[error("{0}")]
+    Sha256Anchor(String),
 }
 
 impl HashlineError {
@@ -237,6 +243,10 @@ impl HashlineError {
             HashlineError::Json(_) => {
                 Some("fix the JSON input or output handling and retry the command")
             }
+            #[cfg(feature = "sha256-anchors")]
+            HashlineError::Sha256Anchor(_) => Some(
+                "use the `sha256_window` module to recompute the expected hash from current content",
+            ),
         }
     }
 
@@ -275,6 +285,8 @@ impl HashlineError {
             | HashlineError::MutationIndexOutOfBounds { .. }
             | HashlineError::InvalidMutationRange { .. }
             | HashlineError::ServerError { .. } => None,
+            #[cfg(feature = "sha256-anchors")]
+            HashlineError::Sha256Anchor(_) => None,
         }
     }
 
