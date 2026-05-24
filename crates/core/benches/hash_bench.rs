@@ -4,17 +4,9 @@ use std::path::Path;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-#[path = "../document.rs"]
-mod document;
-#[path = "../error.rs"]
-mod error;
-#[path = "../hash.rs"]
-mod hash;
-#[path = "../hash_cache.rs"]
-mod hash_cache;
 mod support;
 
-use document::Document;
+use hashline::document::Document;
 use support::{generate_long_fixture, generate_short_fixture};
 
 // --- Scaling: short lines ---
@@ -59,7 +51,7 @@ fn bench_hash_real_world(c: &mut Criterion) {
     });
 
     // Use the document module as a larger real file
-    let large_real = include_str!("../document.rs");
+    let large_real = include_str!("../src/document.rs");
     group.throughput(Throughput::Bytes(large_real.len() as u64));
     group.bench_function("document.rs", |b| {
         b.iter(|| black_box(Document::from_str(Path::new("document.rs"), large_real).unwrap()))

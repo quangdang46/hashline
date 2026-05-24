@@ -4,24 +4,12 @@ use std::path::Path;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-#[path = "../anchor.rs"]
-mod anchor;
-#[path = "../document.rs"]
-mod document;
-#[path = "../error.rs"]
-mod error;
-#[path = "../hash.rs"]
-mod hash;
-#[path = "../hash_cache.rs"]
-mod hash_cache;
-#[path = "../mutation.rs"]
-mod mutation;
 mod support;
 
-use anchor::{parse_anchor, resolve, resolve_without_index};
-use document::Document;
-use error::HashlineError;
-use mutation::replace_line;
+use hashline::anchor::{parse_anchor, resolve, resolve_without_index};
+use hashline::document::Document;
+use hashline::error::HashlineError;
+use hashline::mutation::replace_line;
 use support::{
     EditScenario, generate_duplicate_target_edit_scenario, generate_exact_match_edit_scenario,
     generate_line_shift_edit_scenario, generate_long_line_exact_match_edit_scenario,

@@ -1,17 +1,9 @@
-mod anchor;
-mod cli;
-mod commands;
-mod context;
-mod document;
-mod error;
-mod hash;
-mod hash_cache;
-mod mcp;
-mod mutation;
-mod orchestration;
-mod output;
-mod receipt;
-mod risk;
+// Binary entrypoint. All implementation lives in the `hashline`
+// library crate (this same package). Modules previously declared
+// here as `mod foo;` are now `pub mod foo;` in `lib.rs` so both
+// the bin and external library consumers can reach them.
+//
+// Items consumed below come from `hashline::*`.
 
 use std::io;
 use std::io::Write;
@@ -23,11 +15,10 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
-use crate::cli::{Cli, Commands};
-use crate::context::{CommandContext, json_pretty_for, output_mode_for};
-use crate::error::HashlineError;
-use crate::orchestration::command_name;
-use crate::risk::assess_command;
+use hashline::cli::{Cli, Commands};
+use hashline::context::{CommandContext, json_pretty_for, output_mode_for};
+use hashline::error::HashlineError;
+use hashline::orchestration::command_name;
 
 fn main() {
     let cli = Cli::parse();
@@ -37,7 +28,7 @@ fn main() {
 
     if let Commands::Mcp(cmd) = &cli.command {
         info!("starting MCP server");
-        if let Err(error) = mcp::run(cmd.clone()) {
+        if let Err(error) = hashline::mcp::run(cmd.clone()) {
             error!(%error, "mcp command failed");
             eprintln!("mcp error: {error}");
             std::process::exit(1);
@@ -70,7 +61,7 @@ fn main() {
             }
             let mut context = CommandContext::new(&mut stdout, &mut stderr, output_mode)
                 .with_json_pretty(json_pretty);
-            let _ = output::write_error(&mut context, &error);
+            let _ = hashline::output::write_error(&mut context, &error);
             1
         }
     };
@@ -208,54 +199,13 @@ impl<'a> MakeWriter<'a> for SharedFileWriter {
 }
 
 fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i32, HashlineError> {
-    run_command(cli.command, stdout, stderr)
-}
-
-pub(crate) fn run_command<W: Write, E: Write>(
-    command: Commands,
-    stdout: &mut W,
-    stderr: &mut E,
-) -> Result<i32, HashlineError> {
-    let output_mode = output_mode_for(&command);
-    let json_pretty = json_pretty_for(&command);
-    let risk = assess_command(&command);
-    debug!(
-        command = command_name(&command),
-        ?output_mode,
-        "dispatching command"
-    );
-    if let Some(risk) = risk.as_ref() {
-        info!(
-            command = command_name(&command),
-            risk_level = risk.level.as_str(),
-            risk_summary = %risk.summary,
-            "destructive command risk assessed"
-        );
-    }
-    let mut context =
-        CommandContext::new(stdout, stderr, output_mode).with_json_pretty(json_pretty);
-
-    match command {
-        Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
-        Commands::Index(cmd) => commands::index::run(&mut context, cmd).map(|_| 0),
-        Commands::Edit(cmd) => commands::edit::run(&mut context, cmd).map(|_| 0),
-        Commands::Insert(cmd) => commands::insert::run(&mut context, cmd).map(|_| 0),
-        Commands::Delete(cmd) => commands::delete::run(&mut context, cmd).map(|_| 0),
-        Commands::Verify(cmd) => commands::verify::run(&mut context, cmd),
-        Commands::Patch(cmd) => commands::patch::run(&mut context, cmd).map(|_| 0),
-        Commands::Swap(cmd) => commands::swap::run(&mut context, cmd).map(|_| 0),
-        Commands::Move(cmd) => commands::r#move::run(&mut context, cmd).map(|_| 0),
-        Commands::Indent(cmd) => commands::indent::run(&mut context, cmd).map(|_| 0),
-        Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
-        Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
-        Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
-    }
+    hashline::orchestration::run_command(cli.command, stdout, stderr)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{default_log_path, run, tracing_filter};
-    use crate::cli::{Cli, Commands, DoctorCmd, PatchCmd, ReadCmd};
+    use hashline::cli::{Cli, Commands, DoctorCmd, PatchCmd, ReadCmd};
     use std::path::PathBuf;
 
     #[test]
@@ -277,12 +227,12 @@ mod tests {
         if let Err(error) = result {
             let mut sink_out = Vec::new();
             let mut sink_err = Vec::new();
-            let mut ctx = crate::context::CommandContext::new(
+            let mut ctx = hashline::context::CommandContext::new(
                 &mut sink_out,
                 &mut sink_err,
-                crate::context::OutputMode::Pretty,
+                hashline::context::OutputMode::Pretty,
             );
-            crate::output::write_error(&mut ctx, &error).unwrap();
+            hashline::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;
             stderr = sink_err;
         }
@@ -317,12 +267,12 @@ mod tests {
         if let Err(error) = result {
             let mut sink_out = Vec::new();
             let mut sink_err = Vec::new();
-            let mut ctx = crate::context::CommandContext::new(
+            let mut ctx = hashline::context::CommandContext::new(
                 &mut sink_out,
                 &mut sink_err,
-                crate::context::OutputMode::Json,
+                hashline::context::OutputMode::Json,
             );
-            crate::output::write_error(&mut ctx, &error).unwrap();
+            hashline::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;
             stderr = sink_err;
         }

@@ -4,17 +4,9 @@ use std::path::Path;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-#[path = "../document.rs"]
-mod document;
-#[path = "../error.rs"]
-mod error;
-#[path = "../hash.rs"]
-mod hash;
-#[path = "../hash_cache.rs"]
-mod hash_cache;
 mod support;
 
-use document::Document;
+use hashline::document::Document;
 use support::{generate_collision_fixture, generate_short_fixture};
 
 fn build_document(content: &str) -> Document {
@@ -37,7 +29,7 @@ fn bench_stats_scaling(c: &mut Criterion) {
 fn bench_stats_collision_heavy(c: &mut Criterion) {
     let mut group = c.benchmark_group("stats_collision");
     for size in [1_000, 10_000] {
-        let content = generate_collision_fixture(size, hash::short_hash);
+        let content = generate_collision_fixture(size, hashline::hash::short_hash);
         let doc = build_document(&content);
         group.throughput(Throughput::Elements(size as u64));
         group.bench_with_input(BenchmarkId::new("lines", size), &doc, |b, doc| {

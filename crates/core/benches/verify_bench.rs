@@ -4,20 +4,10 @@ use std::path::Path;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-#[path = "../anchor.rs"]
-mod anchor;
-#[path = "../document.rs"]
-mod document;
-#[path = "../error.rs"]
-mod error;
-#[path = "../hash.rs"]
-mod hash;
-#[path = "../hash_cache.rs"]
-mod hash_cache;
 mod support;
 
-use anchor::{parse_anchor, resolve};
-use document::Document;
+use hashline::anchor::{parse_anchor, resolve};
+use hashline::document::Document;
 use support::{generate_short_fixture, mutate_short_hash};
 
 fn build_document(content: &str) -> Document {
@@ -35,7 +25,7 @@ fn build_anchor_batch(line_count: usize, anchor_count: usize) -> (Document, Vec<
             format!(
                 "{}:{}",
                 index + 1,
-                document::format_short_hash(line.short_hash)
+                hashline::document::format_short_hash(line.short_hash)
             )
         })
         .collect();
@@ -58,7 +48,7 @@ fn build_mixed_anchor_batch(line_count: usize, anchor_count: usize) -> (Document
                 format!(
                     "{}:{}",
                     index + 1,
-                    document::format_short_hash(line.short_hash)
+                    hashline::document::format_short_hash(line.short_hash)
                 )
             }),
     );
@@ -73,7 +63,7 @@ fn build_mixed_anchor_batch(line_count: usize, anchor_count: usize) -> (Document
                 format!(
                     "{}:{}",
                     index + 1,
-                    mutate_short_hash(&document::format_short_hash(line.short_hash))
+                    mutate_short_hash(&hashline::document::format_short_hash(line.short_hash))
                 )
             }),
     );
