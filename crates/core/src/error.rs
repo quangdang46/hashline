@@ -219,9 +219,9 @@ impl HashlineError {
             HashlineError::ImplodeMissingLineFile { .. } => Some(
                 "restore the missing line file or regenerate the explode directory before retrying",
             ),
-            HashlineError::InvalidWorkflowPack { .. } => Some(
-                "fix the markdown frontmatter fields in the workflow pack and retry",
-            ),
+            HashlineError::InvalidWorkflowPack { .. } => {
+                Some("fix the markdown frontmatter fields in the workflow pack and retry")
+            }
             HashlineError::PatchFailed { .. } => {
                 Some("fix the failing patch operation and retry the transaction")
             }
