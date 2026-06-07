@@ -27,8 +27,7 @@ Preferred workflow:\n\
 3. Use hashline_find_block when one tight snippet is not enough structural context.\n\
 4. Call hashline_verify before risky grouped edits or when anchors may be stale.\n\
 5. Use hashline_edit, hashline_insert, hashline_delete, or hashline_patch for mutations once anchors are known.\n\
-6. Call hashline_workflows when you want a repo-local skill pack instead of reconstructing a hashline workflow from scratch.\n\
-7. Use hashline_watch_capabilities before assuming MCP supports a streaming watch loop.\n\
+6. Use hashline_watch_capabilities before assuming MCP supports a streaming watch loop.\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
@@ -684,16 +683,6 @@ fn tool_definitions() -> Vec<Value> {
                     "expect_inode": integer_schema("Optional expected inode.")
                 },
                 "required": ["file", "range", "amount"]
-            }),
-        ),
-        tool(
-            "hashline_workflows",
-            "List repo-local markdown skill packs from `.hashline/skills` so agents can follow a bounded read/search/edit workflow instead of improvising command sequences.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "root": string_schema("Workspace root that contains `.hashline/skills`. Defaults to the MCP server current working directory.")
-                }
             }),
         ),
         tool(
