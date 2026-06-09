@@ -35,6 +35,7 @@ pub enum Commands {
     Indent(IndentCmd),
     Stats(StatsCmd),
     Doctor(DoctorCmd),
+    FindBlock(FindBlockCmd),
     Mcp(McpCmd),
 }
 
@@ -370,6 +371,23 @@ pub struct StatsCmd {
 )]
 pub struct DoctorCmd {
     pub file: PathBuf,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Find a likely structural block around an anchor",
+    long_about = "Given a line:hash anchor, detect the programming language from the file extension, then find the enclosing brace-delimited or indentation-based block and return it as a snippet with line:hash anchors."
+)]
+pub struct FindBlockCmd {
+    pub file: PathBuf,
+    pub anchor: String,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,

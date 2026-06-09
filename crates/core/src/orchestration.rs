@@ -80,6 +80,7 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Indent(_) => "indent",
         Commands::Stats(_) => "stats",
         Commands::Doctor(_) => "doctor",
+        Commands::FindBlock(_) => "find-block",
         Commands::Mcp(_) => "mcp",
     }
 }
@@ -366,6 +367,7 @@ pub fn run_command<W: Write, E: Write>(
         Commands::Indent(cmd) => commands::indent::run(&mut context, cmd).map(|_| 0),
         Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
         Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
+        Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
     }
 }
