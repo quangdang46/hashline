@@ -16,6 +16,12 @@ use crate::orchestration::run_command;
 use crate::orchestration::{
     command_name, doctor_payload, index_payload, read_payload, verify_report,
 };
+use std::sync::mpsc;
+use std::time::Duration;
+
+use notify::{Config, PollWatcher, EventKind, RecursiveMode, Watcher};
+
+use crate::hash::full_hash_bytes;
 use crate::risk::{assess_command, blocked_assessment};
 
 const SERVER_INSTRUCTIONS: &str = "\
@@ -330,6 +336,10 @@ fn dispatch_tool(
         "hashline_doctor" => tool_doctor(arguments, session),
         "hashline_grep" => tool_grep(arguments, session),
         "hashline_annotate" => tool_annotate(arguments, session),
+        "hashline_explode" => tool_explode(arguments),
+        "hashline_implode" => tool_implode(arguments),
+        "hashline_watch_capabilities" => tool_watch_capabilities(),
+        "hashline_watch" => tool_watch(arguments),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -573,6 +583,343 @@ fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value,
         })?,
         true,
     ))
+}
+
+fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
+    let file: String = parse_arg(arguments, "file")?;
+    let out: String = parse_arg(arguments, "out")?;
+    let force: bool = arguments.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let out_path = Path::new(&out);
+    if out_path.exists() {
+        if !force {
+            return Err(command_error(HashlineError::ExplodeTargetExists {
+                path: out,
+            }));
+        }
+        std::fs::remove_dir_all(out_path)
+            .map_err(|e| tool_error(-32603, &format!("failed to remove existing output directory: {e}"), None))?;
+    }
+
+    let content = std::fs::read_to_string(&file)
+        .map_err(|e| command_error(HashlineError::Io(e)))?;
+
+    // Detect newline style
+    let (newline_style, lines_raw): (&str, Vec<&str>) = if content.contains("\r\n") {
+        ("crlf", content.split("\r\n").collect())
+    } else if content.contains('\r') {
+        ("cr", content.split('\r').collect())
+    } else {
+        ("lf", content.split('\n').collect())
+    };
+
+    let trailing_newline = content.ends_with('\n');
+    let line_count = if trailing_newline && !content.is_empty() {
+        lines_raw.len().saturating_sub(1)
+    } else {
+        lines_raw.len()
+    };
+
+    // If empty file with trailing newline, lines_raw is [""] and line_count is 0
+    let effective_lines: Vec<&str> = if line_count == 0 && content.is_empty() {
+        vec![]
+    } else if trailing_newline && !content.is_empty() {
+        lines_raw[..lines_raw.len().saturating_sub(1)].to_vec()
+    } else if trailing_newline && content == "\n" {
+        // just a newline
+        vec![""]
+    } else {
+        lines_raw[..line_count].to_vec()
+    };
+
+    std::fs::create_dir_all(out_path)
+        .map_err(|e| command_error(HashlineError::Io(e)))?;
+
+    for (i, line) in effective_lines.iter().enumerate() {
+        let line_file = out_path.join(format!("L{}", i + 1));
+        std::fs::write(&line_file, line)
+            .map_err(|e| command_error(HashlineError::Io(e)))?;
+    }
+
+    // Compute content hash over the raw file bytes
+    let content_hash = format!("{:08x}", full_hash_bytes(content.as_bytes()));
+
+    let meta = json!({
+        "original": file,
+        "line_count": line_count,
+        "newline_style": newline_style,
+        "trailing_newline": trailing_newline,
+        "content_hash": content_hash,
+    });
+
+    let meta_path = out_path.join(".meta.json");
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).map_err(|e| {
+        tool_error(-32603, &format!("failed to serialize meta: {e}"), None)
+    })?)
+    .map_err(|e| command_error(HashlineError::Io(e)))?;
+
+    Ok(success_payload("explode", 0, meta, false))
+}
+
+fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
+    let dir: String = parse_arg(arguments, "dir")?;
+    let out: String = parse_arg(arguments, "out")?;
+    let dry_run: bool = arguments.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let dir_path = Path::new(&dir);
+
+    // Read and validate .meta.json
+    let meta_path = dir_path.join(".meta.json");
+    let meta_content = std::fs::read_to_string(&meta_path).map_err(|_| {
+        command_error(HashlineError::ImplodeMissingMeta {
+            path: dir.clone(),
+        })
+    })?;
+
+    let meta: serde_json::Value = serde_json::from_str(&meta_content).map_err(|e| {
+        command_error(HashlineError::ImplodeInvalidMeta {
+            path: meta_path.to_string_lossy().to_string(),
+            reason: format!("invalid JSON: {e}"),
+        })
+    })?;
+
+    let line_count = meta.get("line_count").and_then(|v| v.as_u64()).ok_or_else(|| {
+        command_error(HashlineError::ImplodeInvalidMeta {
+            path: meta_path.to_string_lossy().to_string(),
+            reason: "missing or invalid 'line_count'".into(),
+        })
+    })? as usize;
+
+    let newline_style = meta.get("newline_style").and_then(|v| v.as_str()).unwrap_or("lf");
+
+    let _trailing_newline = meta.get("trailing_newline").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    // Validate the directory: no unexpected files
+    let mut entries: Vec<_> = std::fs::read_dir(dir_path)
+        .map_err(|e| command_error(HashlineError::Io(e)))?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in &entries {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str == ".meta.json" {
+            continue;
+        }
+        if name_str.starts_with('L') {
+            // It's a line file — validate it's numeric after L
+            let num_part = &name_str[1..];
+            if num_part.parse::<usize>().is_ok() {
+                continue;
+            }
+        }
+        return Err(command_error(HashlineError::ImplodeDirtyDirectory {
+            path: dir.clone(),
+            entry: name_str.to_string(),
+        }));
+    }
+
+    // Reassemble lines
+    let line_separator = match newline_style {
+        "crlf" => "\r\n",
+        "cr" => "\r",
+        _ => "\n",
+    };
+
+    let mut reassembled = String::new();
+    for i in 1..=line_count {
+        let line_path = dir_path.join(format!("L{i}"));
+        let line_content = std::fs::read_to_string(&line_path).map_err(|_| {
+            command_error(HashlineError::ImplodeMissingLineFile {
+                path: dir.clone(),
+                line_no: i,
+            })
+        })?;
+        if i > 1 {
+            reassembled.push_str(line_separator);
+        }
+        reassembled.push_str(&line_content);
+    }
+
+    // Validate content hash if present
+    let hash_mismatch = meta.get("content_hash").and_then(|v| v.as_str()).map(|expected_hash| {
+        let actual_hash = format!("{:08x}", full_hash_bytes(reassembled.as_bytes()));
+        actual_hash != expected_hash
+    }).unwrap_or(false);
+
+    let result = json!({
+        "line_count": line_count,
+        "newline_style": newline_style,
+        "hash_mismatch": hash_mismatch,
+    });
+
+    if dry_run {
+        return Ok(success_payload("implode", 0, result, false));
+    }
+
+    // Fix trailing newline: the reassembled content does NOT include a trailing newline.
+    // Add one if the original had it.
+    if _trailing_newline {
+        reassembled.push_str(line_separator);
+    }
+
+    std::fs::write(&out, &reassembled)
+        .map_err(|e| command_error(HashlineError::Io(e)))?;
+
+    Ok(success_payload("implode", 0, result, false))
+}
+
+fn tool_watch_capabilities() -> Result<Value, JsonRpcError> {
+    let text = "hashline_watch on the CLI supports continuous (streaming) watch. Over MCP, only single-event watch is supported: hashline_watch waits for the next modification event and returns immediately. For continuous watching, use the CLI command `hashline watch <file>`.";
+
+    Ok(json!({
+        "command": "watch_capabilities",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "data": null,
+        "watch_capabilities": text,
+        "cache": { "used": false },
+    }))
+}
+
+fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
+    let file: String = parse_arg(arguments, "file")?;
+    let continuous: bool = arguments.get("continuous").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if continuous {
+        return Err(tool_error(
+            -32602,
+            "continuous mode is not supported over MCP. Set continuous to false or omit it.",
+            None,
+        ));
+    }
+
+    let file_path = Path::new(&file);
+
+    // Verify file exists
+    if !file_path.exists() {
+        return Err(tool_error(
+            -32001,
+            &format!("file does not exist: {file}"),
+            None,
+        ));
+    }
+
+    let (tx, rx) = mpsc::channel();
+
+    let mut watcher = PollWatcher::new(
+        tx,
+        Config::default().with_poll_interval(Duration::from_millis(500)),
+    )
+    .map_err(|e| {
+        tool_error(
+            -32603,
+            &format!("failed to create PollWatcher: {e}"),
+            None,
+        )
+    })?;
+
+    watcher
+        .watch(file_path, RecursiveMode::NonRecursive)
+        .map_err(|e| {
+            tool_error(
+                -32603,
+                &format!("failed to watch file: {e}"),
+                None,
+            )
+        })?;
+
+    // Wait for one Modify event, timeout after 60 seconds
+    let timeout = Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + timeout;
+
+    let event_opt = loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_default();
+
+        if remaining.is_zero() {
+            break None;
+        }
+
+        match rx.recv_timeout(remaining) {
+            Ok(Ok(event)) => {
+                if matches!(event.kind, EventKind::Modify(_)) {
+                    break Some(event);
+                }
+                // Ignore non-modify events and continue waiting
+            }
+            Ok(Err(e)) => {
+                return Err(tool_error(
+                    -32603,
+                    &format!("watch error: {e}"),
+                    None,
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                break None;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break None;
+            }
+        }
+    };
+
+    // Drop watcher to stop watching
+    drop(watcher);
+
+    match event_opt {
+        Some(event) => {
+            let paths: Vec<String> = event.paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let kind = format!("{:?}", event.kind);
+            Ok(json!({
+                "command": "watch",
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "data": {
+                    "kind": kind,
+                    "paths": paths,
+                    "file": file,
+                },
+                "cache": { "used": false },
+            }))
+        }
+        None => Ok(json!({
+            "command": "watch",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "data": {
+                "kind": null,
+                "paths": [],
+                "file": file,
+                "message": "no change detected within 60 seconds",
+            },
+            "cache": { "used": false },
+        })),
+    }
+}
+
+fn parse_arg<T: DeserializeOwned>(arguments: &Value, key: &str) -> Result<T, JsonRpcError> {
+    let value = arguments
+        .get(key)
+        .ok_or_else(|| {
+            tool_error(
+                -32602,
+                &format!("missing required argument '{key}'"),
+                Some(json!({ "arguments": arguments })),
+            )
+        })?;
+    serde_json::from_value(value.clone()).map_err(|error| {
+        tool_error(
+            -32602,
+            &format!("invalid argument '{key}': {error}"),
+            Some(json!({ "arguments": arguments })),
+        )
+    })
 }
 
 fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError> {
@@ -1740,6 +2087,226 @@ mod tests {
                 .and_then(|data| data["risk"]["summary"].as_str())
                 .is_some_and(|text| text.contains("blocked"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn explode_tool_creates_line_files_and_meta() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let src = dir.path().join("src.txt");
+        write_text(&src, "alpha\nbeta\ngamma\n")?;
+        let out = dir.path().join("exploded");
+
+        let result = must(dispatch_tool(
+            "hashline_explode",
+            &json!({
+                "file": src,
+                "out": out,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(result["exit_code"], 0);
+        assert!(out.join("L1").exists());
+        assert!(out.join("L2").exists());
+        assert!(out.join("L3").exists());
+        assert!(out.join(".meta.json").exists());
+
+        assert_eq!(read_text(&out.join("L1"))?, "alpha");
+        assert_eq!(read_text(&out.join("L2"))?, "beta");
+        assert_eq!(read_text(&out.join("L3"))?, "gamma");
+
+        let meta: serde_json::Value =
+            serde_json::from_str(&read_text(&out.join(".meta.json"))?)?;
+        assert_eq!(meta["line_count"], 3);
+        assert_eq!(meta["newline_style"], "lf");
+        assert_eq!(meta["trailing_newline"], true);
+        assert_eq!(meta["original"].as_str(), Some(src.to_str().unwrap()));
+        Ok(())
+    }
+
+    #[test]
+    fn explode_tool_rejects_existing_dir_without_force() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let src = dir.path().join("src.txt");
+        write_text(&src, "content\n")?;
+        let out = dir.path().join("exploded");
+        must(std::fs::create_dir(&out))?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_explode",
+            &json!({
+                "file": src,
+                "out": out,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(error.code, -32001);
+        assert!(error.message.contains("already exists"));
+        Ok(())
+    }
+
+    #[test]
+    fn explode_tool_force_overwrites_existing_dir() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let src = dir.path().join("src.txt");
+        write_text(&src, "content\n")?;
+        let out = dir.path().join("exploded");
+        must(std::fs::create_dir(&out))?;
+
+        let result = must(dispatch_tool(
+            "hashline_explode",
+            &json!({
+                "file": src,
+                "out": out,
+                "force": true,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(result["exit_code"], 0);
+        assert!(out.join("L1").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn implode_tool_reassembles_exploded_file() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let src = dir.path().join("src.txt");
+        write_text(&src, "alpha\nbeta\ngamma\n")?;
+        let exploded = dir.path().join("exploded");
+        let result = must(dispatch_tool(
+            "hashline_explode",
+            &json!({
+                "file": src,
+                "out": exploded,
+            }),
+            &mut SessionState::default(),
+        ))?;
+        assert_eq!(result["exit_code"], 0);
+
+        let restored = dir.path().join("restored.txt");
+        let result = must(dispatch_tool(
+            "hashline_implode",
+            &json!({
+                "dir": exploded,
+                "out": restored,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(read_text(&restored)?, "alpha\nbeta\ngamma\n");
+        Ok(())
+    }
+
+    #[test]
+    fn implode_tool_rejects_missing_meta() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let exploded = dir.path().join("exploded");
+        must(std::fs::create_dir(&exploded))?;
+        must(std::fs::write(exploded.join("L1"), "hello"))?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_implode",
+            &json!({
+                "dir": exploded,
+                "out": dir.path().join("out.txt"),
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(error.code, -32001);
+        assert!(error.message.contains("missing .meta.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn implode_tool_rejects_dirty_directory() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let exploded = dir.path().join("exploded");
+        must(std::fs::create_dir(&exploded))?;
+        write_text(&exploded.join(".meta.json"),
+            "{\"line_count\":1,\"newline_style\":\"lf\",\"trailing_newline\":true}\n")?;
+        must(std::fs::write(exploded.join("L1"), "hello"))?;
+        must(std::fs::write(exploded.join("notes.txt"), "unexpected"))?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_implode",
+            &json!({
+                "dir": exploded,
+                "out": dir.path().join("out.txt"),
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(error.code, -32001);
+        Ok(())
+    }
+
+    #[test]
+    fn watch_capabilities_tool_returns_text() -> Result<()> {
+        let result = must(dispatch_tool(
+            "hashline_watch_capabilities",
+            &json!({}),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(result["exit_code"], 0);
+        let text = result["watch_capabilities"]
+            .as_str()
+            .ok_or_else(|| anyhow!("expected string"))?;
+        assert!(text.contains("CLI"));
+        assert!(text.contains("MCP"));
+        Ok(())
+    }
+
+    #[test]
+    fn watch_tool_rejects_continuous() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "content\n")?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_watch",
+            &json!({
+                "file": path,
+                "continuous": true,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(error.code, -32602);
+        assert!(error.message.contains("continuous mode"));
+        Ok(())
+    }
+
+    #[test]
+    fn implode_tool_dry_run_does_not_write_output() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let src = dir.path().join("src.txt");
+        write_text(&src, "alpha\nbeta\n")?;
+        let exploded = dir.path().join("exploded");
+        must(dispatch_tool(
+            "hashline_explode",
+            &json!({ "file": src, "out": exploded }),
+            &mut SessionState::default(),
+        ))?;
+
+        let restored = dir.path().join("restored.txt");
+        let result = must(dispatch_tool(
+            "hashline_implode",
+            &json!({
+                "dir": exploded,
+                "out": restored,
+                "dry_run": true,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert_eq!(result["exit_code"], 0);
+        assert!(!restored.exists());
         Ok(())
     }
 }
