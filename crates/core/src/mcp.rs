@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -340,6 +341,11 @@ fn dispatch_tool(
         "hashline_implode" => tool_implode(arguments),
         "hashline_watch_capabilities" => tool_watch_capabilities(),
         "hashline_watch" => tool_watch(arguments),
+        "hashline_map" => tool_map(arguments),
+        "hashline_symbol" => tool_symbol(arguments),
+        "hashline_callees" => tool_callees(arguments),
+        "hashline_from_diff" => tool_from_diff(arguments, session),
+        "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -903,6 +909,723 @@ fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
     }
 }
 
+fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
+    let scope: String = arguments
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let depth = arguments.get("depth").and_then(|v| v.as_u64()).map(|d| d as usize);
+    let budget = arguments.get("budget").and_then(|v| v.as_u64()).map(|b| b as usize);
+    let json_out = arguments.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let root = std::path::Path::new(&scope);
+    if !root.is_dir() {
+        return Err(tool_error(
+            -32001,
+            &format!("not a directory: {scope}"),
+            None,
+        ));
+    }
+
+    let root_canonical = root
+        .canonicalize()
+        .map_err(|e| tool_error(-32603, &format!("failed to canonicalize path: {e}"), None))?
+        .to_string_lossy()
+        .to_string();
+
+    // First pass: collect all entries with their stats
+    let mut dirs: Vec<(PathBuf, u32)> = Vec::new();
+    let mut files: Vec<(PathBuf, u64)> = Vec::new();
+
+    let walk = walkdir::WalkDir::new(root)
+        .max_depth(depth.unwrap_or(usize::MAX))
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            // Skip hidden files/dirs (starting with '.') unless it's root
+            e.file_name()
+                .to_str()
+                .map(|s| s.starts_with('.') == (e.depth() == 0))
+                .unwrap_or(true)
+        });
+
+    for entry in walk {
+        let entry = entry.map_err(|e| {
+            tool_error(-32603, &format!("walk error: {e}"), None)
+        })?;
+        if entry.depth() == 0 {
+            continue;
+        }
+        let path = entry.path().to_path_buf();
+        if entry.file_type().is_dir() {
+            dirs.push((path, entry.depth() as u32));
+        } else if entry.file_type().is_file() {
+            // Estimate tokens: read file, chars / 4
+            let tokens = estimate_file_tokens(&path);
+            files.push((path, tokens));
+        }
+    }
+
+    // Build tree: group files under their parent dirs
+    // We'll compute total_tokens per directory recursively
+    let mut dir_totals: HashMap<PathBuf, (u64, usize)> = HashMap::new(); // path -> (file_count, total_tokens)
+
+    // Collect all parent dirs of files
+    for (file_path, tokens) in &files {
+        if let Some(parent) = file_path.parent() {
+            let entry = dir_totals.entry(parent.to_path_buf()).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += *tokens as usize;
+        }
+    }
+
+    // Propagate child dir totals to parent dirs
+    // Sort by depth descending so we process deepest first
+    let mut all_dirs: Vec<(PathBuf, u32)> = dirs.clone();
+    // Add parent dirs of files that aren't in dirs already
+    for (dir_path, _) in dir_totals.iter() {
+        if !all_dirs.iter().any(|(p, _)| p == dir_path) {
+            let depth_val = dir_path
+                .strip_prefix(root)
+                .map(|p| p.components().count())
+                .unwrap_or(0) as u32;
+            all_dirs.push((dir_path.clone(), depth_val));
+        }
+    }
+    // Also add root
+    all_dirs.push((root.to_path_buf(), 0));
+
+    all_dirs.sort_by(|a, b| b.1.cmp(&a.1)); // deepest first
+
+    for (dir_path, _) in &all_dirs {
+        if *dir_path == root {
+            continue;
+        }
+        let my_total = dir_totals.get(dir_path).copied().unwrap_or((0, 0));
+        if let Some(parent) = dir_path.parent() {
+            let entry = dir_totals.entry(parent.to_path_buf()).or_insert((0, 0));
+            entry.0 += my_total.0;
+            entry.1 += my_total.1;
+        }
+    }
+
+    let total_files = dir_totals.get(root).map(|(c, _)| *c).unwrap_or(files.len() as u64);
+    let total_tokens = dir_totals.get(root).map(|(_, t)| *t).unwrap_or(0);
+
+    if json_out {
+        // Build JSON tree
+        fn build_json_tree(
+            dir: &Path,
+            root: &Path,
+            dir_totals: &HashMap<PathBuf, (u64, usize)>,
+            all_files: &[(PathBuf, u64)],
+            depth_limit: Option<usize>,
+            current_depth: usize,
+            budget_remaining: &mut Option<usize>,
+        ) -> Value {
+            let mut children: Vec<Value> = Vec::new();
+            let dir_name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Collect subdirectories
+            let mut subdirs: Vec<PathBuf> = dir_totals
+                .keys()
+                .filter(|p| {
+                    p.parent().map(|parent| parent == dir).unwrap_or(false) && *p != dir
+                })
+                .cloned()
+                .collect();
+            subdirs.sort();
+
+            // Collect files directly in this dir
+            let mut direct_files: Vec<(PathBuf, u64)> = all_files
+                .iter()
+                .filter(|(fp, _)| {
+                    fp.parent().map(|parent| parent == dir).unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            direct_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for subdir in subdirs {
+                if let Some(budget) = budget_remaining.as_mut() {
+                    if *budget == 0 {
+                        break;
+                    }
+                }
+                let sub_name = subdir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let (fc, tt) = dir_totals.get(&subdir).copied().unwrap_or((0, 0));
+                let max_child_depth = depth_limit.map(|max| {
+                    if current_depth >= max { 0 } else { max - current_depth - 1 }
+                }).unwrap_or(usize::MAX);
+
+                let child = build_json_tree(
+                    &subdir,
+                    root,
+                    dir_totals,
+                    all_files,
+                    depth_limit,
+                    current_depth + 1,
+                    budget_remaining,
+                );
+
+                if let Some(budget) = budget_remaining.as_mut() {
+                    *budget = budget.saturating_sub(tt);
+                }
+
+                children.push(child);
+            }
+
+            for (fp, tokens) in direct_files {
+                if let Some(budget) = budget_remaining.as_mut() {
+                    if *budget == 0 {
+                        break;
+                    }
+                    *budget = budget.saturating_sub(tokens as usize);
+                }
+                if depth_limit.map(|max| current_depth >= max).unwrap_or(false) {
+                    continue;
+                }
+                let fname = fp
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                children.push(json!({
+                    "name": fname,
+                    "type": "file",
+                    "tokens": tokens,
+                }));
+            }
+
+            json!({
+                "name": dir_name,
+                "type": "dir",
+                "children": children,
+            })
+        }
+
+        let mut budget_remaining = budget;
+        let entries = build_json_tree(
+            root,
+            root,
+            &dir_totals,
+            &files,
+            depth,
+            0,
+            &mut budget_remaining,
+        );
+
+        Ok(json!({
+            "command": "map",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "data": {
+                "root": root_canonical,
+                "total_files": total_files,
+                "total_tokens": total_tokens,
+                "entries": entries,
+            },
+            "cache": { "used": false },
+        }))
+    } else {
+        // Text tree
+        fn build_text_tree(
+            dir: &Path,
+            root: &Path,
+            dir_totals: &HashMap<PathBuf, (u64, usize)>,
+            all_files: &[(PathBuf, u64)],
+            prefix: &str,
+            depth_limit: Option<usize>,
+            current_depth: usize,
+            budget_remaining: &mut Option<usize>,
+            lines: &mut Vec<String>,
+        ) {
+            let dir_name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let (total_fc, total_tt) = dir_totals.get(dir).copied().unwrap_or((0, 0));
+            lines.push(format!("{}/ ({} files, {} tokens)", dir_name, total_fc, total_tt));
+
+            // Collect subdirectories
+            let mut subdirs: Vec<PathBuf> = dir_totals
+                .keys()
+                .filter(|p| {
+                    p.parent().map(|parent| parent == dir).unwrap_or(false) && *p != dir
+                })
+                .cloned()
+                .collect();
+            subdirs.sort();
+
+            // Collect files directly in this dir
+            let mut direct_files: Vec<(PathBuf, u64)> = all_files
+                .iter()
+                .filter(|(fp, _)| {
+                    fp.parent().map(|parent| parent == dir).unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            direct_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let total_items = subdirs.len() + direct_files.len();
+
+            for (i, subdir) in subdirs.iter().enumerate() {
+                if let Some(budget) = budget_remaining.as_mut() {
+                    if *budget == 0 {
+                        let (_, tt) = dir_totals.get(subdir).copied().unwrap_or((0, 0));
+                        if *budget <= tt {
+                            lines.push(format!(
+                                "{}└── ... (truncated, {} tokens remaining)",
+                                prefix, budget
+                            ));
+                            *budget = 0;
+                            return;
+                        }
+                    }
+                }
+
+                let is_last = i == total_items - 1 && direct_files.is_empty();
+                let conn = if is_last { "└── " } else { "├── " };
+                let child_prefix = if is_last { "    " } else { "│   " };
+                let child_depth = depth_limit.map(|max| {
+                    if current_depth >= max { 0 } else { max - current_depth - 1 }
+                }).unwrap_or(usize::MAX);
+
+                let before_len = lines.len();
+                build_text_tree(
+                    subdir,
+                    root,
+                    dir_totals,
+                    all_files,
+                    &format!("{}{}", prefix, child_prefix),
+                    depth_limit,
+                    current_depth + 1,
+                    budget_remaining,
+                    lines,
+                );
+
+                if before_len < lines.len() {
+                    // Prepend connector to first line (the dir header that was already added)
+                    let (fc, tt) = dir_totals.get(subdir).copied().unwrap_or((0, 0));
+                    let header = format!("{}{}/ ({} files, {} tokens)", conn, subdir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), fc, tt);
+                    if let Some(last) = lines.last_mut() {
+                        if *last == format!("{}/ ({} files, {} tokens)", subdir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), fc, tt) {
+                            // Replace the header we just added
+                            *last = header;
+                        }
+                    }
+                } else {
+                    // Budget ran out, just add a truncated line
+                    let (fc, tt) = dir_totals.get(subdir).copied().unwrap_or((0, 0));
+                    lines.push(format!(
+                        "{}{}/ ({} files, {} tokens)",
+                        conn, subdir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), fc, tt
+                    ));
+                }
+            }
+
+            for (j, (fp, tokens)) in direct_files.iter().enumerate() {
+                let is_last = subdirs.is_empty() && j == direct_files.len() - 1;
+                let conn = if is_last { "└── " } else { "├── " };
+                let fname = fp
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                if let Some(budget) = budget_remaining.as_mut() {
+                    if *budget == 0 {
+                        lines.push(format!(
+                            "{}└── ... (truncated)",
+                            prefix
+                        ));
+                        break;
+                    }
+                    *budget = budget.saturating_sub(*tokens as usize);
+                }
+                if depth_limit.map(|max| current_depth >= max).unwrap_or(false) {
+                    continue;
+                }
+
+                lines.push(format!("{}{} ({} tokens)", conn, fname, tokens));
+            }
+        }
+
+        let mut budget_remaining = budget;
+        let mut lines = Vec::new();
+        build_text_tree(
+            root,
+            root,
+            &dir_totals,
+            &files,
+            "",
+            depth,
+            0,
+            &mut budget_remaining,
+            &mut lines,
+        );
+
+        let text = lines.join("\n");
+        Ok(json!({
+            "command": "map",
+            "exit_code": 0,
+            "stdout": text,
+            "stderr": "",
+            "data": {
+                "root": root_canonical,
+                "total_files": total_files,
+                "total_tokens": total_tokens,
+            },
+            "cache": { "used": false },
+        }))
+    }
+}
+
+fn estimate_file_tokens(path: &Path) -> u64 {
+    // Same heuristic as Document::compute_stats: chars / 4
+    fs::read_to_string(path)
+        .map(|content| content.chars().count() as u64 / 4)
+        .unwrap_or(0)
+}
+
+fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
+    let query: String = parse_arg(arguments, "query")?;
+    let file: Option<String> = arguments.get("file").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let scope: Option<String> = arguments.get("scope").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let expand: bool = arguments.get("expand").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if file.is_some() && scope.is_some() {
+        return Err(tool_error(
+            -32602,
+            "'file' and 'scope' are mutually exclusive",
+            None,
+        ));
+    }
+
+    let re = regex::Regex::new(&query).map_err(|e| {
+        tool_error(-32602, &format!("invalid regex: {e}"), None)
+    })?;
+
+    let mut results = Vec::new();
+    let max_results = 100;
+
+    if let Some(file_path) = file {
+        let path = Path::new(&file_path);
+        if !path.exists() {
+            return Err(tool_error(-32001, &format!("file not found: {file_path}"), None));
+        }
+        search_file(path, &re, expand, &mut results, max_results);
+    } else {
+        let scope_dir = scope.unwrap_or_else(|| ".".to_string());
+        let root = Path::new(&scope_dir);
+        if !root.is_dir() {
+            return Err(tool_error(
+                -32001,
+                &format!("not a directory: {scope_dir}"),
+                None,
+            ));
+        }
+
+        let extensions = [".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".swift"];
+        let walk = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                e.file_name()
+                    .to_str()
+                    .map(|s| !s.starts_with('.'))
+                    .unwrap_or(false)
+            });
+
+        for entry in walk {
+            if results.len() >= max_results {
+                break;
+            }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !extensions.contains(&ext) {
+                continue;
+            }
+            search_file(path, &re, expand, &mut results, max_results);
+        }
+    }
+
+    let truncated = results.len() >= max_results;
+    Ok(json!({
+        "command": "symbol",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "data": {
+            "symbol": query,
+            "results": results,
+            "total": results.len(),
+            "truncated": truncated,
+        },
+        "cache": { "used": false },
+    }))
+}
+
+fn search_file(
+    path: &Path,
+    re: &regex::Regex,
+    expand: bool,
+    results: &mut Vec<Value>,
+    max: usize,
+) {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let path_str = path.to_string_lossy().to_string();
+    for (i, line) in content.lines().enumerate() {
+        if results.len() >= max {
+            break;
+        }
+        if re.is_match(line) {
+            let trimmed = line.trim();
+            results.push(json!({
+                "file": path_str,
+                "line": i + 1,
+                "content": trimmed,
+                "snippet": if expand { trimmed } else { "" },
+            }));
+        }
+    }
+}
+
+fn tool_callees(arguments: &Value) -> Result<Value, JsonRpcError> {
+    let target: String = parse_arg(arguments, "target")?;
+    let scope: String = arguments
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let depth: usize = arguments
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|d| d as usize)
+        .unwrap_or(3);
+    let json_out: bool = arguments.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if depth == 0 {
+        return Err(tool_error(-32602, "depth must be at least 1", None));
+    }
+
+    let root = Path::new(&scope);
+    if !root.is_dir() {
+        return Err(tool_error(-32001, &format!("not a directory: {scope}"), None));
+    }
+
+    // Find all source files
+    let extensions = [".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".swift"];
+    let mut source_files = Vec::new();
+    let walk = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            e.file_name()
+                .to_str()
+                .map(|s| !s.starts_with('.'))
+                .unwrap_or(false)
+        });
+
+    for entry in walk {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path().to_path_buf();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if extensions.contains(&ext) {
+            source_files.push(path);
+        }
+    }
+
+    // BFS over function call graph
+    let mut visited = HashSet::new();
+    let mut results: Vec<Value> = Vec::new();
+    let max_results = 100;
+
+    // Find all functions defined in source files (for identifying caller functions)
+    // We use a simple heuristic: lines matching `fn ` for Rust, `def ` for Python, etc.
+    let mut queue: Vec<(String, usize)> = Vec::new(); // (function_name, current_depth)
+    queue.push((target.clone(), 1));
+
+    while let Some((func_name, current_depth)) = queue.pop() {
+        if current_depth > depth || results.len() >= max_results {
+            continue;
+        }
+
+        // Search all source files for call sites: func_name(
+        let call_re = match regex::Regex::new(&format!(r"\b{}\s*\(", regex::escape(&func_name))) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for file_path in &source_files {
+            let content = match fs::read_to_string(file_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let path_str = file_path.to_string_lossy().to_string();
+
+            for (line_no, line) in content.lines().enumerate() {
+                if results.len() >= max_results {
+                    break;
+                }
+
+                if !call_re.is_match(line) {
+                    continue;
+                }
+
+                // Try to find the containing function definition
+                let caller_name = find_containing_function(&content, line_no);
+
+                if let Some(caller) = caller_name {
+                    if caller == func_name {
+                        // Skip self-references
+                        continue;
+                    }
+                    if visited.contains(&(caller.clone(), func_name.clone(), path_str.clone(), line_no + 1)) {
+                        continue;
+                    }
+                    visited.insert((caller.clone(), func_name.clone(), path_str.clone(), line_no + 1));
+
+                    results.push(json!({
+                        "function": caller,
+                        "file": path_str.clone(),
+                        "line": line_no + 1,
+                        "depth": current_depth,
+                    }));
+
+                    // Enqueue this caller for the next depth level
+                    if current_depth < depth {
+                        queue.push((caller, current_depth + 1));
+                    }
+                }
+            }
+
+            if results.len() >= max_results {
+                break;
+            }
+        }
+    }
+
+    let truncated = results.len() >= max_results;
+    let total = results.len();
+
+    if json_out {
+        Ok(json!({
+            "command": "callees",
+            "exit_code": 0,
+            "stdout": "",
+            "stderr": "",
+            "data": {
+                "target": target,
+                "depth": depth,
+                "results": results,
+                "total": total,
+                "truncated": truncated,
+            },
+            "cache": { "used": false },
+        }))
+    } else {
+        // Text output: list
+        let mut text_lines = Vec::new();
+        text_lines.push(format!("Callees of '{}' (depth {}):", target, depth));
+        for r in &results {
+            let func = r["function"].as_str().unwrap_or("?");
+            let file = r["file"].as_str().unwrap_or("?");
+            let line = r["line"].as_u64().unwrap_or(0);
+            let d = r["depth"].as_u64().unwrap_or(0);
+            text_lines.push(format!("  {}:{} - {} (depth {})", file, line, func, d));
+        }
+        if truncated {
+            text_lines.push(format!("... truncated at {} results", max_results));
+        } else if total == 0 {
+            text_lines.push("  (no results)".to_string());
+        }
+        let text = text_lines.join("\n");
+
+        Ok(json!({
+            "command": "callees",
+            "exit_code": 0,
+            "stdout": text,
+            "stderr": "",
+            "data": {
+                "target": target,
+                "depth": depth,
+                "results": results,
+                "total": total,
+                "truncated": truncated,
+            },
+            "cache": { "used": false },
+        }))
+    }
+}
+
+/// Find the name of the function definition that contains the given line number.
+/// Uses simple regex matching for common languages.
+fn find_containing_function(content: &str, line_no: usize) -> Option<String> {
+    // Scan backward from the current line to find the nearest function definition
+    let lines: Vec<&str> = content.lines().collect();
+    let mut brace_depth = 0;
+
+    // First, count brace depth from current line backward
+    // to find what function definition we're inside
+    for i in (0..=line_no.min(lines.len().saturating_sub(1))).rev() {
+        let line = lines[i];
+
+        // Track brace depth going backward
+        for ch in line.chars() {
+            match ch {
+                '}' => brace_depth = brace_depth + 1,
+                '{' => brace_depth = brace_depth - 1,
+                _ => {}
+            }
+        }
+
+        // Use a combined regex to match function defs across languages
+        let func_re = regex::Regex::new(
+            r"(?:fn\s+(\w+)|def\s+(\w+)|function\s+(\w+)|(\w+)\s*=\s*(?:function|\(|async)|func\s+(\w+)|sub\s+(\w+)|def\w+\s+(\w+))"
+        ).ok()?;
+
+        if let Some(caps) = func_re.captures(line) {
+            let name = caps.get(1)
+                .or_else(|| caps.get(2))
+                .or_else(|| caps.get(3))
+                .or_else(|| caps.get(5))
+                .or_else(|| caps.get(6))
+                .or_else(|| caps.get(7));
+            if let Some(name) = name {
+                return Some(name.as_str().to_string());
+            }
+        }
+    }
+
+    None
+}
+
 fn parse_arg<T: DeserializeOwned>(arguments: &Value, key: &str) -> Result<T, JsonRpcError> {
     let value = arguments
         .get(key)
@@ -1024,6 +1747,112 @@ fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError {
         message: message.to_owned(),
         data,
     }
+}
+
+fn tool_from_diff(
+    arguments: &Value,
+    _session: &mut SessionState,
+) -> Result<Value, JsonRpcError> {
+    let file: String = parse_arg(arguments, "file")?;
+    let diff: String = parse_arg(arguments, "diff")?;
+
+    let diff_content =
+        std::fs::read_to_string(&diff).map_err(|e| tool_error(-32603, &format!("cannot read diff file: {e}"), None))?;
+
+    // Simple unified diff parser
+    let mut ops: Vec<Value> = Vec::new();
+
+    for line in diff_content.lines() {
+        if line.starts_with("@@") {
+            // Just record that we saw a hunk header — basic parsing
+            ops.push(json!({
+                "op": "info",
+                "hunk_header": line,
+            }));
+            continue;
+        }
+        if line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with('+') {
+            ops.push(json!({
+                "op": "insert",
+                "content": &line[1..],
+            }));
+        } else if line.starts_with('-') {
+            ops.push(json!({
+                "op": "delete",
+                "content": &line[1..],
+            }));
+        }
+    }
+
+    Ok(json!({
+        "command": "from_diff",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "data": {
+            "file": file,
+            "diff_file": diff,
+            "operations": ops,
+        },
+        "cache": { "used": false },
+    }))
+}
+
+fn tool_merge_patches(
+    arguments: &Value,
+    _session: &mut SessionState,
+) -> Result<Value, JsonRpcError> {
+    let patch_a: String = parse_arg(arguments, "patch_a")?;
+    let patch_b: String = parse_arg(arguments, "patch_b")?;
+    let base: String = parse_arg(arguments, "base")?;
+
+    let ops_a: Vec<Value> = std::fs::read_to_string(&patch_a)
+        .map_err(|e| tool_error(-32603, &format!("cannot read patch_a: {e}"), None))
+        .and_then(|text| serde_json::from_str(&text).map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_a: {e}"), None)))
+        .unwrap_or_default();
+    let ops_b: Vec<Value> = std::fs::read_to_string(&patch_b)
+        .map_err(|e| tool_error(-32603, &format!("cannot read patch_b: {e}"), None))
+        .and_then(|text| serde_json::from_str(&text).map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_b: {e}"), None)))
+        .unwrap_or_default();
+
+    // Simple merge: detect conflicting anchors
+    let mut conflicts: Vec<Value> = Vec::new();
+    let anchors_a: std::collections::HashSet<String> = ops_a.iter()
+        .filter_map(|op| op.get("anchor").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    let mut merged: Vec<Value> = ops_a.clone();
+
+    for op in &ops_b {
+        let anchor = op.get("anchor").and_then(|v| v.as_str()).map(|s| s.to_string());
+        match anchor {
+            Some(ref a) if anchors_a.contains(a) => {
+                conflicts.push(json!({
+                    "anchor": a,
+                    "op_a": null,
+                    "op_b": op,
+                }));
+            }
+            _ => {
+                merged.push(op.clone());
+            }
+        }
+    }
+
+    Ok(json!({
+        "command": "merge_patches",
+        "exit_code": if conflicts.is_empty() { 0 } else { 1 },
+        "stdout": "",
+        "stderr": "",
+        "data": {
+            "base": base,
+            "merged_ops": merged,
+            "conflicts": conflicts,
+        },
+        "cache": { "used": false },
+    }))
 }
 
 fn tool_definitions() -> Vec<Value> {
