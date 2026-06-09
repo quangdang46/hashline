@@ -2,6 +2,7 @@ pub mod common;
 pub mod delete;
 pub mod doctor;
 pub mod edit;
+pub mod grep;
 pub mod indent;
 pub mod index;
 pub mod insert;

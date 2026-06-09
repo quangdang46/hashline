@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    Commands, DeleteCmd, DoctorCmd, EditCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd, MoveCmd,
-    PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
+    Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd,
+    MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::HashlineError;
@@ -328,6 +328,7 @@ fn dispatch_tool(
         }
         "hashline_stats" => tool_stats(arguments, session),
         "hashline_doctor" => tool_doctor(arguments, session),
+        "hashline_grep" => tool_grep(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -407,6 +408,75 @@ fn tool_doctor(arguments: &Value, session: &mut SessionState) -> Result<Value, J
             tool_error(
                 -32603,
                 &format!("failed to serialize doctor payload: {error}"),
+                None,
+            )
+        })?,
+        true,
+    ))
+}
+
+fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: GrepCmd = parse_args(arguments)?;
+    // Use the session cache to validate the file exists and validate its hash,
+    // but we need to actually search the file content. Load a SearchDocument
+    // distinct from the cached Document since SearchDocument has the line
+    // offsets we need for iteration.
+    session.get(&cmd.file)?;
+
+    let search_doc = crate::document::SearchDocument::load(&cmd.file).map_err(command_error)?;
+
+    let regex = regex::RegexBuilder::new(&cmd.pattern)
+        .case_insensitive(cmd.case_insensitive)
+        .build()
+        .map_err(|e| {
+            tool_error(
+                -32602,
+                &format!("invalid pattern '{}': {}", cmd.pattern, e),
+                None,
+            )
+        })?;
+
+    let mut results = Vec::new();
+
+    for (line_idx, &start) in search_doc.line_offsets.iter().enumerate() {
+        let end = if line_idx + 1 < search_doc.line_offsets.len() {
+            search_doc.line_offsets[line_idx + 1]
+        } else {
+            search_doc.content.len()
+        };
+        let line_end = if search_doc.trailing_newline
+            && end > start
+            && search_doc.content.as_bytes()[end.saturating_sub(1)] == b'\n'
+        {
+            end - 1
+        } else {
+            end.min(search_doc.content.len())
+        };
+        let line_content = search_doc.content[start..line_end]
+            .strip_suffix('\r')
+            .unwrap_or(&search_doc.content[start..line_end]);
+
+        let is_match = regex.is_match(line_content);
+        let include = if cmd.invert { !is_match } else { is_match };
+
+        if include {
+            let fh = crate::hash::full_hash(line_content);
+            let sh = crate::hash::short_from_full(fh);
+            results.push(crate::document::LineView {
+                n: line_idx + 1,
+                hash: crate::hash::format_short_hash(sh),
+                content: line_content.to_string(),
+            });
+        }
+    }
+
+    Ok(success_payload(
+        "grep",
+        0,
+        serde_json::to_value(results).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize grep results: {error}"),
                 None,
             )
         })?,
@@ -1199,6 +1269,142 @@ mod tests {
             error.data.map(|data| data["hint"].clone()),
             Some(json!("use a range like '2:f1..4:9c'"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn grep_tool_returns_matching_lines() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\nbaz hello\n")?;
+
+        let result = dispatch_tool(
+            "hashline_grep",
+            &json!({
+                "file": path,
+                "pattern": "hello",
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        assert_eq!(result["command"], "grep");
+        assert_eq!(result["exit_code"], 0);
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["content"], "hello world");
+        assert_eq!(lines[1]["content"], "baz hello");
+        Ok(())
+    }
+
+    #[test]
+    fn grep_tool_supports_case_insensitive() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "Hello World\nfoo bar\nbaz hello\n")?;
+
+        let result = dispatch_tool(
+            "hashline_grep",
+            &json!({
+                "file": path,
+                "pattern": "hello",
+                "case_insensitive": true,
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["content"], "Hello World");
+        assert_eq!(lines[1]["content"], "baz hello");
+        Ok(())
+    }
+
+    #[test]
+    fn grep_tool_supports_invert() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\nbaz hello\n")?;
+
+        let result = dispatch_tool(
+            "hashline_grep",
+            &json!({
+                "file": path,
+                "pattern": "hello",
+                "invert": true,
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        // Two non-matching lines: "foo bar" and the trailing empty line
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["content"], "foo bar");
+        assert_eq!(lines[1]["content"], "");
+        Ok(())
+    }
+
+    #[test]
+    fn grep_tool_returns_empty_for_no_match() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\n")?;
+
+        let result = dispatch_tool(
+            "hashline_grep",
+            &json!({
+                "file": path,
+                "pattern": "zzzz",
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn grep_tool_returns_line_numbers_and_hashes() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello\nworld\n")?;
+
+        let result = must(dispatch_tool(
+            "hashline_grep",
+            &json!({
+                "file": path,
+                "pattern": "hello",
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["n"], 1);
+        assert_eq!(lines[0]["hash"].as_str().map(|s| s.len()), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn grep_tool_reports_invalid_pattern() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello\n")?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_grep",
+            &json!({
+                "file": path,
+                "pattern": "(unclosed",
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert!(error.message.contains("invalid pattern"));
         Ok(())
     }
 

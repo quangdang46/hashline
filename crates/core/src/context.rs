@@ -60,6 +60,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
     match command {
         Commands::Read(cmd) => format_mode(cmd.json, cmd.ndjson),
         Commands::Index(cmd) => format_mode(cmd.json, cmd.ndjson),
+        Commands::Grep(cmd) => format_mode(cmd.json, cmd.ndjson),
         Commands::Edit(cmd) => flag_mode(cmd.json),
         Commands::Verify(cmd) => flag_mode(cmd.json),
         Commands::Insert(cmd) => flag_mode(cmd.json),
@@ -78,6 +79,7 @@ pub fn json_pretty_for(command: &Commands) -> bool {
     match command {
         Commands::Read(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
         Commands::Index(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
+        Commands::Grep(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
         Commands::Edit(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Verify(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Insert(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),

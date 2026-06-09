@@ -27,6 +27,7 @@ pub enum Commands {
     Insert(InsertCmd),
     Delete(DeleteCmd),
     Verify(VerifyCmd),
+    Grep(GrepCmd),
     Patch(PatchCmd),
     Swap(SwapCmd),
     Move(MoveCmd),
@@ -184,6 +185,34 @@ pub struct VerifyCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Search file content with a pattern",
+    long_about = "Search file content and return matching lines with anchors. Supports literal and regex patterns. Use before hashline_read when you know a pattern and need to localize the target without dumping the whole file."
+)]
+pub struct GrepCmd {
+    pub file: PathBuf,
+    pub pattern: String,
+    #[serde(default)]
+    #[arg(short, long)]
+    pub invert: bool,
+    /// Case-insensitive search. Uses regex with (?i) prefix for correctness.
+    #[serde(default)]
+    #[arg(short = 'i', long)]
+    pub case_insensitive: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+    /// Emit newline-delimited JSON (one object per line, no wrapper). Overrides --json.
+    #[serde(default)]
+    #[arg(long)]
+    pub ndjson: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
