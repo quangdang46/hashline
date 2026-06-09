@@ -63,6 +63,10 @@ pub struct ReadCmd {
     #[serde(default)]
     #[arg(long)]
     pub ndjson: bool,
+    /// Bypass the session cache and load the file fresh from disk.
+    #[serde(default)]
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -79,6 +83,10 @@ pub struct IndexCmd {
     #[serde(default)]
     #[arg(long)]
     pub ndjson: bool,
+    /// Bypass the session cache and load the file fresh from disk.
+    #[serde(default)]
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -187,6 +195,10 @@ pub struct VerifyCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
+    /// Bypass the session cache and load the file fresh from disk.
+    #[serde(default)]
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -362,6 +374,10 @@ pub struct StatsCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
+    /// Bypass the session cache and load the file fresh from disk.
+    #[serde(default)]
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]
@@ -378,6 +394,10 @@ pub struct DoctorCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
+    /// Bypass the session cache and load the file fresh from disk.
+    #[serde(default)]
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Parser)]

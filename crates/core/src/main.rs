@@ -199,7 +199,7 @@ impl<'a> MakeWriter<'a> for SharedFileWriter {
 }
 
 fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i32, HashlineError> {
-    hashline::orchestration::run_command(cli.command, stdout, stderr)
+    hashline::orchestration::run_command(cli.command, stdout, stderr).map(|(code, _)| code)
 }
 
 #[cfg(test)]
@@ -218,6 +218,7 @@ mod tests {
                 json: false,
                 pretty: false,
                 ndjson: false,
+                no_cache: false,
             }),
         };
         let mut stdout = Vec::new();
@@ -294,6 +295,7 @@ mod tests {
                 file: PathBuf::from("demo.txt"),
                 json: true,
                 pretty: false,
+                no_cache: false,
             }),
         };
 

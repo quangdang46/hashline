@@ -41,6 +41,11 @@ pub mod mutation;
 #[cfg(feature = "sha256-anchors")]
 pub mod sha256_window;
 
+/// Session-scoped document cache with LRU eviction and cache-hit/miss
+/// statistics. Used internally by the MCP server but exposed publicly for
+/// embedders who want to reuse the same caching pattern.
+pub mod session_cache;
+
 // ---- Binary-supporting internals (public for the bin, not for consumers) ----
 
 #[doc(hidden)]

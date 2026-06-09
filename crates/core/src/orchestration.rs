@@ -325,14 +325,19 @@ pub fn run<W: Write, E: Write>(
     stdout: &mut W,
     stderr: &mut E,
 ) -> Result<i32, HashlineError> {
-    run_command(cli.command, stdout, stderr)
+    run_command(cli.command, stdout, stderr).map(|(code, _)| code)
 }
 
+/// Execute `command` and return `(exit_code, modified_doc)`.
+///
+/// `modified_doc` is `Some(doc)` when the command was a mutation that
+/// modified a file (edit, insert, delete, patch, swap, move, indent).
+/// Read-only commands return `None`.
 pub fn run_command<W: Write, E: Write>(
     command: Commands,
     stdout: &mut W,
     stderr: &mut E,
-) -> Result<i32, HashlineError> {
+) -> Result<(i32, Option<Document>), HashlineError> {
     let output_mode = output_mode_for(&command);
     let json_pretty = json_pretty_for(&command);
     let risk = assess_command(&command);
@@ -352,7 +357,7 @@ pub fn run_command<W: Write, E: Write>(
     let mut context =
         CommandContext::new(stdout, stderr, output_mode).with_json_pretty(json_pretty);
 
-    match command {
+    let exit_code = match command {
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
         Commands::Index(cmd) => commands::index::run(&mut context, cmd).map(|_| 0),
         Commands::Edit(cmd) => commands::edit::run(&mut context, cmd).map(|_| 0),
@@ -369,7 +374,10 @@ pub fn run_command<W: Write, E: Write>(
         Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
-    }
+    }?;
+
+    let modified_doc = context.modified_doc.take();
+    Ok((exit_code, modified_doc))
 }
 #[cfg(test)]
 mod tests {

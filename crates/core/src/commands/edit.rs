@@ -97,6 +97,10 @@ pub fn run<W: Write, E: Write>(
         None
     };
 
+    // Seed the session cache with the post-mutation document so the
+    // MCP server (or any caller) can avoid a disk re-read.
+    ctx.modified_doc = Some(doc.clone());
+
     if needs_receipt {
         let before_bytes = before_bytes.as_deref().ok_or_else(|| {
             std::io::Error::other("before bytes should exist when receipt is needed")

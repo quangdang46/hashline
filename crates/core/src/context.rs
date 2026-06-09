@@ -1,6 +1,7 @@
 use std::io::Write;
 
 use crate::cli::Commands;
+use crate::document::Document;
 
 /// Coarse output mode. JSON style (compact vs pretty) is tracked separately on
 /// [`CommandContext`] via [`CommandContext::json_pretty`].
@@ -19,6 +20,10 @@ pub struct CommandContext<'a, W: Write, E: Write> {
     stderr: &'a mut E,
     output_mode: OutputMode,
     json_pretty: bool,
+    /// After a successful mutation, the command stores the post-mutation
+    /// [`Document`] here so the caller (e.g. the MCP server) can seed the
+    /// session cache without a disk re-read.
+    pub modified_doc: Option<Document>,
 }
 
 impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
@@ -28,6 +33,7 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
             stderr,
             output_mode,
             json_pretty: false,
+            modified_doc: None,
         }
     }
 
@@ -35,6 +41,13 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
     /// Has no effect on `OutputMode::Pretty` (text) or `OutputMode::Ndjson`.
     pub fn with_json_pretty(mut self, pretty: bool) -> Self {
         self.json_pretty = pretty;
+        self
+    }
+
+    /// Builder helper: set the modified_doc field (used by mutation commands
+    /// to avoid a disk re-read when seeding the session cache).
+    pub fn with_modified_doc(mut self, doc: Document) -> Self {
+        self.modified_doc = Some(doc);
         self
     }
 
@@ -135,6 +148,7 @@ mod tests {
             json: true,
             pretty: false,
             ndjson: false,
+            no_cache: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -221,6 +235,7 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             json: true,
             pretty: false,
+            no_cache: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -235,6 +250,7 @@ mod tests {
             json: true,
             pretty: true,
             ndjson: false,
+            no_cache: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -250,6 +266,7 @@ mod tests {
             json: false,
             pretty: true,
             ndjson: false,
+            no_cache: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
@@ -265,6 +282,7 @@ mod tests {
             json: true,
             pretty: true,
             ndjson: true,
+            no_cache: false,
         });
 
         // ndjson wins over json/pretty

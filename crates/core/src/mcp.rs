@@ -11,12 +11,13 @@ use crate::cli::{
     Commands, AnnotateCmd, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd,
     McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
-use crate::document::{Document, FileMeta, FileStats, read_file_meta};
+use crate::document::Document;
 use crate::error::HashlineError;
 use crate::orchestration::run_command;
 use crate::orchestration::{
     command_name, doctor_payload, index_payload, read_payload, verify_report,
 };
+use crate::session_cache::{CacheStats, SessionCache};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -38,57 +39,11 @@ Preferred workflow:\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
-#[derive(Default)]
-struct SessionState {
-    docs: HashMap<PathBuf, CacheEntry>,
-}
-
-struct CacheEntry {
-    meta: FileMeta,
-    doc: Document,
-    stats: Option<FileStats>,
-}
-
-impl SessionState {
-    fn get(&mut self, path: &Path) -> Result<&mut CacheEntry, JsonRpcError> {
-        let meta = read_file_meta(path).map_err(command_error)?;
-        let key = path.to_path_buf();
-        let needs_refresh = self.docs.get(&key).is_none_or(|entry| entry.meta != meta);
-
-        if needs_refresh {
-            let mut doc = Document::load(path).map_err(command_error)?;
-            Document::build_index_cached(&mut doc); // Pre-populate cache
-            self.docs.insert(
-                key.clone(),
-                CacheEntry {
-                    meta,
-                    doc,
-                    stats: None,
-                },
-            );
-        }
-
-        self.docs
-            .get_mut(&key)
-            .ok_or_else(|| tool_error(-32603, "session cache lookup failed", None))
-    }
-
-    fn invalidate(&mut self, path: &Path) {
-        self.docs.remove(path);
-    }
-}
-
-impl CacheEntry {
-    fn stats(&mut self) -> &FileStats {
-        self.stats.get_or_insert_with(|| self.doc.compute_stats())
-    }
-}
-
 pub fn run(_cmd: McpCmd) -> io::Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
-    let mut session = SessionState::default();
+    let mut session = SessionCache::new(128);
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -158,7 +113,7 @@ struct ToolCallParams {
     arguments: Value,
 }
 
-fn handle_request(request: &JsonRpcRequest, session: &mut SessionState) -> JsonRpcResponse {
+fn handle_request(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
     match request.method.as_str() {
         "initialize" => JsonRpcResponse {
             jsonrpc: "2.0",
@@ -200,7 +155,7 @@ fn handle_request(request: &JsonRpcRequest, session: &mut SessionState) -> JsonR
     }
 }
 
-fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionState) -> JsonRpcResponse {
+fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
     let params: ToolCallParams = match serde_json::from_value(request.params.clone()) {
         Ok(params) => params,
         Err(error) => {
@@ -259,7 +214,7 @@ fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionState) -> Jso
 fn dispatch_tool(
     tool: &str,
     arguments: &Value,
-    session: &mut SessionState,
+    session: &mut SessionCache,
 ) -> Result<Value, JsonRpcError> {
     match tool {
         "hashline_read" => tool_read(arguments, session),
@@ -268,70 +223,84 @@ fn dispatch_tool(
             let mut cmd: EditCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Edit(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Edit(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_insert" => {
             let mut cmd: InsertCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Insert(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Insert(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_delete" => {
             let mut cmd: DeleteCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Delete(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Delete(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_verify" => tool_verify(arguments, session),
         "hashline_patch" => {
             let mut cmd: PatchCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Patch(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Patch(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_swap" => {
             let cmd: SwapCmd = parse_args(arguments)?;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Swap(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Swap(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_move" => {
             let cmd: MoveCmd = parse_args(arguments)?;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Move(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Move(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_indent" => {
             let mut cmd: IndentCmd = parse_args(arguments)?;
             cmd.json = true;
             let path = cmd.file.clone();
-            let result = invoke_command(Commands::Indent(cmd));
-            if result.is_ok() {
+            let (payload, modified_doc) = invoke_command(Commands::Indent(cmd))?;
+            if let Some(doc) = modified_doc {
+                session.after_mutation(&path, doc);
+            } else {
                 session.invalidate(&path);
             }
-            result
+            Ok(payload)
         }
         "hashline_stats" => tool_stats(arguments, session),
         "hashline_doctor" => tool_doctor(arguments, session),
@@ -350,10 +319,11 @@ fn dispatch_tool(
     }
 }
 
-fn tool_read(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_read(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: ReadCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
-    let data = read_payload(&entry.doc, &cmd.anchor, cmd.context).map_err(command_error)?;
+    session.set_no_cache(cmd.no_cache);
+    let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
+    let data = read_payload(entry.doc(), &cmd.anchor, cmd.context).map_err(command_error)?;
     Ok(success_payload(
         "read",
         0,
@@ -364,31 +334,33 @@ fn tool_read(arguments: &Value, session: &mut SessionState) -> Result<Value, Jso
                 None,
             )
         })?,
-        true,
+        session.stats(),
     ))
 }
 
-fn tool_index(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_index(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: IndexCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
+    session.set_no_cache(cmd.no_cache);
+    let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
     Ok(success_payload(
         "index",
         0,
-        serde_json::to_value(index_payload(&entry.doc)).map_err(|error| {
+        serde_json::to_value(index_payload(entry.doc())).map_err(|error| {
             tool_error(
                 -32603,
                 &format!("failed to serialize index payload: {error}"),
                 None,
             )
         })?,
-        true,
+        session.stats(),
     ))
 }
 
-fn tool_verify(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_verify(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: VerifyCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
-    let report = verify_report(&entry.doc, &cmd.anchors);
+    session.set_no_cache(cmd.no_cache);
+    let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
+    let report = verify_report(entry.doc(), &cmd.anchors);
 
     Ok(success_payload(
         "verify",
@@ -400,22 +372,24 @@ fn tool_verify(arguments: &Value, session: &mut SessionState) -> Result<Value, J
                 None,
             )
         })?,
-        true,
+        session.stats(),
     ))
 }
 
-fn tool_stats(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_stats(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: StatsCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
+    session.set_no_cache(cmd.no_cache);
+    let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
     let stats = serde_json::to_value(entry.stats()).map_err(|error| {
         tool_error(-32603, &format!("failed to serialize stats: {error}"), None)
     })?;
-    Ok(success_payload("stats", 0, stats, true))
+    Ok(success_payload("stats", 0, stats, session.stats()))
 }
 
-fn tool_doctor(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_doctor(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: DoctorCmd = parse_args(arguments)?;
-    let entry = session.get(&cmd.file)?;
+    session.set_no_cache(cmd.no_cache);
+    let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
     let stats = entry.stats().clone();
     let payload = doctor_payload(&cmd.file, &stats);
     Ok(success_payload(
@@ -428,17 +402,17 @@ fn tool_doctor(arguments: &Value, session: &mut SessionState) -> Result<Value, J
                 None,
             )
         })?,
-        true,
+        session.stats(),
     ))
 }
 
-fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_grep(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: GrepCmd = parse_args(arguments)?;
     // Use the session cache to validate the file exists and validate its hash,
     // but we need to actually search the file content. Load a SearchDocument
     // distinct from the cached Document since SearchDocument has the line
     // offsets we need for iteration.
-    session.get(&cmd.file)?;
+    session.get_or_load(&cmd.file).map_err(command_error)?;
 
     let search_doc = crate::document::SearchDocument::load(&cmd.file).map_err(command_error)?;
 
@@ -497,13 +471,13 @@ fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, Jso
                 None,
             )
         })?,
-        true,
+        session.stats(),
     ))
 }
 
-fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+fn tool_annotate(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: AnnotateCmd = parse_args(arguments)?;
-    session.get(&cmd.file)?;
+    session.get_or_load(&cmd.file).map_err(command_error)?;
 
     let search_doc = crate::document::SearchDocument::load(&cmd.file).map_err(command_error)?;
 
@@ -587,7 +561,7 @@ fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value,
                 None,
             )
         })?,
-        true,
+        session.stats(),
     ))
 }
 
@@ -664,7 +638,7 @@ fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
     })?)
     .map_err(|e| command_error(HashlineError::Io(e)))?;
 
-    Ok(success_payload("explode", 0, meta, false))
+    Ok(success_payload("explode", 0, meta, &CacheStats::default()))
 }
 
 fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
@@ -761,7 +735,7 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
     });
 
     if dry_run {
-        return Ok(success_payload("implode", 0, result, false));
+        return Ok(success_payload("implode", 0, result, &CacheStats::default()));
     }
 
     // Fix trailing newline: the reassembled content does NOT include a trailing newline.
@@ -773,7 +747,7 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
     std::fs::write(&out, &reassembled)
         .map_err(|e| command_error(HashlineError::Io(e)))?;
 
-    Ok(success_payload("implode", 0, result, false))
+    Ok(success_payload("implode", 0, result, &CacheStats::default()))
 }
 
 fn tool_watch_capabilities() -> Result<Value, JsonRpcError> {
@@ -1655,13 +1629,14 @@ fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError>
     })
 }
 
-fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
+fn invoke_command(command: Commands) -> Result<(Value, Option<Document>), JsonRpcError> {
     let risk = assess_command(&command);
     let command_name = command_name(&command);
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let exit_code = run_command(command, &mut stdout, &mut stderr).map_err(command_error)?;
+    let (exit_code, modified_doc) =
+        run_command(command, &mut stdout, &mut stderr).map_err(command_error)?;
     let stdout_text = String::from_utf8(stdout)
         .map_err(|error| tool_error(-32603, &format!("stdout was not utf-8: {error}"), None))?;
     let stderr_text = String::from_utf8(stderr)
@@ -1687,17 +1662,26 @@ fn invoke_command(command: Commands) -> Result<Value, JsonRpcError> {
         })?;
     }
 
-    Ok(payload)
+    Ok((payload, modified_doc))
 }
 
-fn success_payload(command: &str, exit_code: i32, data: Value, cache_used: bool) -> Value {
+fn success_payload(
+    command: &str,
+    exit_code: i32,
+    data: Value,
+    cache_stats: &crate::session_cache::CacheStats,
+) -> Value {
     json!({
         "command": command,
         "exit_code": exit_code,
         "stdout": "",
         "stderr": "",
         "data": data,
-        "cache": { "used": cache_used },
+        "cache": {
+            "used": cache_stats.hits > 0 || cache_stats.entries > 0,
+            "hits": cache_stats.hits,
+            "entries": cache_stats.entries,
+        },
     })
 }
 
@@ -1751,7 +1735,7 @@ fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError {
 
 fn tool_from_diff(
     arguments: &Value,
-    _session: &mut SessionState,
+    _session: &mut SessionCache,
 ) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
     let diff: String = parse_arg(arguments, "diff")?;
@@ -1803,7 +1787,7 @@ fn tool_from_diff(
 
 fn tool_merge_patches(
     arguments: &Value,
-    _session: &mut SessionState,
+    _session: &mut SessionCache,
 ) -> Result<Value, JsonRpcError> {
     let patch_a: String = parse_arg(arguments, "patch_a")?;
     let patch_b: String = parse_arg(arguments, "patch_b")?;
@@ -2265,7 +2249,7 @@ fn mutation_schema(anchor_key: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{SERVER_INSTRUCTIONS, SessionState, dispatch_tool, tool_definitions};
+    use super::{SERVER_INSTRUCTIONS, SessionCache, dispatch_tool, tool_definitions};
     use anyhow::{Result, anyhow};
     use serde_json::Value;
     use serde_json::json;
@@ -2332,7 +2316,7 @@ mod tests {
             &json!({
                 "file": path,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2347,7 +2331,7 @@ mod tests {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
         write_text(&path, "alpha\nbeta\ngamma\ndelta\nepsilon\n")?;
-        let mut session = SessionState::default();
+        let mut session = SessionCache::new(128);
 
         let read = must(dispatch_tool(
             "hashline_read",
@@ -2417,7 +2401,7 @@ mod tests {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
         write_text(&path, "alpha\n")?;
-        let mut session = SessionState::default();
+        let mut session = SessionCache::new(128);
 
         let first = must(dispatch_tool(
             "hashline_read",
@@ -2442,7 +2426,7 @@ mod tests {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
         write_text(&path, "alpha\nbeta\ngamma\ndelta\n")?;
-        let mut session = SessionState::default();
+        let mut session = SessionCache::new(128);
 
         let read = must(dispatch_tool(
             "hashline_read",
@@ -2473,7 +2457,7 @@ mod tests {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
         write_text(&path, "alpha\nbeta\ngamma\ndelta\n")?;
-        let mut session = SessionState::default();
+        let mut session = SessionCache::new(128);
 
         let read = must(dispatch_tool(
             "hashline_read",
@@ -2509,7 +2493,7 @@ mod tests {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
         write_text(&path, "alpha\nbeta\ngamma\ndelta\n")?;
-        let mut session = SessionState::default();
+        let mut session = SessionCache::new(128);
 
         let read = must(dispatch_tool(
             "hashline_read",
@@ -2551,7 +2535,7 @@ mod tests {
                 "file": path,
                 "pattern": "hello",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2577,7 +2561,7 @@ mod tests {
                 "pattern": "hello",
                 "case_insensitive": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2601,7 +2585,7 @@ mod tests {
                 "pattern": "hello",
                 "invert": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2625,7 +2609,7 @@ mod tests {
                 "file": path,
                 "pattern": "zzzz",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2646,7 +2630,7 @@ mod tests {
                 "file": path,
                 "query": "hello",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2672,7 +2656,7 @@ mod tests {
                 "query": "h[a-z]+",
                 "regex": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2696,7 +2680,7 @@ mod tests {
                 "query": "hello",
                 "regex": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2719,7 +2703,7 @@ mod tests {
                 "query": "hello",
                 "expect_one": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2742,7 +2726,7 @@ mod tests {
                 "query": "zzzz",
                 "expect_one": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert!(error.message.contains("found 0"));
@@ -2762,7 +2746,7 @@ mod tests {
                 "query": "hello",
                 "expect_one": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert!(error.message.contains("found 2"));
@@ -2781,7 +2765,7 @@ mod tests {
                 "file": path,
                 "query": "zzzz",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         );
         let result = must(result)?;
 
@@ -2802,7 +2786,7 @@ mod tests {
                 "file": path,
                 "query": "hello",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         let lines = json_array(&result["data"])?;
@@ -2825,7 +2809,7 @@ mod tests {
                 "query": "(unclosed",
                 "regex": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert!(error.message.contains("invalid query"));
@@ -2844,7 +2828,7 @@ mod tests {
                 "file": path,
                 "pattern": "hello",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         let lines = json_array(&result["data"])?;
@@ -2866,7 +2850,7 @@ mod tests {
                 "file": path,
                 "pattern": "(unclosed",
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert!(error.message.contains("invalid pattern"));
@@ -2878,7 +2862,7 @@ mod tests {
         let dir = must(TempDir::new())?;
         let path = dir.path().join("demo.txt");
         write_text(&path, "alpha\nbeta\ngamma\n")?;
-        let mut session = SessionState::default();
+        let mut session = SessionCache::new(128);
 
         let read = must(dispatch_tool(
             "hashline_read",
@@ -2932,7 +2916,7 @@ mod tests {
                 "file": src,
                 "out": out,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(result["exit_code"], 0);
@@ -2968,7 +2952,7 @@ mod tests {
                 "file": src,
                 "out": out,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(error.code, -32001);
@@ -2991,7 +2975,7 @@ mod tests {
                 "out": out,
                 "force": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(result["exit_code"], 0);
@@ -3011,7 +2995,7 @@ mod tests {
                 "file": src,
                 "out": exploded,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
         assert_eq!(result["exit_code"], 0);
 
@@ -3022,7 +3006,7 @@ mod tests {
                 "dir": exploded,
                 "out": restored,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(result["exit_code"], 0);
@@ -3043,7 +3027,7 @@ mod tests {
                 "dir": exploded,
                 "out": dir.path().join("out.txt"),
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(error.code, -32001);
@@ -3067,7 +3051,7 @@ mod tests {
                 "dir": exploded,
                 "out": dir.path().join("out.txt"),
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(error.code, -32001);
@@ -3079,7 +3063,7 @@ mod tests {
         let result = must(dispatch_tool(
             "hashline_watch_capabilities",
             &json!({}),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(result["exit_code"], 0);
@@ -3103,7 +3087,7 @@ mod tests {
                 "file": path,
                 "continuous": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(error.code, -32602);
@@ -3120,7 +3104,7 @@ mod tests {
         must(dispatch_tool(
             "hashline_explode",
             &json!({ "file": src, "out": exploded }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         let restored = dir.path().join("restored.txt");
@@ -3131,7 +3115,7 @@ mod tests {
                 "out": restored,
                 "dry_run": true,
             }),
-            &mut SessionState::default(),
+            &mut SessionCache::new(128),
         ))?;
 
         assert_eq!(result["exit_code"], 0);

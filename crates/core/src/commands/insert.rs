@@ -55,6 +55,9 @@ pub fn run<W: Write, E: Write>(
         None
     };
 
+    // Seed the session cache with the post-mutation document.
+    ctx.modified_doc = Some(doc.clone());
+
     if needs_receipt {
         let after_bytes = after_bytes
             .as_deref()

@@ -37,6 +37,9 @@ pub fn run<W: Write, E: Write>(
     let after_bytes = result.document.render();
     atomic_write(&cmd.file, &after_bytes)?;
 
+    // Seed the session cache with the post-mutation document.
+    ctx.modified_doc = Some(result.document.clone());
+
     if needs_receipt {
         let receipt = receipt::build_receipt(
             "patch",
