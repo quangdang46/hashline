@@ -85,10 +85,7 @@ impl SessionCache {
         // is not active). Use a `bool` check to avoid holding a reference
         // across the subsequent mutable borrow of `self.docs`.
         if !self.no_cache {
-            let is_hit = self
-                .docs
-                .get(&key)
-                .is_some_and(|entry| entry.meta == meta);
+            let is_hit = self.docs.get(&key).is_some_and(|entry| entry.meta == meta);
             if is_hit {
                 self.stats.hits += 1;
                 self.stats.entries = self.docs.len();
@@ -114,12 +111,11 @@ impl SessionCache {
         self.docs.insert(key.clone(), entry);
         self.stats.entries = self.docs.len();
 
-        self.docs
-            .get_mut(&key)
-            .ok_or_else(|| HashlineError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+        self.docs.get_mut(&key).ok_or_else(|| {
+            HashlineError::Io(std::io::Error::other(
                 "session cache: entry vanished after insert",
-            )))
+            ))
+        })
     }
 
     /// Remove the cache entry for `path`, if any.

@@ -29,10 +29,7 @@ fn main() {
 
     // Check HASHLINE_SOCKET for daemon routing (skip for serve and mcp commands
     // to avoid routing loops)
-    let should_route = !matches!(
-        &cli.command,
-        Commands::Serve(_) | Commands::Mcp(_)
-    );
+    let should_route = !matches!(&cli.command, Commands::Serve(_) | Commands::Mcp(_));
 
     if should_route {
         let no_fallback = std::env::var("HASHLINE_NO_FALLBACK").is_ok();
@@ -281,15 +278,19 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
     let stream = UnixStream::connect(socket_path)
         .map_err(|e| format!("cannot connect to daemon at {}: {e}", socket_path.display()))?;
 
-    let mut reader = io::BufReader::new(stream.try_clone().map_err(|e| format!("clone error: {e}"))?);
+    let mut reader = io::BufReader::new(
+        stream
+            .try_clone()
+            .map_err(|e| format!("clone error: {e}"))?,
+    );
     let mut writer = &stream;
 
     let tool_name = command_to_tool_name(&cli.command);
 
     // Serialize the command struct as JSON arguments
     // We need to serialize the inner command struct.
-    let arguments = serialize_command_args(&cli.command)
-        .map_err(|e| format!("serialization error: {e}"))?;
+    let arguments =
+        serialize_command_args(&cli.command).map_err(|e| format!("serialization error: {e}"))?;
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -301,22 +302,23 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
         "id": 1,
     });
 
-    let request_str = serde_json::to_string(&request)
-        .map_err(|e| format!("json error: {e}"))?;
+    let request_str = serde_json::to_string(&request).map_err(|e| format!("json error: {e}"))?;
 
-    writer.write_all(request_str.as_bytes())
+    writer
+        .write_all(request_str.as_bytes())
         .map_err(|e| format!("write error: {e}"))?;
-    writer.write_all(b"\n")
+    writer
+        .write_all(b"\n")
         .map_err(|e| format!("write error: {e}"))?;
-    writer.flush()
-        .map_err(|e| format!("flush error: {e}"))?;
+    writer.flush().map_err(|e| format!("flush error: {e}"))?;
 
     let mut response_line = String::new();
-    reader.read_line(&mut response_line)
+    reader
+        .read_line(&mut response_line)
         .map_err(|e| format!("read error: {e}"))?;
 
-    let response: Value = serde_json::from_str(&response_line)
-        .map_err(|e| format!("parse response error: {e}"))?;
+    let response: Value =
+        serde_json::from_str(&response_line).map_err(|e| format!("parse response error: {e}"))?;
 
     if let Some(error) = response.get("error") {
         let msg = error["message"].as_str().unwrap_or("unknown error");
@@ -340,14 +342,24 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
         }
         // Print data as JSON if present and no stdout
         if let Some(data) = content.get("data") {
-            if content.get("stdout").and_then(|v| v.as_str()).map_or(true, |s| s.is_empty()) {
+            if content
+                .get("stdout")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.is_empty())
+            {
                 let _ = serde_json::to_writer(std::io::stdout().lock(), data);
                 println!();
             }
         }
-        let exit_code = content.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let exit_code = content
+            .get("exit_code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
         Ok(exit_code)
-    } else if let Some(content_arr) = result.and_then(|r| r.get("content")).and_then(|c| c.as_array()) {
+    } else if let Some(content_arr) = result
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+    {
         for item in content_arr {
             if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                 print!("{text}");
@@ -364,15 +376,18 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
     // Parse URL to get host and port
     let url_parts: Vec<&str> = url.trim_start_matches("http://").split(':').collect();
     let host = url_parts.first().copied().unwrap_or("127.0.0.1");
-    let port: u16 = url_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(17300);
+    let port: u16 = url_parts
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(17300);
 
     let addr = format!("{host}:{port}");
     let mut stream = std::net::TcpStream::connect(&addr)
         .map_err(|e| format!("cannot connect to daemon at {addr}: {e}"))?;
 
     let tool_name = command_to_tool_name(&cli.command);
-    let arguments = serialize_command_args(&cli.command)
-        .map_err(|e| format!("serialization error: {e}"))?;
+    let arguments =
+        serialize_command_args(&cli.command).map_err(|e| format!("serialization error: {e}"))?;
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -384,8 +399,7 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
         "id": 1,
     });
 
-    let body = serde_json::to_string(&request)
-        .map_err(|e| format!("json error: {e}"))?;
+    let body = serde_json::to_string(&request).map_err(|e| format!("json error: {e}"))?;
 
     let http_request = format!(
         "POST /rpc HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -394,33 +408,42 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
     );
 
     use std::io::Write;
-    stream.write_all(http_request.as_bytes())
+    stream
+        .write_all(http_request.as_bytes())
         .map_err(|e| format!("write error: {e}"))?;
 
     let mut reader = io::BufReader::new(&stream);
     let mut response_line = String::new();
-    reader.read_line(&mut response_line)
+    reader
+        .read_line(&mut response_line)
         .map_err(|e| format!("read error: {e}"))?;
 
     // Read headers
     let mut content_length: usize = 0;
     loop {
         let mut header = String::new();
-        reader.read_line(&mut header).map_err(|e| format!("read header error: {e}"))?;
+        reader
+            .read_line(&mut header)
+            .map_err(|e| format!("read header error: {e}"))?;
         let trimmed = header.trim();
         if trimmed.is_empty() {
             break;
         }
-        if let Some(len_str) = trimmed.strip_prefix("Content-Length:").or_else(|| trimmed.strip_prefix("content-length:")) {
+        if let Some(len_str) = trimmed
+            .strip_prefix("Content-Length:")
+            .or_else(|| trimmed.strip_prefix("content-length:"))
+        {
             content_length = len_str.trim().parse().unwrap_or(0);
         }
     }
 
     let mut body_buf = vec![0u8; content_length];
-    reader.read_exact(&mut body_buf).map_err(|e| format!("read body error: {e}"))?;
+    reader
+        .read_exact(&mut body_buf)
+        .map_err(|e| format!("read body error: {e}"))?;
 
-    let response: Value = serde_json::from_slice(&body_buf)
-        .map_err(|e| format!("parse response error: {e}"))?;
+    let response: Value =
+        serde_json::from_slice(&body_buf).map_err(|e| format!("parse response error: {e}"))?;
 
     if let Some(error) = response.get("error") {
         let msg = error["message"].as_str().unwrap_or("unknown error");
@@ -440,12 +463,19 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
             }
         }
         if let Some(data) = content.get("data") {
-            if content.get("stdout").and_then(|v| v.as_str()).map_or(true, |s| s.is_empty()) {
+            if content
+                .get("stdout")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.is_empty())
+            {
                 let _ = serde_json::to_writer(std::io::stdout().lock(), data);
                 println!();
             }
         }
-        let exit_code = content.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let exit_code = content
+            .get("exit_code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
         return Ok(exit_code);
     }
 

@@ -84,7 +84,9 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Stats(cmd) => flag_mode(cmd.json),
         Commands::Doctor(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
-        Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
+        Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => {
+            OutputMode::Pretty
+        }
     }
 }
 

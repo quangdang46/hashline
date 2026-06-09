@@ -237,7 +237,7 @@ impl SearchDocument {
     /// Construct a `SearchDocument` from a string slice, mostly for testing.
     /// Skips the file I/O and binary/utf8 checks that `load` performs.
     #[cfg(test)]
-    pub fn from_str(content: &str) -> SearchDocument {
+    pub fn new(content: &str) -> SearchDocument {
         let (newline, trailing_newline, line_offsets) = parse_line_offsets(content);
         SearchDocument {
             path: PathBuf::from("demo.txt"),

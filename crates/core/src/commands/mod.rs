@@ -1,9 +1,9 @@
 pub mod annotate;
 pub mod common;
-pub mod find_block;
 pub mod delete;
 pub mod doctor;
 pub mod edit;
+pub mod find_block;
 pub mod grep;
 pub mod indent;
 pub mod index;

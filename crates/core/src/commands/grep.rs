@@ -122,7 +122,7 @@ mod tests {
     use crate::document::SearchDocument;
 
     fn test_doc(content: &str) -> SearchDocument {
-        SearchDocument::from_str(content)
+        SearchDocument::new(content)
     }
 
     #[test]

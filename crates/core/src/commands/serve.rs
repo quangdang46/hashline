@@ -40,8 +40,11 @@ pub fn run<W: Write, E: Write>(
 
     // Ensure ~/.hashline/ exists
     if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| HashlineError::Io(io::Error::new(io::ErrorKind::Other, format!("failed to create daemon directory: {e}"))))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            HashlineError::Io(io::Error::other(format!(
+                "failed to create daemon directory: {e}"
+            )))
+        })?;
     }
     if let Some(ref pid_file_path) = pid_file {
         if let Some(parent) = pid_file_path.parent() {
@@ -53,10 +56,13 @@ pub fn run<W: Write, E: Write>(
     let lock_file_path = socket_path.with_extension("sock.lock");
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(true)
         .read(true)
         .write(true)
         .open(&lock_file_path)
-        .map_err(|e| HashlineError::Io(io::Error::new(io::ErrorKind::Other, format!("failed to open lock file: {e}"))))?;
+        .map_err(|e| {
+            HashlineError::Io(io::Error::other(format!("failed to open lock file: {e}")))
+        })?;
 
     // Try to acquire an exclusive lock (non-blocking)
     #[cfg(unix)]
@@ -69,7 +75,10 @@ pub fn run<W: Write, E: Write>(
             if err.kind() == io::ErrorKind::WouldBlock {
                 return Err(HashlineError::Io(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    format!("daemon is already running (lock held at {})", lock_file_path.display()),
+                    format!(
+                        "daemon is already running (lock held at {})",
+                        lock_file_path.display()
+                    ),
                 )));
             }
             return Err(HashlineError::Io(err));
@@ -87,10 +96,7 @@ pub fn run<W: Write, E: Write>(
         {
             let pid = unsafe { libc::fork() };
             if pid < 0 {
-                return Err(HashlineError::Io(io::Error::new(
-                    io::ErrorKind::Other,
-                    "fork failed",
-                )));
+                return Err(HashlineError::Io(io::Error::other("fork failed")));
             }
             if pid > 0 {
                 // Parent process exits
@@ -103,7 +109,9 @@ pub fn run<W: Write, E: Write>(
             }
             // Child continues
             // Create a new session (detach from terminal)
-            unsafe { libc::setsid(); }
+            unsafe {
+                libc::setsid();
+            }
         }
         #[cfg(not(unix))]
         {
@@ -123,8 +131,11 @@ pub fn run<W: Write, E: Write>(
 
     if let Some(port) = http_port {
         let addr = format!("127.0.0.1:{port}");
-        let listener = TcpListener::bind(&addr)
-            .map_err(|e| HashlineError::Io(io::Error::new(io::ErrorKind::Other, format!("failed to bind HTTP on {addr}: {e}"))))?;
+        let listener = TcpListener::bind(&addr).map_err(|e| {
+            HashlineError::Io(io::Error::other(format!(
+                "failed to bind HTTP on {addr}: {e}"
+            )))
+        })?;
 
         writeln!(ctx.stderr(), "hashline daemon listening on http://{addr}")?;
 
@@ -144,8 +155,12 @@ pub fn run<W: Write, E: Write>(
         }
     } else {
         // Unix socket mode
-        let listener = UnixListener::bind(&socket_path)
-            .map_err(|e| HashlineError::Io(io::Error::new(io::ErrorKind::Other, format!("failed to bind socket at {}: {e}", socket_path.display()))))?;
+        let listener = UnixListener::bind(&socket_path).map_err(|e| {
+            HashlineError::Io(io::Error::other(format!(
+                "failed to bind socket at {}: {e}",
+                socket_path.display()
+            )))
+        })?;
 
         // Set permissions so only the owner can connect
         #[cfg(unix)]
@@ -154,7 +169,11 @@ pub fn run<W: Write, E: Write>(
             std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).ok();
         }
 
-        writeln!(ctx.stderr(), "hashline daemon listening on {}", socket_path.display())?;
+        writeln!(
+            ctx.stderr(),
+            "hashline daemon listening on {}",
+            socket_path.display()
+        )?;
 
         for stream in listener.incoming() {
             match stream {
@@ -290,8 +309,10 @@ fn handle_http(stream: TcpStream) -> io::Result<()> {
         }
     };
 
-    let response = if request.method == "tools/call" || request.method == "tools/list"
-        || request.method == "initialize" || request.method == "ping"
+    let response = if request.method == "tools/call"
+        || request.method == "tools/list"
+        || request.method == "initialize"
+        || request.method == "ping"
     {
         mcp::handle_request(&request, &mut session)
     } else {

@@ -37,7 +37,8 @@ pub fn run<W: Write, E: Write>(
         writeln!(
             ctx.stdout(),
             "File: {}  ({} lines)",
-            payload.file, payload.line_count
+            payload.file,
+            payload.line_count
         )?;
         if let Some(ref lang) = payload.language {
             writeln!(ctx.stdout(), "Language: {lang}")?;
@@ -328,8 +329,7 @@ fn find_python_block(
 
 /// Ruby block-opening keywords (with trailing space or pipe for block params).
 const RUBY_OPENERS: &[&str] = &[
-    "def ", "class ", "module ", "do ", "do|",
-    "if ", "unless ", "while ", "until ", "for ",
+    "def ", "class ", "module ", "do ", "do|", "if ", "unless ", "while ", "until ", "for ",
     "begin ", "case ", "case\n",
 ];
 
@@ -429,7 +429,8 @@ mod tests {
 
     #[test]
     fn test_brace_pairs_simple() {
-        let content = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let content =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
         let pairs = find_brace_pairs(&doc, "rs");
         assert_eq!(pairs.len(), 2, "expected 2 brace pairs, got {pairs:?}");
@@ -461,7 +462,8 @@ mod tests {
 
     #[test]
     fn test_find_brace_block_resolve() {
-        let content = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let content =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
         // Anchor at line 3 (1-indexed) = "    if true {" (0-indexed 2)
         // Should find the if-block: start=2, end=4
@@ -472,10 +474,10 @@ mod tests {
 
     #[test]
     fn test_brace_block_rust_function() {
-        let content = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let content =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(3, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(3, content)).unwrap();
         assert_eq!(payload.language.as_deref(), Some("Rust"));
         // The if-block: lines 3..5
         assert_eq!(payload.block_lines.len(), 3);
@@ -485,10 +487,10 @@ mod tests {
 
     #[test]
     fn test_brace_block_rust_outer_function() {
-        let content = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let content =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(2, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(2, content)).unwrap();
         // The function block: lines 1..6
         assert_eq!(payload.block_lines.len(), 6);
         assert!(payload.block_lines[0].content.contains("fn hello()"));
@@ -499,8 +501,7 @@ mod tests {
     fn test_python_block() {
         let content = "def hello():\n    x = 1\n    if True:\n        print('ok')\n    return x\n";
         let doc = Document::from_str(Path::new("test.py"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(4, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(4, content)).unwrap();
         assert_eq!(payload.language.as_deref(), Some("Python"));
         // The enclosing block for the print line is the if-block:
         // "    if True:" + "        print('ok')" = 2 lines
@@ -513,8 +514,7 @@ mod tests {
     fn test_python_outer_block() {
         let content = "def hello():\n    x = 1\n    if True:\n        print('ok')\n    return x\n";
         let doc = Document::from_str(Path::new("test.py"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(2, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(2, content)).unwrap();
         assert_eq!(payload.block_lines.len(), 5);
         assert!(payload.block_lines[0].content.contains("def hello()"));
         assert_eq!(payload.block_lines[4].content, "    return x");
@@ -538,8 +538,7 @@ mod tests {
     fn test_brace_detection_skips_strings() {
         let content = "fn hello() {\n    let s = \"{\";\n}\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(2, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(2, content)).unwrap();
         assert_eq!(payload.block_lines.len(), 3);
         assert_eq!(payload.block_lines[2].content, "}");
     }
@@ -548,8 +547,7 @@ mod tests {
     fn test_ruby_block() {
         let content = "def hello\n  x = 1\n  if true\n    puts 'ok'\n  end\nend\n";
         let doc = Document::from_str(Path::new("test.rb"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(2, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(2, content)).unwrap();
         assert_eq!(payload.language.as_deref(), Some("Ruby"));
         assert_eq!(payload.block_lines.len(), 6);
         assert!(payload.block_lines[0].content.contains("def hello"));
@@ -560,18 +558,17 @@ mod tests {
     fn test_brace_block_skips_block_comment() {
         let content = "fn hello() {\n    /* {\n}\n*/\n    let x = 1;\n}\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(5, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(5, content)).unwrap();
         assert_eq!(payload.block_lines.len(), 6);
         assert_eq!(payload.block_lines[5].content, "}");
     }
 
     #[test]
     fn test_js_block() {
-        let content = "function foo() {\n  let x = 1;\n  if (true) {\n    console.log('ok');\n  }\n}\n";
+        let content =
+            "function foo() {\n  let x = 1;\n  if (true) {\n    console.log('ok');\n  }\n}\n";
         let doc = Document::from_str(Path::new("test.js"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(4, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(4, content)).unwrap();
         assert_eq!(payload.language.as_deref(), Some("JavaScript"));
         assert_eq!(payload.block_lines.len(), 3);
         assert!(payload.block_lines[0].content.contains("if (true)"));
@@ -581,8 +578,7 @@ mod tests {
     fn test_go_block() {
         let content = "func main() {\n\tif true {\n\t\tfmt.Println(\"ok\")\n\t}\n}\n";
         let doc = Document::from_str(Path::new("test.go"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(3, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(3, content)).unwrap();
         assert_eq!(payload.language.as_deref(), Some("Go"));
         assert_eq!(payload.block_lines.len(), 3);
         assert!(payload.block_lines[0].content.contains("if true"));
@@ -592,8 +588,7 @@ mod tests {
     fn test_inline_block() {
         let content = "fn simple() { let x = 1; }\n";
         let doc = Document::from_str(Path::new("test.rs"), content).unwrap();
-        let payload =
-            find_block_payload(&doc, &anchor_for(1, content)).unwrap();
+        let payload = find_block_payload(&doc, &anchor_for(1, content)).unwrap();
         assert_eq!(payload.block_lines.len(), 1);
         assert!(payload.block_lines[0].content.contains("fn simple()"));
     }

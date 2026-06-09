@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    Commands, AnnotateCmd, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd,
+    AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd,
     McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::Document;
@@ -21,7 +21,7 @@ use crate::session_cache::{CacheStats, SessionCache};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use notify::{Config, PollWatcher, EventKind, RecursiveMode, Watcher};
+use notify::{Config, EventKind, PollWatcher, RecursiveMode, Watcher};
 
 use crate::hash::full_hash_bytes;
 use crate::risk::{assess_command, blocked_assessment};
@@ -95,19 +95,13 @@ fn run_proxy() -> io::Result<()> {
     let stream = std::os::unix::net::UnixStream::connect(&socket_path).map_err(|e| {
         io::Error::new(
             io::ErrorKind::ConnectionRefused,
-            format!(
-                "cannot connect to daemon at {}: {e}",
-                socket_path.display()
-            ),
+            format!("cannot connect to daemon at {}: {e}", socket_path.display()),
         )
     })?;
 
-    let read_stream = stream.try_clone().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to clone socket: {e}"),
-        )
-    })?;
+    let read_stream = stream
+        .try_clone()
+        .map_err(|e| io::Error::other(format!("failed to clone socket: {e}")))?;
     let mut reader = io::BufReader::new(read_stream);
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -171,7 +165,10 @@ struct ToolCallParams {
     arguments: Value,
 }
 
-pub(crate) fn handle_request(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
+pub(crate) fn handle_request(
+    request: &JsonRpcRequest,
+    session: &mut SessionCache,
+) -> JsonRpcResponse {
     match request.method.as_str() {
         "initialize" => JsonRpcResponse {
             jsonrpc: "2.0",
@@ -213,7 +210,10 @@ pub(crate) fn handle_request(request: &JsonRpcRequest, session: &mut SessionCach
     }
 }
 
-pub(crate) fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
+pub(crate) fn handle_tool_call(
+    request: &JsonRpcRequest,
+    session: &mut SessionCache,
+) -> JsonRpcResponse {
     let params: ToolCallParams = match serde_json::from_value(request.params.clone()) {
         Ok(params) => params,
         Err(error) => {
@@ -626,7 +626,10 @@ fn tool_annotate(arguments: &Value, session: &mut SessionCache) -> Result<Value,
 fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
     let out: String = parse_arg(arguments, "out")?;
-    let force: bool = arguments.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force: bool = arguments
+        .get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let out_path = Path::new(&out);
     if out_path.exists() {
@@ -635,12 +638,17 @@ fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
                 path: out,
             }));
         }
-        std::fs::remove_dir_all(out_path)
-            .map_err(|e| tool_error(-32603, &format!("failed to remove existing output directory: {e}"), None))?;
+        std::fs::remove_dir_all(out_path).map_err(|e| {
+            tool_error(
+                -32603,
+                &format!("failed to remove existing output directory: {e}"),
+                None,
+            )
+        })?;
     }
 
-    let content = std::fs::read_to_string(&file)
-        .map_err(|e| command_error(HashlineError::Io(e)))?;
+    let content =
+        std::fs::read_to_string(&file).map_err(|e| command_error(HashlineError::Io(e)))?;
 
     // Detect newline style
     let (newline_style, lines_raw): (&str, Vec<&str>) = if content.contains("\r\n") {
@@ -670,13 +678,11 @@ fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
         lines_raw[..line_count].to_vec()
     };
 
-    std::fs::create_dir_all(out_path)
-        .map_err(|e| command_error(HashlineError::Io(e)))?;
+    std::fs::create_dir_all(out_path).map_err(|e| command_error(HashlineError::Io(e)))?;
 
     for (i, line) in effective_lines.iter().enumerate() {
         let line_file = out_path.join(format!("L{}", i + 1));
-        std::fs::write(&line_file, line)
-            .map_err(|e| command_error(HashlineError::Io(e)))?;
+        std::fs::write(&line_file, line).map_err(|e| command_error(HashlineError::Io(e)))?;
     }
 
     // Compute content hash over the raw file bytes
@@ -691,9 +697,11 @@ fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
     });
 
     let meta_path = out_path.join(".meta.json");
-    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).map_err(|e| {
-        tool_error(-32603, &format!("failed to serialize meta: {e}"), None)
-    })?)
+    std::fs::write(
+        &meta_path,
+        serde_json::to_string_pretty(&meta)
+            .map_err(|e| tool_error(-32603, &format!("failed to serialize meta: {e}"), None))?,
+    )
     .map_err(|e| command_error(HashlineError::Io(e)))?;
 
     Ok(success_payload("explode", 0, meta, &CacheStats::default()))
@@ -702,17 +710,17 @@ fn tool_explode(arguments: &Value) -> Result<Value, JsonRpcError> {
 fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
     let dir: String = parse_arg(arguments, "dir")?;
     let out: String = parse_arg(arguments, "out")?;
-    let dry_run: bool = arguments.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dry_run: bool = arguments
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let dir_path = Path::new(&dir);
 
     // Read and validate .meta.json
     let meta_path = dir_path.join(".meta.json");
-    let meta_content = std::fs::read_to_string(&meta_path).map_err(|_| {
-        command_error(HashlineError::ImplodeMissingMeta {
-            path: dir.clone(),
-        })
-    })?;
+    let meta_content = std::fs::read_to_string(&meta_path)
+        .map_err(|_| command_error(HashlineError::ImplodeMissingMeta { path: dir.clone() }))?;
 
     let meta: serde_json::Value = serde_json::from_str(&meta_content).map_err(|e| {
         command_error(HashlineError::ImplodeInvalidMeta {
@@ -721,16 +729,25 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
         })
     })?;
 
-    let line_count = meta.get("line_count").and_then(|v| v.as_u64()).ok_or_else(|| {
-        command_error(HashlineError::ImplodeInvalidMeta {
-            path: meta_path.to_string_lossy().to_string(),
-            reason: "missing or invalid 'line_count'".into(),
-        })
-    })? as usize;
+    let line_count = meta
+        .get("line_count")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| {
+            command_error(HashlineError::ImplodeInvalidMeta {
+                path: meta_path.to_string_lossy().to_string(),
+                reason: "missing or invalid 'line_count'".into(),
+            })
+        })? as usize;
 
-    let newline_style = meta.get("newline_style").and_then(|v| v.as_str()).unwrap_or("lf");
+    let newline_style = meta
+        .get("newline_style")
+        .and_then(|v| v.as_str())
+        .unwrap_or("lf");
 
-    let _trailing_newline = meta.get("trailing_newline").and_then(|v| v.as_bool()).unwrap_or(true);
+    let _trailing_newline = meta
+        .get("trailing_newline")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     // Validate the directory: no unexpected files
     let mut entries: Vec<_> = std::fs::read_dir(dir_path)
@@ -747,7 +764,7 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
         }
         if name_str.starts_with('L') {
             // It's a line file — validate it's numeric after L
-            let num_part = &name_str[1..];
+            let num_part = name_str.strip_prefix('L').unwrap_or(&name_str);
             if num_part.parse::<usize>().is_ok() {
                 continue;
             }
@@ -781,10 +798,14 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
     }
 
     // Validate content hash if present
-    let hash_mismatch = meta.get("content_hash").and_then(|v| v.as_str()).map(|expected_hash| {
-        let actual_hash = format!("{:08x}", full_hash_bytes(reassembled.as_bytes()));
-        actual_hash != expected_hash
-    }).unwrap_or(false);
+    let hash_mismatch = meta
+        .get("content_hash")
+        .and_then(|v| v.as_str())
+        .map(|expected_hash| {
+            let actual_hash = format!("{:08x}", full_hash_bytes(reassembled.as_bytes()));
+            actual_hash != expected_hash
+        })
+        .unwrap_or(false);
 
     let result = json!({
         "line_count": line_count,
@@ -793,7 +814,12 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
     });
 
     if dry_run {
-        return Ok(success_payload("implode", 0, result, &CacheStats::default()));
+        return Ok(success_payload(
+            "implode",
+            0,
+            result,
+            &CacheStats::default(),
+        ));
     }
 
     // Fix trailing newline: the reassembled content does NOT include a trailing newline.
@@ -802,10 +828,14 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
         reassembled.push_str(line_separator);
     }
 
-    std::fs::write(&out, &reassembled)
-        .map_err(|e| command_error(HashlineError::Io(e)))?;
+    std::fs::write(&out, &reassembled).map_err(|e| command_error(HashlineError::Io(e)))?;
 
-    Ok(success_payload("implode", 0, result, &CacheStats::default()))
+    Ok(success_payload(
+        "implode",
+        0,
+        result,
+        &CacheStats::default(),
+    ))
 }
 
 fn tool_watch_capabilities() -> Result<Value, JsonRpcError> {
@@ -824,7 +854,10 @@ fn tool_watch_capabilities() -> Result<Value, JsonRpcError> {
 
 fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
-    let continuous: bool = arguments.get("continuous").and_then(|v| v.as_bool()).unwrap_or(false);
+    let continuous: bool = arguments
+        .get("continuous")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if continuous {
         return Err(tool_error(
@@ -851,23 +884,11 @@ fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
         tx,
         Config::default().with_poll_interval(Duration::from_millis(500)),
     )
-    .map_err(|e| {
-        tool_error(
-            -32603,
-            &format!("failed to create PollWatcher: {e}"),
-            None,
-        )
-    })?;
+    .map_err(|e| tool_error(-32603, &format!("failed to create PollWatcher: {e}"), None))?;
 
     watcher
         .watch(file_path, RecursiveMode::NonRecursive)
-        .map_err(|e| {
-            tool_error(
-                -32603,
-                &format!("failed to watch file: {e}"),
-                None,
-            )
-        })?;
+        .map_err(|e| tool_error(-32603, &format!("failed to watch file: {e}"), None))?;
 
     // Wait for one Modify event, timeout after 60 seconds
     let timeout = Duration::from_secs(60);
@@ -890,11 +911,7 @@ fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
                 // Ignore non-modify events and continue waiting
             }
             Ok(Err(e)) => {
-                return Err(tool_error(
-                    -32603,
-                    &format!("watch error: {e}"),
-                    None,
-                ));
+                return Err(tool_error(-32603, &format!("watch error: {e}"), None));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 break None;
@@ -910,7 +927,11 @@ fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
 
     match event_opt {
         Some(event) => {
-            let paths: Vec<String> = event.paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let paths: Vec<String> = event
+                .paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
             let kind = format!("{:?}", event.kind);
             Ok(json!({
                 "command": "watch",
@@ -947,9 +968,18 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| ".".to_string());
-    let depth = arguments.get("depth").and_then(|v| v.as_u64()).map(|d| d as usize);
-    let budget = arguments.get("budget").and_then(|v| v.as_u64()).map(|b| b as usize);
-    let json_out = arguments.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+    let depth = arguments
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|d| d as usize);
+    let budget = arguments
+        .get("budget")
+        .and_then(|v| v.as_u64())
+        .map(|b| b as usize);
+    let json_out = arguments
+        .get("json")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let root = std::path::Path::new(&scope);
     if !root.is_dir() {
@@ -983,9 +1013,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
         });
 
     for entry in walk {
-        let entry = entry.map_err(|e| {
-            tool_error(-32603, &format!("walk error: {e}"), None)
-        })?;
+        let entry = entry.map_err(|e| tool_error(-32603, &format!("walk error: {e}"), None))?;
         if entry.depth() == 0 {
             continue;
         }
@@ -1016,7 +1044,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
     // Sort by depth descending so we process deepest first
     let mut all_dirs: Vec<(PathBuf, u32)> = dirs.clone();
     // Add parent dirs of files that aren't in dirs already
-    for (dir_path, _) in dir_totals.iter() {
+    for dir_path in dir_totals.keys() {
         if !all_dirs.iter().any(|(p, _)| p == dir_path) {
             let depth_val = dir_path
                 .strip_prefix(root)
@@ -1028,7 +1056,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
     // Also add root
     all_dirs.push((root.to_path_buf(), 0));
 
-    all_dirs.sort_by(|a, b| b.1.cmp(&a.1)); // deepest first
+    all_dirs.sort_by_cached_key(|a| std::cmp::Reverse(a.1)); // deepest first
 
     for (dir_path, _) in &all_dirs {
         if *dir_path == root {
@@ -1042,14 +1070,18 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
         }
     }
 
-    let total_files = dir_totals.get(root).map(|(c, _)| *c).unwrap_or(files.len() as u64);
+    let total_files = dir_totals
+        .get(root)
+        .map(|(c, _)| *c)
+        .unwrap_or(files.len() as u64);
     let total_tokens = dir_totals.get(root).map(|(_, t)| *t).unwrap_or(0);
 
     if json_out {
         // Build JSON tree
+        #[allow(clippy::only_used_in_recursion)]
         fn build_json_tree(
             dir: &Path,
-            root: &Path,
+            _root: &Path,
             dir_totals: &HashMap<PathBuf, (u64, usize)>,
             all_files: &[(PathBuf, u64)],
             depth_limit: Option<usize>,
@@ -1065,9 +1097,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
             // Collect subdirectories
             let mut subdirs: Vec<PathBuf> = dir_totals
                 .keys()
-                .filter(|p| {
-                    p.parent().map(|parent| parent == dir).unwrap_or(false) && *p != dir
-                })
+                .filter(|p| p.parent().map(|parent| parent == dir).unwrap_or(false) && *p != dir)
                 .cloned()
                 .collect();
             subdirs.sort();
@@ -1075,9 +1105,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
             // Collect files directly in this dir
             let mut direct_files: Vec<(PathBuf, u64)> = all_files
                 .iter()
-                .filter(|(fp, _)| {
-                    fp.parent().map(|parent| parent == dir).unwrap_or(false)
-                })
+                .filter(|(fp, _)| fp.parent().map(|parent| parent == dir).unwrap_or(false))
                 .cloned()
                 .collect();
             direct_files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1088,18 +1116,24 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
                         break;
                     }
                 }
-                let sub_name = subdir
+                let _sub_name = subdir
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let (fc, tt) = dir_totals.get(&subdir).copied().unwrap_or((0, 0));
-                let max_child_depth = depth_limit.map(|max| {
-                    if current_depth >= max { 0 } else { max - current_depth - 1 }
-                }).unwrap_or(usize::MAX);
+                let (_fc, tt) = dir_totals.get(&subdir).copied().unwrap_or((0, 0));
+                let _max_child_depth = depth_limit
+                    .map(|max| {
+                        if current_depth >= max {
+                            0
+                        } else {
+                            max - current_depth - 1
+                        }
+                    })
+                    .unwrap_or(usize::MAX);
 
                 let child = build_json_tree(
                     &subdir,
-                    root,
+                    _root,
                     dir_totals,
                     all_files,
                     depth_limit,
@@ -1168,9 +1202,10 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
         }))
     } else {
         // Text tree
+        #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
         fn build_text_tree(
             dir: &Path,
-            root: &Path,
+            _root: &Path,
             dir_totals: &HashMap<PathBuf, (u64, usize)>,
             all_files: &[(PathBuf, u64)],
             prefix: &str,
@@ -1185,14 +1220,15 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
                 .unwrap_or_default();
 
             let (total_fc, total_tt) = dir_totals.get(dir).copied().unwrap_or((0, 0));
-            lines.push(format!("{}/ ({} files, {} tokens)", dir_name, total_fc, total_tt));
+            lines.push(format!(
+                "{}/ ({} files, {} tokens)",
+                dir_name, total_fc, total_tt
+            ));
 
             // Collect subdirectories
             let mut subdirs: Vec<PathBuf> = dir_totals
                 .keys()
-                .filter(|p| {
-                    p.parent().map(|parent| parent == dir).unwrap_or(false) && *p != dir
-                })
+                .filter(|p| p.parent().map(|parent| parent == dir).unwrap_or(false) && *p != dir)
                 .cloned()
                 .collect();
             subdirs.sort();
@@ -1200,9 +1236,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
             // Collect files directly in this dir
             let mut direct_files: Vec<(PathBuf, u64)> = all_files
                 .iter()
-                .filter(|(fp, _)| {
-                    fp.parent().map(|parent| parent == dir).unwrap_or(false)
-                })
+                .filter(|(fp, _)| fp.parent().map(|parent| parent == dir).unwrap_or(false))
                 .cloned()
                 .collect();
             direct_files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1227,14 +1261,20 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
                 let is_last = i == total_items - 1 && direct_files.is_empty();
                 let conn = if is_last { "└── " } else { "├── " };
                 let child_prefix = if is_last { "    " } else { "│   " };
-                let child_depth = depth_limit.map(|max| {
-                    if current_depth >= max { 0 } else { max - current_depth - 1 }
-                }).unwrap_or(usize::MAX);
+                let _child_depth = depth_limit
+                    .map(|max| {
+                        if current_depth >= max {
+                            0
+                        } else {
+                            max - current_depth - 1
+                        }
+                    })
+                    .unwrap_or(usize::MAX);
 
                 let before_len = lines.len();
                 build_text_tree(
                     subdir,
-                    root,
+                    _root,
                     dir_totals,
                     all_files,
                     &format!("{}{}", prefix, child_prefix),
@@ -1247,9 +1287,28 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
                 if before_len < lines.len() {
                     // Prepend connector to first line (the dir header that was already added)
                     let (fc, tt) = dir_totals.get(subdir).copied().unwrap_or((0, 0));
-                    let header = format!("{}{}/ ({} files, {} tokens)", conn, subdir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), fc, tt);
+                    let header = format!(
+                        "{}{}/ ({} files, {} tokens)",
+                        conn,
+                        subdir
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
+                        fc,
+                        tt
+                    );
                     if let Some(last) = lines.last_mut() {
-                        if *last == format!("{}/ ({} files, {} tokens)", subdir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), fc, tt) {
+                        if *last
+                            == format!(
+                                "{}/ ({} files, {} tokens)",
+                                subdir
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy())
+                                    .unwrap_or_default(),
+                                fc,
+                                tt
+                            )
+                        {
                             // Replace the header we just added
                             *last = header;
                         }
@@ -1259,7 +1318,13 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
                     let (fc, tt) = dir_totals.get(subdir).copied().unwrap_or((0, 0));
                     lines.push(format!(
                         "{}{}/ ({} files, {} tokens)",
-                        conn, subdir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), fc, tt
+                        conn,
+                        subdir
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
+                        fc,
+                        tt
                     ));
                 }
             }
@@ -1274,10 +1339,7 @@ fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
 
                 if let Some(budget) = budget_remaining.as_mut() {
                     if *budget == 0 {
-                        lines.push(format!(
-                            "{}└── ... (truncated)",
-                            prefix
-                        ));
+                        lines.push(format!("{}└── ... (truncated)", prefix));
                         break;
                     }
                     *budget = budget.saturating_sub(*tokens as usize);
@@ -1329,9 +1391,18 @@ fn estimate_file_tokens(path: &Path) -> u64 {
 
 fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
     let query: String = parse_arg(arguments, "query")?;
-    let file: Option<String> = arguments.get("file").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let scope: Option<String> = arguments.get("scope").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let expand: bool = arguments.get("expand").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file: Option<String> = arguments
+        .get("file")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let scope: Option<String> = arguments
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let expand: bool = arguments
+        .get("expand")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if file.is_some() && scope.is_some() {
         return Err(tool_error(
@@ -1341,9 +1412,8 @@ fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
         ));
     }
 
-    let re = regex::Regex::new(&query).map_err(|e| {
-        tool_error(-32602, &format!("invalid regex: {e}"), None)
-    })?;
+    let re = regex::Regex::new(&query)
+        .map_err(|e| tool_error(-32602, &format!("invalid regex: {e}"), None))?;
 
     let mut results = Vec::new();
     let max_results = 100;
@@ -1351,7 +1421,11 @@ fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
     if let Some(file_path) = file {
         let path = Path::new(&file_path);
         if !path.exists() {
-            return Err(tool_error(-32001, &format!("file not found: {file_path}"), None));
+            return Err(tool_error(
+                -32001,
+                &format!("file not found: {file_path}"),
+                None,
+            ));
         }
         search_file(path, &re, expand, &mut results, max_results);
     } else {
@@ -1365,7 +1439,10 @@ fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
             ));
         }
 
-        let extensions = [".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".swift"];
+        let extensions = [
+            ".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs",
+            ".swift",
+        ];
         let walk = walkdir::WalkDir::new(root)
             .follow_links(false)
             .into_iter()
@@ -1412,13 +1489,7 @@ fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
     }))
 }
 
-fn search_file(
-    path: &Path,
-    re: &regex::Regex,
-    expand: bool,
-    results: &mut Vec<Value>,
-    max: usize,
-) {
+fn search_file(path: &Path, re: &regex::Regex, expand: bool, results: &mut Vec<Value>, max: usize) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
@@ -1453,7 +1524,10 @@ fn tool_callees(arguments: &Value) -> Result<Value, JsonRpcError> {
         .and_then(|v| v.as_u64())
         .map(|d| d as usize)
         .unwrap_or(3);
-    let json_out: bool = arguments.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+    let json_out: bool = arguments
+        .get("json")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if depth == 0 {
         return Err(tool_error(-32602, "depth must be at least 1", None));
@@ -1461,11 +1535,18 @@ fn tool_callees(arguments: &Value) -> Result<Value, JsonRpcError> {
 
     let root = Path::new(&scope);
     if !root.is_dir() {
-        return Err(tool_error(-32001, &format!("not a directory: {scope}"), None));
+        return Err(tool_error(
+            -32001,
+            &format!("not a directory: {scope}"),
+            None,
+        ));
     }
 
     // Find all source files
-    let extensions = [".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".swift"];
+    let extensions = [
+        ".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs",
+        ".swift",
+    ];
     let mut source_files = Vec::new();
     let walk = walkdir::WalkDir::new(root)
         .follow_links(false)
@@ -1538,10 +1619,20 @@ fn tool_callees(arguments: &Value) -> Result<Value, JsonRpcError> {
                         // Skip self-references
                         continue;
                     }
-                    if visited.contains(&(caller.clone(), func_name.clone(), path_str.clone(), line_no + 1)) {
+                    if visited.contains(&(
+                        caller.clone(),
+                        func_name.clone(),
+                        path_str.clone(),
+                        line_no + 1,
+                    )) {
                         continue;
                     }
-                    visited.insert((caller.clone(), func_name.clone(), path_str.clone(), line_no + 1));
+                    visited.insert((
+                        caller.clone(),
+                        func_name.clone(),
+                        path_str.clone(),
+                        line_no + 1,
+                    ));
 
                     results.push(json!({
                         "function": caller,
@@ -1621,29 +1712,18 @@ fn tool_callees(arguments: &Value) -> Result<Value, JsonRpcError> {
 fn find_containing_function(content: &str, line_no: usize) -> Option<String> {
     // Scan backward from the current line to find the nearest function definition
     let lines: Vec<&str> = content.lines().collect();
-    let mut brace_depth = 0;
 
-    // First, count brace depth from current line backward
-    // to find what function definition we're inside
+    // Use a combined regex to match function defs across languages
+    let func_re = regex::Regex::new(
+        r"(?:fn\s+(\w+)|def\s+(\w+)|function\s+(\w+)|(\w+)\s*=\s*(?:function|\(|async)|func\s+(\w+)|sub\s+(\w+)|def\w+\s+(\w+))"
+    ).ok()?;
+
     for i in (0..=line_no.min(lines.len().saturating_sub(1))).rev() {
         let line = lines[i];
 
-        // Track brace depth going backward
-        for ch in line.chars() {
-            match ch {
-                '}' => brace_depth = brace_depth + 1,
-                '{' => brace_depth = brace_depth - 1,
-                _ => {}
-            }
-        }
-
-        // Use a combined regex to match function defs across languages
-        let func_re = regex::Regex::new(
-            r"(?:fn\s+(\w+)|def\s+(\w+)|function\s+(\w+)|(\w+)\s*=\s*(?:function|\(|async)|func\s+(\w+)|sub\s+(\w+)|def\w+\s+(\w+))"
-        ).ok()?;
-
         if let Some(caps) = func_re.captures(line) {
-            let name = caps.get(1)
+            let name = caps
+                .get(1)
                 .or_else(|| caps.get(2))
                 .or_else(|| caps.get(3))
                 .or_else(|| caps.get(5))
@@ -1657,17 +1737,14 @@ fn find_containing_function(content: &str, line_no: usize) -> Option<String> {
 
     None
 }
-
 pub fn parse_arg<T: DeserializeOwned>(arguments: &Value, key: &str) -> Result<T, JsonRpcError> {
-    let value = arguments
-        .get(key)
-        .ok_or_else(|| {
-            tool_error(
-                -32602,
-                &format!("missing required argument '{key}'"),
-                Some(json!({ "arguments": arguments })),
-            )
-        })?;
+    let value = arguments.get(key).ok_or_else(|| {
+        tool_error(
+            -32602,
+            &format!("missing required argument '{key}'"),
+            Some(json!({ "arguments": arguments })),
+        )
+    })?;
     serde_json::from_value(value.clone()).map_err(|error| {
         tool_error(
             -32602,
@@ -1791,15 +1868,12 @@ pub fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError
     }
 }
 
-fn tool_from_diff(
-    arguments: &Value,
-    _session: &mut SessionCache,
-) -> Result<Value, JsonRpcError> {
+fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
     let diff: String = parse_arg(arguments, "diff")?;
 
-    let diff_content =
-        std::fs::read_to_string(&diff).map_err(|e| tool_error(-32603, &format!("cannot read diff file: {e}"), None))?;
+    let diff_content = std::fs::read_to_string(&diff)
+        .map_err(|e| tool_error(-32603, &format!("cannot read diff file: {e}"), None))?;
 
     // Simple unified diff parser
     let mut ops: Vec<Value> = Vec::new();
@@ -1819,12 +1893,12 @@ fn tool_from_diff(
         if line.starts_with('+') {
             ops.push(json!({
                 "op": "insert",
-                "content": &line[1..],
+                "content": line.strip_prefix('+').unwrap_or(line),
             }));
         } else if line.starts_with('-') {
             ops.push(json!({
                 "op": "delete",
-                "content": &line[1..],
+                "content": line.strip_prefix('-').unwrap_or(line),
             }));
         }
     }
@@ -1853,22 +1927,36 @@ fn tool_merge_patches(
 
     let ops_a: Vec<Value> = std::fs::read_to_string(&patch_a)
         .map_err(|e| tool_error(-32603, &format!("cannot read patch_a: {e}"), None))
-        .and_then(|text| serde_json::from_str(&text).map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_a: {e}"), None)))
+        .and_then(|text| {
+            serde_json::from_str(&text)
+                .map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_a: {e}"), None))
+        })
         .unwrap_or_default();
     let ops_b: Vec<Value> = std::fs::read_to_string(&patch_b)
         .map_err(|e| tool_error(-32603, &format!("cannot read patch_b: {e}"), None))
-        .and_then(|text| serde_json::from_str(&text).map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_b: {e}"), None)))
+        .and_then(|text| {
+            serde_json::from_str(&text)
+                .map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_b: {e}"), None))
+        })
         .unwrap_or_default();
 
     // Simple merge: detect conflicting anchors
     let mut conflicts: Vec<Value> = Vec::new();
-    let anchors_a: std::collections::HashSet<String> = ops_a.iter()
-        .filter_map(|op| op.get("anchor").and_then(|v| v.as_str()).map(|s| s.to_string()))
+    let anchors_a: std::collections::HashSet<String> = ops_a
+        .iter()
+        .filter_map(|op| {
+            op.get("anchor")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
     let mut merged: Vec<Value> = ops_a.clone();
 
     for op in &ops_b {
-        let anchor = op.get("anchor").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let anchor = op
+            .get("anchor")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         match anchor {
             Some(ref a) if anchors_a.contains(a) => {
                 conflicts.push(json!({
@@ -2987,8 +3075,7 @@ mod tests {
         assert_eq!(read_text(&out.join("L2"))?, "beta");
         assert_eq!(read_text(&out.join("L3"))?, "gamma");
 
-        let meta: serde_json::Value =
-            serde_json::from_str(&read_text(&out.join(".meta.json"))?)?;
+        let meta: serde_json::Value = serde_json::from_str(&read_text(&out.join(".meta.json"))?)?;
         assert_eq!(meta["line_count"], 3);
         assert_eq!(meta["newline_style"], "lf");
         assert_eq!(meta["trailing_newline"], true);
@@ -3098,8 +3185,10 @@ mod tests {
         let dir = must(TempDir::new())?;
         let exploded = dir.path().join("exploded");
         must(std::fs::create_dir(&exploded))?;
-        write_text(&exploded.join(".meta.json"),
-            "{\"line_count\":1,\"newline_style\":\"lf\",\"trailing_newline\":true}\n")?;
+        write_text(
+            &exploded.join(".meta.json"),
+            "{\"line_count\":1,\"newline_style\":\"lf\",\"trailing_newline\":true}\n",
+        )?;
         must(std::fs::write(exploded.join("L1"), "hello"))?;
         must(std::fs::write(exploded.join("notes.txt"), "unexpected"))?;
 
