@@ -81,6 +81,7 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Stats(_) => "stats",
         Commands::Doctor(_) => "doctor",
         Commands::FindBlock(_) => "find-block",
+        Commands::Serve(_) => "serve",
         Commands::Mcp(_) => "mcp",
     }
 }
@@ -373,6 +374,7 @@ pub fn run_command<W: Write, E: Write>(
         Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
         Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
+        Commands::Serve(cmd) => commands::serve::run(&mut context, cmd).map(|_| 0),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
     }?;
 

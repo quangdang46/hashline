@@ -39,7 +39,17 @@ Preferred workflow:\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
-pub fn run(_cmd: McpCmd) -> io::Result<()> {
+/// Create a fresh session for a daemon connection. Each connection gets
+/// its own SessionCache so concurrent requests don't share mutable state.
+pub fn new_session() -> SessionCache {
+    SessionCache::new(128)
+}
+
+pub fn run(cmd: McpCmd) -> io::Result<()> {
+    if cmd.proxy_to_daemon {
+        return run_proxy();
+    }
+
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -78,32 +88,80 @@ pub fn run(_cmd: McpCmd) -> io::Result<()> {
     Ok(())
 }
 
+/// Proxy MCP stdin/stdout to a daemon via Unix socket.
+/// Forwards each JSON-RPC line to the daemon and writes the response back.
+fn run_proxy() -> io::Result<()> {
+    let socket_path = crate::commands::serve::default_daemon_socket();
+    let stream = std::os::unix::net::UnixStream::connect(&socket_path).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!(
+                "cannot connect to daemon at {}: {e}",
+                socket_path.display()
+            ),
+        )
+    })?;
+
+    let read_stream = stream.try_clone().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to clone socket: {e}"),
+        )
+    })?;
+    let mut reader = io::BufReader::new(read_stream);
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Forward to daemon
+        (&stream).write_all(line.as_bytes())?;
+        (&stream).write_all(b"\n")?;
+        (&stream).flush()?;
+
+        // Read response
+        let mut response = String::new();
+        reader.read_line(&mut response)?;
+
+        // Write to stdout
+        stdout.write_all(response.as_bytes())?;
+        stdout.flush()?;
+    }
+
+    Ok(())
+}
+
 #[derive(Deserialize)]
-struct JsonRpcRequest {
+pub struct JsonRpcRequest {
     #[serde(rename = "jsonrpc")]
-    _jsonrpc: String,
-    id: Option<Value>,
-    method: String,
+    pub _jsonrpc: String,
+    pub id: Option<Value>,
+    pub method: String,
     #[serde(default)]
-    params: Value,
+    pub params: Value,
 }
 
 #[derive(Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: &'static str,
-    id: Option<Value>,
+pub struct JsonRpcResponse {
+    pub jsonrpc: &'static str,
+    pub id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
+    pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
+    pub error: Option<JsonRpcError>,
 }
 
 #[derive(Debug, Serialize)]
-struct JsonRpcError {
-    code: i32,
-    message: String,
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
+    pub data: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -113,7 +171,7 @@ struct ToolCallParams {
     arguments: Value,
 }
 
-fn handle_request(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
+pub(crate) fn handle_request(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
     match request.method.as_str() {
         "initialize" => JsonRpcResponse {
             jsonrpc: "2.0",
@@ -155,7 +213,7 @@ fn handle_request(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonR
     }
 }
 
-fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
+pub(crate) fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionCache) -> JsonRpcResponse {
     let params: ToolCallParams = match serde_json::from_value(request.params.clone()) {
         Ok(params) => params,
         Err(error) => {
@@ -211,7 +269,7 @@ fn handle_tool_call(request: &JsonRpcRequest, session: &mut SessionCache) -> Jso
     }
 }
 
-fn dispatch_tool(
+pub fn dispatch_tool(
     tool: &str,
     arguments: &Value,
     session: &mut SessionCache,
@@ -1600,7 +1658,7 @@ fn find_containing_function(content: &str, line_no: usize) -> Option<String> {
     None
 }
 
-fn parse_arg<T: DeserializeOwned>(arguments: &Value, key: &str) -> Result<T, JsonRpcError> {
+pub fn parse_arg<T: DeserializeOwned>(arguments: &Value, key: &str) -> Result<T, JsonRpcError> {
     let value = arguments
         .get(key)
         .ok_or_else(|| {
@@ -1619,7 +1677,7 @@ fn parse_arg<T: DeserializeOwned>(arguments: &Value, key: &str) -> Result<T, Jso
     })
 }
 
-fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError> {
+pub fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError> {
     serde_json::from_value(arguments.clone()).map_err(|error| {
         tool_error(
             -32602,
@@ -1629,7 +1687,7 @@ fn parse_args<T: DeserializeOwned>(arguments: &Value) -> Result<T, JsonRpcError>
     })
 }
 
-fn invoke_command(command: Commands) -> Result<(Value, Option<Document>), JsonRpcError> {
+pub fn invoke_command(command: Commands) -> Result<(Value, Option<Document>), JsonRpcError> {
     let risk = assess_command(&command);
     let command_name = command_name(&command);
 
@@ -1665,7 +1723,7 @@ fn invoke_command(command: Commands) -> Result<(Value, Option<Document>), JsonRp
     Ok((payload, modified_doc))
 }
 
-fn success_payload(
+pub fn success_payload(
     command: &str,
     exit_code: i32,
     data: Value,
@@ -1685,7 +1743,7 @@ fn success_payload(
     })
 }
 
-fn command_error(error: HashlineError) -> JsonRpcError {
+pub fn command_error(error: HashlineError) -> JsonRpcError {
     let mut data = serde_json::Map::new();
     if let Some(hint) = error.hint() {
         data.insert("hint".into(), json!(hint));
@@ -1704,7 +1762,7 @@ fn command_error(error: HashlineError) -> JsonRpcError {
     )
 }
 
-fn write_error(
+pub(crate) fn write_error(
     stdout: &mut impl Write,
     id: Option<Value>,
     code: i32,
@@ -1725,7 +1783,7 @@ fn write_error(
     stdout.write_all(b"\n")
 }
 
-fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError {
+pub fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError {
     JsonRpcError {
         code,
         message: message.to_owned(),
@@ -1839,7 +1897,7 @@ fn tool_merge_patches(
     }))
 }
 
-fn tool_definitions() -> Vec<Value> {
+pub fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
             "hashline_read",

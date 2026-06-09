@@ -11,6 +11,7 @@ pub mod insert;
 pub mod r#move;
 pub mod patch;
 pub mod read;
+pub mod serve;
 pub mod stats;
 pub mod swap;
 pub mod verify;

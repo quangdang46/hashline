@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 fn default_context() -> usize {
     5
@@ -36,10 +36,11 @@ pub enum Commands {
     Stats(StatsCmd),
     Doctor(DoctorCmd),
     FindBlock(FindBlockCmd),
+    Serve(ServeCmd),
     Mcp(McpCmd),
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Read a file with line hashes",
     long_about = "Read a file with line hashes. Use full read for smaller files, or combine --anchor and --context to zoom in on a known target without dumping the entire file again."
@@ -69,7 +70,7 @@ pub struct ReadCmd {
     pub no_cache: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct IndexCmd {
     pub file: PathBuf,
     #[serde(default)]
@@ -89,7 +90,7 @@ pub struct IndexCmd {
     pub no_cache: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct EditCmd {
     pub file: PathBuf,
     pub anchor: String,
@@ -120,7 +121,7 @@ pub struct EditCmd {
     pub pretty: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct InsertCmd {
     pub file: PathBuf,
     pub anchor: String,
@@ -154,7 +155,7 @@ pub struct InsertCmd {
     pub pretty: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct DeleteCmd {
     pub file: PathBuf,
     pub anchor: String,
@@ -179,7 +180,7 @@ pub struct DeleteCmd {
     pub pretty: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Check whether anchors still resolve",
     long_about = "Check whether anchors still resolve. Use verify before grouped edits or after locating anchors in files that may have changed."
@@ -201,7 +202,7 @@ pub struct VerifyCmd {
     pub no_cache: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Search file content with a pattern",
     long_about = "Search file content and return matching lines with anchors. Supports literal and regex patterns. Use before hashline_read when you know a pattern and need to localize the target without dumping the whole file."
@@ -229,7 +230,7 @@ pub struct GrepCmd {
     pub ndjson: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Map text or regex matches back to current anchors",
     long_about = "Map text or regex matches back to current anchors. Searches file content and returns matching lines with line:hash|content format. Supports literal and regex queries. Use before hashline_read when you know the target text and want a precise anchor."
@@ -258,7 +259,7 @@ pub struct AnnotateCmd {
     pub ndjson: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Apply a JSON patch transaction atomically",
     long_about = "Apply a JSON patch transaction atomically. Prefer patch when several related edits should succeed or fail together, or when you want a more reviewable multi-op workflow than many single-line commands."
@@ -287,7 +288,7 @@ pub struct PatchCmd {
     pub pretty: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct SwapCmd {
     pub file: PathBuf,
     pub anchor_a: String,
@@ -306,7 +307,7 @@ pub struct SwapCmd {
     pub expect_inode: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct MoveCmd {
     pub file: PathBuf,
     pub anchor: String,
@@ -326,14 +327,14 @@ pub struct MoveCmd {
     pub expect_inode: Option<u64>,
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MoveDirection {
     After,
     Before,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct IndentCmd {
     pub file: PathBuf,
     pub range: String,
@@ -360,7 +361,7 @@ pub struct IndentCmd {
     pub pretty: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Show file size, collision, and workflow guidance",
     long_about = "Show file size, collision, and workflow guidance. Use stats when a file is large, collisions are likely, or you want advice on whether to full-read, scope with anchors, or switch to patch-style edits."
@@ -380,7 +381,7 @@ pub struct StatsCmd {
     pub no_cache: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Recommend a safe hashline workflow for a file",
     long_about = "Recommend a safe hashline workflow for a file. This is a read-only advisor that summarizes read strategy, anchor style, and when to prefer patch/find-block workflows on large or collision-heavy files."
@@ -400,7 +401,7 @@ pub struct DoctorCmd {
     pub no_cache: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Find a likely structural block around an anchor",
     long_about = "Given a line:hash anchor, detect the programming language from the file extension, then find the enclosing brace-delimited or indentation-based block and return it as a snippet with line:hash anchors."
@@ -417,9 +418,36 @@ pub struct FindBlockCmd {
     pub pretty: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Parser)]
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Run as an MCP server over stdio",
     long_about = "Run hashline as a JSON-RPC MCP server over stdio so agents can call the existing hashline feature set without shelling out."
 )]
-pub struct McpCmd {}
+pub struct McpCmd {
+    /// Proxy MCP requests through to a running daemon via HASHLINE_SOCKET.
+    /// The proxy forwards all JSON-RPC messages to the daemon socket and
+    /// returns the daemon's responses, without maintaining its own session state.
+    #[arg(long)]
+    pub proxy_to_daemon: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(
+    about = "Run as a daemon over a Unix socket or HTTP",
+    long_about = "Run hashline as a background daemon listening on a Unix socket or HTTP port. \
+    Set HASHLINE_SOCKET or HASHLINE_URL in your environment to route CLI commands through this daemon."
+)]
+pub struct ServeCmd {
+    /// Unix socket path (e.g. /tmp/hashline.sock).
+    #[arg(long)]
+    pub socket: Option<PathBuf>,
+    /// HTTP port to listen on (e.g. 17300).
+    #[arg(long)]
+    pub http: Option<u16>,
+    /// Fork to background (Unix only).
+    #[arg(long)]
+    pub detach: bool,
+    /// PID file path (default: ~/.hashline/daemon.pid).
+    #[arg(long)]
+    pub pid_file: Option<PathBuf>,
+}
