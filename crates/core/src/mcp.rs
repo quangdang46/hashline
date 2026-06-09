@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd, McpCmd,
-    MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
+    Commands, AnnotateCmd, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd,
+    McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::{Document, FileMeta, FileStats, read_file_meta};
 use crate::error::HashlineError;
@@ -329,6 +329,7 @@ fn dispatch_tool(
         "hashline_stats" => tool_stats(arguments, session),
         "hashline_doctor" => tool_doctor(arguments, session),
         "hashline_grep" => tool_grep(arguments, session),
+        "hashline_annotate" => tool_annotate(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -477,6 +478,96 @@ fn tool_grep(arguments: &Value, session: &mut SessionState) -> Result<Value, Jso
             tool_error(
                 -32603,
                 &format!("failed to serialize grep results: {error}"),
+                None,
+            )
+        })?,
+        true,
+    ))
+}
+
+fn tool_annotate(arguments: &Value, session: &mut SessionState) -> Result<Value, JsonRpcError> {
+    let cmd: AnnotateCmd = parse_args(arguments)?;
+    session.get(&cmd.file)?;
+
+    let search_doc = crate::document::SearchDocument::load(&cmd.file).map_err(command_error)?;
+
+    let results = if cmd.regex {
+        let re = regex::RegexBuilder::new(&cmd.query)
+            .case_insensitive(false)
+            .build()
+            .map_err(|e| {
+                tool_error(
+                    -32602,
+                    &format!("invalid query '{}': {}", cmd.query, e),
+                    None,
+                )
+            })?;
+
+        let mut results = Vec::new();
+        for (line_idx, &start) in search_doc.line_offsets.iter().enumerate() {
+            let end = if line_idx + 1 < search_doc.line_offsets.len() {
+                search_doc.line_offsets[line_idx + 1]
+            } else {
+                search_doc.content.len()
+            };
+            let line_end = if search_doc.trailing_newline
+                && end > start
+                && search_doc.content.as_bytes()[end.saturating_sub(1)] == b'\n'
+            {
+                end - 1
+            } else {
+                end.min(search_doc.content.len())
+            };
+            let line_content = search_doc.content[start..line_end]
+                .strip_suffix('\r')
+                .unwrap_or(&search_doc.content[start..line_end]);
+
+            if re.is_match(line_content) {
+                let fh = crate::hash::full_hash(line_content);
+                let sh = crate::hash::short_from_full(fh);
+                results.push(crate::document::LineView {
+                    n: line_idx + 1,
+                    hash: crate::hash::format_short_hash(sh),
+                    content: line_content.to_string(),
+                });
+            }
+        }
+        results
+    } else {
+        let mut results = Vec::new();
+        search_doc.grep_for_each(&cmd.query, false, |line_idx, content, short_hash| {
+            results.push(crate::document::LineView {
+                n: line_idx + 1,
+                hash: crate::hash::format_short_hash(short_hash),
+                content: content.to_string(),
+            });
+        });
+        results
+    };
+
+    if cmd.expect_one && results.len() != 1 {
+        let msg = if results.is_empty() {
+            format!(
+                "expected exactly 1 match for query '{}', but found 0",
+                cmd.query
+            )
+        } else {
+            format!(
+                "expected exactly 1 match for query '{}', but found {}",
+                cmd.query,
+                results.len()
+            )
+        };
+        return Err(tool_error(-32001, &msg, None));
+    }
+
+    Ok(success_payload(
+        "annotate",
+        0,
+        serde_json::to_value(results).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize annotate results: {error}"),
                 None,
             )
         })?,
@@ -1364,6 +1455,204 @@ mod tests {
 
         let lines = json_array(&result["data"])?;
         assert_eq!(lines.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_returns_matching_lines() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\nbaz hello\n")?;
+
+        let result = dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "hello",
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        assert_eq!(result["command"], "annotate");
+        assert_eq!(result["exit_code"], 0);
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["content"], "hello world");
+        assert_eq!(lines[1]["content"], "baz hello");
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_supports_regex() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\nbaz hello\n")?;
+
+        let result = dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "h[a-z]+",
+                "regex": true,
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["content"], "hello world");
+        assert_eq!(lines[1]["content"], "baz hello");
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_regex_case_sensitive_by_default() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "Hello World\nfoo bar\nhello world\n")?;
+
+        let result = dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "hello",
+                "regex": true,
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["content"], "hello world");
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_expect_one_ok() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\n")?;
+
+        let result = dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "hello",
+                "expect_one": true,
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["content"], "hello world");
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_expect_one_error_on_zero() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\n")?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "zzzz",
+                "expect_one": true,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert!(error.message.contains("found 0"));
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_expect_one_error_on_multiple() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\nbaz hello\n")?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "hello",
+                "expect_one": true,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert!(error.message.contains("found 2"));
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_returns_empty_for_no_match() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello world\nfoo bar\n")?;
+
+        let result = dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "zzzz",
+            }),
+            &mut SessionState::default(),
+        );
+        let result = must(result)?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_returns_line_numbers_and_hashes() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello\nworld\n")?;
+
+        let result = must(dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "hello",
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        let lines = json_array(&result["data"])?;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["n"], 1);
+        assert_eq!(lines[0]["hash"].as_str().map(|s| s.len()), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn annotate_tool_reports_invalid_regex() -> Result<()> {
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write_text(&path, "hello\n")?;
+
+        let error = must_err(dispatch_tool(
+            "hashline_annotate",
+            &json!({
+                "file": path,
+                "query": "(unclosed",
+                "regex": true,
+            }),
+            &mut SessionState::default(),
+        ))?;
+
+        assert!(error.message.contains("invalid query"));
         Ok(())
     }
 

@@ -28,6 +28,7 @@ pub enum Commands {
     Delete(DeleteCmd),
     Verify(VerifyCmd),
     Grep(GrepCmd),
+    Annotate(AnnotateCmd),
     Patch(PatchCmd),
     Swap(SwapCmd),
     Move(MoveCmd),
@@ -202,6 +203,35 @@ pub struct GrepCmd {
     #[serde(default)]
     #[arg(short = 'i', long)]
     pub case_insensitive: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+    /// Emit newline-delimited JSON (one object per line, no wrapper). Overrides --json.
+    #[serde(default)]
+    #[arg(long)]
+    pub ndjson: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Parser)]
+#[command(
+    about = "Map text or regex matches back to current anchors",
+    long_about = "Map text or regex matches back to current anchors. Searches file content and returns matching lines with line:hash|content format. Supports literal and regex queries. Use before hashline_read when you know the target text and want a precise anchor."
+)]
+pub struct AnnotateCmd {
+    pub file: PathBuf,
+    pub query: String,
+    /// Treat query as a regex pattern.
+    #[serde(default)]
+    #[arg(short, long)]
+    pub regex: bool,
+    /// Require exactly one match; error if more or fewer.
+    #[serde(default)]
+    #[arg(short = '1', long)]
+    pub expect_one: bool,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
