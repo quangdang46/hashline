@@ -55,6 +55,7 @@ pub fn run<W: Write, E: Write>(
 
     // Lock the socket file to prevent multiple daemon instances
     let lock_file_path = socket_path.with_extension("sock.lock");
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
