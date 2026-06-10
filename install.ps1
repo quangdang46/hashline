@@ -146,17 +146,17 @@ if ($Uninstall) { Invoke-Uninstall }
 
 function Resolve-Version {
     if ($script:Version) {
-        if (-not $script:Version.StartsWith('v')) { $script:Version = "v$script:Version" }
-        return
+        $v = $script:Version
+        if (-not $v.StartsWith('v')) { $v = "v$v" }
+        return $v
     }
 
     try {
         $api  = "https://api.github.com/repos/$Owner/$Repo/releases/latest"
         $resp = Invoke-RestMethod -Uri $api -Headers @{ 'Accept' = 'application/vnd.github.v3+json' } -TimeoutSec 30
         if ($resp.tag_name) {
-            $script:Version = $resp.tag_name
-            Write-Info "latest version: $script:Version"
-            return
+            Write-Info "latest version: $($resp.tag_name)"
+            return $resp.tag_name
         }
     } catch {
         Write-Warn "GitHub API request failed; falling back to redirect probe ($($_.Exception.Message))"
@@ -166,9 +166,8 @@ function Resolve-Version {
         $resp = Invoke-WebRequest -Uri "https://github.com/$Owner/$Repo/releases/latest" -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue
         $loc  = $resp.Headers.Location
         if ($loc -and $loc -match '/tag/(v[0-9][^/?#]*)') {
-            $script:Version = $matches[1]
-            Write-Info "latest version: $script:Version"
-            return
+            Write-Info "latest version: $($matches[1])"
+            return $matches[1]
         }
     } catch { }
 
@@ -418,7 +417,7 @@ try {
     Write-Info "platform: $platform"
     Write-Info "destination: $Dest"
 
-    Resolve-Version
+    $Version = Resolve-Version
 
     $archive     = "$BinaryName-$Version-${platform}.zip"
     $base        = "https://github.com/$Owner/$Repo/releases/download/$Version"
