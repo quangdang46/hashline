@@ -378,6 +378,7 @@ pub fn dispatch_tool(
         "hashline_map" => tool_map(arguments),
         "hashline_symbol" => tool_symbol(arguments),
         "hashline_callees" => tool_callees(arguments),
+        "hashline_find_block" => tool_find_block(arguments, session),
         "hashline_from_diff" => tool_from_diff(arguments, session),
         "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
@@ -1873,6 +1874,25 @@ pub fn tool_error(code: i32, message: &str, data: Option<Value>) -> JsonRpcError
         message: message.to_owned(),
         data,
     }
+}
+
+fn tool_find_block(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
+    let cmd: crate::cli::FindBlockCmd = parse_args(arguments)?;
+    let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
+    let payload = crate::commands::find_block::find_block_payload(entry.doc(), &cmd.anchor)
+        .map_err(command_error)?;
+    Ok(success_payload(
+        "find_block",
+        0,
+        serde_json::to_value(payload).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize find_block payload: {error}"),
+                None,
+            )
+        })?,
+        session.stats(),
+    ))
 }
 
 fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Value, JsonRpcError> {

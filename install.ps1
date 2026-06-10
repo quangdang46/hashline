@@ -236,6 +236,9 @@ function Install-BinaryAtomic {
     $tmp = "$DestPath.tmp.$PID"
     Copy-Item -LiteralPath $SourcePath -Destination $tmp -Force
     try {
+        # Remove existing file first -- Move-Item -Force on Windows
+        # PowerShell does NOT overwrite an existing destination.
+        Remove-Item -LiteralPath $DestPath -Force -ErrorAction SilentlyContinue
         Move-Item -LiteralPath $tmp -Destination $DestPath -Force
     } catch {
         Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
