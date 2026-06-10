@@ -6,6 +6,7 @@
 // Items consumed below come from `hashline::*`.
 
 use std::io::{self, BufRead, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -33,7 +34,8 @@ fn main() {
 
     if should_route {
         let no_fallback = std::env::var("HASHLINE_NO_FALLBACK").is_ok();
-        // Try HASHLINE_SOCKET first
+        // Try HASHLINE_SOCKET first (Unix only)
+        #[cfg(unix)]
         if let Some(socket_path) = get_socket_env() {
             match route_via_socket(&cli, &socket_path) {
                 Ok(exit_code) => {
@@ -274,6 +276,7 @@ fn get_url_env() -> Option<String> {
 }
 
 /// Route a CLI command through a Unix socket daemon.
+#[cfg(unix)]
 fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
     let stream = UnixStream::connect(socket_path)
         .map_err(|e| format!("cannot connect to daemon at {}: {e}", socket_path.display()))?;

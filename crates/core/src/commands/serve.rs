@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
@@ -155,39 +156,47 @@ pub fn run<W: Write, E: Write>(
         }
     } else {
         // Unix socket mode
-        let listener = UnixListener::bind(&socket_path).map_err(|e| {
-            HashlineError::Io(io::Error::other(format!(
-                "failed to bind socket at {}: {e}",
-                socket_path.display()
-            )))
-        })?;
-
-        // Set permissions so only the owner can connect
         #[cfg(unix)]
         {
+            let listener = UnixListener::bind(&socket_path).map_err(|e| {
+                HashlineError::Io(io::Error::other(format!(
+                    "failed to bind socket at {}: {e}",
+                    socket_path.display()
+                )))
+            })?;
+
+            // Set permissions so only the owner can connect
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).ok();
-        }
 
-        writeln!(
-            ctx.stderr(),
-            "hashline daemon listening on {}",
-            socket_path.display()
-        )?;
+            writeln!(
+                ctx.stderr(),
+                "hashline daemon listening on {}",
+                socket_path.display()
+            )?;
 
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    thread::spawn(|| {
-                        if let Err(e) = handle_unix(stream) {
-                            eprintln!("unix handler error: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("accept error: {e}");
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        thread::spawn(|| {
+                            if let Err(e) = handle_unix(stream) {
+                                eprintln!("unix handler error: {e}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("accept error: {e}");
+                    }
                 }
             }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = socket_path;
+            return Err(HashlineError::Io(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix socket mode is not supported on this platform; use --http instead",
+            )));
         }
     }
 
@@ -196,6 +205,7 @@ pub fn run<W: Write, E: Write>(
 
 /// Handle a single Unix socket connection: read JSON-RPC lines,
 /// process each, write response back.
+#[cfg(unix)]
 fn handle_unix(mut stream: std::os::unix::net::UnixStream) -> io::Result<()> {
     // Use a separate reference for reading to avoid borrowing conflicts
     let mut session = mcp::new_session();

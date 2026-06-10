@@ -47,7 +47,13 @@ pub fn new_session() -> SessionCache {
 
 pub fn run(cmd: McpCmd) -> io::Result<()> {
     if cmd.proxy_to_daemon {
+        #[cfg(unix)]
         return run_proxy();
+        #[cfg(not(unix))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "proxy-to-daemon requires Unix domain sockets (not available on this platform)",
+        ));
     }
 
     let stdin = io::stdin();
@@ -90,6 +96,7 @@ pub fn run(cmd: McpCmd) -> io::Result<()> {
 
 /// Proxy MCP stdin/stdout to a daemon via Unix socket.
 /// Forwards each JSON-RPC line to the daemon and writes the response back.
+#[cfg(unix)]
 fn run_proxy() -> io::Result<()> {
     let socket_path = crate::commands::serve::default_daemon_socket();
     let stream = std::os::unix::net::UnixStream::connect(&socket_path).map_err(|e| {

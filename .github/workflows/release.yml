@@ -29,17 +29,17 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             archive_ext: tar.gz
-            use_cross: true
+            deps: musl-tools
           - name: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
             archive_ext: tar.gz
-            use_cross: false
+            deps: ""
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             archive_ext: zip
-            use_cross: false
+            deps: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -50,18 +50,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install cross
-        if: matrix.use_cross
-        uses: taiki-e/install-action@cross
+      - name: Install system dependencies
+        if: matrix.deps != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ${{ matrix.deps }}
 
       - name: Build binary
         shell: bash
-        run: |
-          if [[ "${{ matrix.use_cross }}" == "true" ]]; then
-            cross build --release --locked --target "${{ matrix.target }}" -p "$BINARY_NAME"
-          else
-            cargo build --release --locked --target "${{ matrix.target }}" -p "$BINARY_NAME"
-          fi
+        run: cargo build --release --locked --target "${{ matrix.target }}" -p "$BINARY_NAME"
 
       - name: Package Unix archive
         if: runner.os != 'Windows'
