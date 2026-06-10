@@ -266,6 +266,7 @@ fn command_to_tool_name(command: &Commands) -> &'static str {
 }
 
 /// Get the daemon socket path from the HASHLINE_SOCKET env var.
+#[cfg(unix)]
 fn get_socket_env() -> Option<PathBuf> {
     std::env::var("HASHLINE_SOCKET").ok().map(PathBuf::from)
 }
