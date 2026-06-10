@@ -207,8 +207,8 @@ hashline read src/auth.rs         # get fresh anchors
 hashline edit src/auth.rs 42:a3 "new content"
 ```
 
-This keeps the hashline CLI surface small (13 commands) and the MCP tool
-list AI-friendly (8 core tools), instead of duplicating an entire search
+This keeps the hashline CLI surface small (17 commands) and the MCP tool
+list AI-friendly (24 tools), instead of duplicating an entire search
 engine inside the file-edit binary.
 
 ## MCP server
