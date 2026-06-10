@@ -90,15 +90,13 @@ jobs:
           Get-ChildItem LICENSE* -ErrorAction SilentlyContinue | Copy-Item -Destination $stageDir -ErrorAction SilentlyContinue
           Compress-Archive -Path "$stageDir/*" -DestinationPath "${stageDir}.zip" -Force
           $hash = (Get-FileHash "${stageDir}.zip" -Algorithm SHA256).Hash.ToLower()
-          Set-Content -NoNewline "${stageDir}.zip.sha256" $hash
+          $hash | Out-File -FilePath "${stageDir}.zip.sha256" -Encoding ascii -NoNewline
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: |
-            ${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive_ext }}
-            ${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive_ext }}.sha256
+          path: ${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive_ext }}*
 
   release:
     name: Publish GitHub release
