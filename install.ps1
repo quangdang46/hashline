@@ -420,7 +420,7 @@ try {
 
     Resolve-Version
 
-    $archive     = "$BinaryName-$Version-$platform.zip"
+    $archive     = "$BinaryName-$Version-${platform}.zip"
     $base        = "https://github.com/$Owner/$Repo/releases/download/$Version"
     $archivePath = Join-Path $tempDir $archive
 
@@ -438,8 +438,8 @@ The version you asked for ($Version) does not include $archive. Either:
     # Verify SHA-256 against the sidecar if release.yml published one. The
     # sidecar may be either "<hash>" or "<hash>  <filename>" -- Split() picks
     # the first whitespace-delimited token either way.
-    $sumPath = "$archivePath.sha256"
-    if (Get-FileWithRetry -Url "$base/$archive.sha256" -OutPath $sumPath -MaxRetries 1 -TimeoutSec 30) {
+    $sumPath = "${archivePath}.sha256"
+    if (Get-FileWithRetry -Url "$base/${archive}.sha256" -OutPath $sumPath -MaxRetries 1 -TimeoutSec 30) {
         $expected = (Get-Content -LiteralPath $sumPath -Raw).Trim().Split()[0]
         $actual   = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLower()
         if ($expected.ToLower() -ne $actual) {
@@ -447,7 +447,7 @@ The version you asked for ($Version) does not include $archive. Either:
         }
         Write-Info "checksum verified"
     } else {
-        Write-Warn "no checksum file at $archive.sha256 -- skipping verification"
+        Write-Warn "no checksum file at ${archive}.sha256 -- skipping verification"
     }
 
     # Extract. The archive root contains either hashline.exe directly or a

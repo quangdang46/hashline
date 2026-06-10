@@ -83,9 +83,9 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/$env:BINARY_NAME.exe" "$stageDir/$env:BINARY_NAME.exe"
           if (Test-Path README.md) { Copy-Item README.md $stageDir }
           Get-ChildItem LICENSE* -ErrorAction SilentlyContinue | Copy-Item -Destination $stageDir -ErrorAction SilentlyContinue
-          Compress-Archive -Path "$stageDir/*" -DestinationPath "$stageDir.zip" -Force
-          $hash = (Get-FileHash "$stageDir.zip" -Algorithm SHA256).Hash.ToLower()
-          Set-Content -NoNewline "$stageDir.zip.sha256" $hash
+          Compress-Archive -Path "$stageDir/*" -DestinationPath "${stageDir}.zip" -Force
+          $hash = (Get-FileHash "${stageDir}.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -NoNewline "${stageDir}.zip.sha256" $hash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
