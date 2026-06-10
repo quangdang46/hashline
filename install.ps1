@@ -37,7 +37,7 @@ param(
     [switch] $Help
 )
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 # Disables the slow IE-style progress bar in Invoke-WebRequest, which can
 # slow large downloads from a couple of seconds to several minutes.
 $ProgressPreference    = 'SilentlyContinue'
@@ -407,22 +407,25 @@ function Invoke-McpAutoInstall {
 # Main
 # ============================================================================
 
-$tempDir = Join-Path $env:TEMP "hashline-install-$PID"
-New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-
 try {
+    Write-Info "temp: $env:TEMP"
+    $tempDir = Join-Path $env:TEMP "hashline-install-$PID"
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Force -Path $Dest | Out-Null }
 
     $platform = Get-Platform
     Write-Info "platform: $platform"
     Write-Info "destination: $Dest"
 
+    Write-Info "resolving latest version..."
     $Version = Resolve-Version
+    Write-Info "version: $Version"
 
     $archive     = "$BinaryName-$Version-${platform}.zip"
     $base        = "https://github.com/$Owner/$Repo/releases/download/$Version"
     $archivePath = Join-Path $tempDir $archive
 
+    Write-Info "url: $base/$archive"
     Write-Info "downloading $archive"
     if (-not (Get-FileWithRetry -Url "$base/$archive" -OutPath $archivePath)) {
         Die @"
