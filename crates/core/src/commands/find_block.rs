@@ -286,10 +286,7 @@ fn find_brace_pairs(doc: &Document, ext: &str) -> Vec<(usize, usize)> {
 /// Try to find an indentation-based block. Returns the same shape as
 /// `find_python_block`: block header line at lower indent, block body
 /// following.
-fn find_indent_block(
-    doc: &Document,
-    anchor_index: usize,
-) -> Result<(usize, usize), HashlineError> {
+fn find_indent_block(doc: &Document, anchor_index: usize) -> Result<(usize, usize), HashlineError> {
     let anchor_line = &doc.lines[anchor_index];
     let anchor_indent = leading_whitespace(anchor_line.content.as_ref());
 

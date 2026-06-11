@@ -188,9 +188,9 @@ impl HashlineError {
             HashlineError::MixedIndentation { .. } => {
                 Some("normalize indentation in the target range before retrying the command")
             }
-            HashlineError::UnbalancedBlock { .. } => Some(
-                "check the surrounding braces or indentation and retry on a well-formed file",
-            ),
+            HashlineError::UnbalancedBlock { .. } => {
+                Some("check the surrounding braces or indentation and retry on a well-formed file")
+            }
             HashlineError::AmbiguousBlockLanguage { .. } => {
                 Some("rename the file to a supported extension or pass an explicit range instead")
             }
