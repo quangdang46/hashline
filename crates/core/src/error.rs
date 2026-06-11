@@ -74,7 +74,7 @@ pub enum HashlineError {
     MixedIndentation { line_no: usize },
 
     #[error(
-        "could not find balanced block boundary from line {line_no} — check for unmatched braces"
+        "could not find balanced block boundary from line {line_no} — check for unmatched braces or inconsistent indentation"
     )]
     UnbalancedBlock { line_no: usize },
 
@@ -189,7 +189,7 @@ impl HashlineError {
                 Some("normalize indentation in the target range before retrying the command")
             }
             HashlineError::UnbalancedBlock { .. } => Some(
-                "check the surrounding braces or block delimiters and retry on a well-formed file",
+                "check the surrounding braces or indentation and retry on a well-formed file",
             ),
             HashlineError::AmbiguousBlockLanguage { .. } => {
                 Some("rename the file to a supported extension or pass an explicit range instead")

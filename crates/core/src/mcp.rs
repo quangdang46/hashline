@@ -1448,8 +1448,8 @@ fn tool_symbol(arguments: &Value) -> Result<Value, JsonRpcError> {
         }
 
         let extensions = [
-            ".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs",
-            ".swift",
+            "rs", "py", "js", "ts", "go", "rb", "java", "c", "cpp", "h", "hpp", "cs",
+            "swift",
         ];
         let walk = walkdir::WalkDir::new(root)
             .follow_links(false)
@@ -1552,8 +1552,8 @@ fn tool_callees(arguments: &Value) -> Result<Value, JsonRpcError> {
 
     // Find all source files
     let extensions = [
-        ".rs", ".py", ".js", ".ts", ".go", ".rb", ".java", ".c", ".cpp", ".h", ".hpp", ".cs",
-        ".swift",
+        "rs", "py", "js", "ts", "go", "rb", "java", "c", "cpp", "h", "hpp", "cs",
+        "swift",
     ];
     let mut source_files = Vec::new();
     let walk = walkdir::WalkDir::new(root)

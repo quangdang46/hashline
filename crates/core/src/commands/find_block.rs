@@ -72,6 +72,7 @@ pub fn find_block_payload(
 
     let (language, block_start, block_end) = match extension {
         "py" => find_python_block(doc, anchor_index)?,
+        "verse" => find_python_block(doc, anchor_index)?,
         "rb" => find_ruby_block(doc, anchor_index)?,
         "rs" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" | "cs"
         | "kt" | "kts" | "swift" | "scala" | "dart" | "zig" | "m" | "mm" => {
@@ -79,9 +80,14 @@ pub fn find_block_payload(
             (language_for_extension(extension), s, e)
         }
         _ => {
-            // Best-effort: try brace-balanced
-            let (s, e) = find_brace_block(doc, anchor_index, extension)?;
-            (Some("Unknown".into()), s, e)
+            // Best-effort: try indentation-based first, then brace-balanced
+            match find_indent_block(doc, anchor_index) {
+                Ok((s, e)) => (Some("Unknown".into()), s, e),
+                Err(_) => {
+                    let (s, e) = find_brace_block(doc, anchor_index, extension)?;
+                    (Some("Unknown".into()), s, e)
+                }
+            }
         }
     };
 
@@ -120,6 +126,7 @@ fn language_for_extension(ext: &str) -> Option<String> {
         "jsx" => Some("JSX".into()),
         "go" => Some("Go".into()),
         "rb" => Some("Ruby".into()),
+        "verse" => Some("Verse".into()),
         "java" => Some("Java".into()),
         "c" => Some("C".into()),
         "cpp" | "hpp" => Some("C++".into()),
@@ -270,6 +277,60 @@ fn find_brace_pairs(doc: &Document, ext: &str) -> Vec<(usize, usize)> {
     }
 
     pairs
+}
+
+// ---------------------------------------------------------------------------
+// Generic indentation-based block finding (Verse, or any unknown language)
+// ---------------------------------------------------------------------------
+
+/// Try to find an indentation-based block. Returns the same shape as
+/// `find_python_block`: block header line at lower indent, block body
+/// following.
+fn find_indent_block(
+    doc: &Document,
+    anchor_index: usize,
+) -> Result<(usize, usize), HashlineError> {
+    let anchor_line = &doc.lines[anchor_index];
+    let anchor_indent = leading_whitespace(anchor_line.content.as_ref());
+
+    // Scan backward to find a line with less indentation (the block header).
+    let mut start: Option<usize> = None;
+
+    for i in (0..anchor_index).rev() {
+        let line = &doc.lines[i];
+        if line.content.trim().is_empty() {
+            continue;
+        }
+        let indent = leading_whitespace(line.content.as_ref());
+        if indent < anchor_indent {
+            start = Some(i);
+            break;
+        }
+    }
+
+    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
+        line_no: anchor_index + 1,
+    })?;
+
+    // Scan forward to find end of block: first non-empty line
+    // with indentation <= start indent, minus one.
+    let start_indent = leading_whitespace(doc.lines[start].content.as_ref());
+    let mut end = doc.lines.len() - 1;
+
+    for i in (start + 1)..doc.lines.len() {
+        let line = &doc.lines[i];
+        let trimmed = line.content.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            continue;
+        }
+        let indent = leading_whitespace(line.content.as_ref());
+        if indent <= start_indent {
+            end = i.saturating_sub(1);
+            break;
+        }
+    }
+
+    Ok((start, end))
 }
 
 // ---------------------------------------------------------------------------
