@@ -53,7 +53,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      # Pin to v2.7.7 — latest v2 with Windows-specific cache fixes.
+      # cache-on-failure: true prevents a cache error from killing the whole job.
+      - uses: Swatinem/rust-cache@v2.7.7
+        with:
+          cache-on-failure: true
 
       - name: Install system dependencies
         if: matrix.deps != ''
@@ -63,7 +67,26 @@ jobs:
 
       - name: Build binary
         shell: bash
-        run: cargo build --release --locked --target "${{ matrix.target }}" -p "$BINARY_NAME"
+        run: |
+          set -euo pipefail
+          # Windows runners sometimes hit transient cache-extraction or
+          # linker issues; retry once before failing.
+          retries=1
+          if [ "${{ runner.os }}" = "Windows" ]; then retries=2; fi
+          attempt=1
+          while [ "$attempt" -le "$retries" ]; do
+            echo "=== Build attempt $attempt/$retries ==="
+            if cargo build --release --locked --target "${{ matrix.target }}" -p "$BINARY_NAME"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq "$retries" ]; then
+              echo "::: Build failed after $retries attempts"
+              exit 1
+            fi
+            echo "::: Build failed, retrying..."
+            attempt=$((attempt + 1))
+            sleep 5
+          done
 
       - name: Package Unix archive
         if: runner.os != 'Windows'
