@@ -241,8 +241,17 @@ function Install-BinaryAtomic {
         Remove-Item -LiteralPath $DestPath -Force -ErrorAction SilentlyContinue
         Move-Item -LiteralPath $tmp -Destination $DestPath -Force
     } catch {
-        Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
-        Die "failed to write $DestPath ($($_.Exception.Message))"
+        # Move failed (likely $DestPath is in use by a running process).
+        # Rename the in-use file (Windows allows renaming a mapped
+        # executable), then move the new binary into place. The renamed
+        # old file is unlinked when the last handle closes.
+        try {
+            Rename-Item -LiteralPath "$DestPath" -NewName "$BinaryFile.old.$PID" -Force
+            Move-Item -LiteralPath $tmp -Destination $DestPath -Force
+        } catch {
+            Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+            Die "failed to write $DestPath ($($_.Exception.Message))"
+        }
     }
 }
 
