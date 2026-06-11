@@ -192,7 +192,8 @@ fn assert_duplicate_target_scenario(scenario: &EditScenario) {
 }
 
 fn assert_line_shift_drift_scenario(scenario: &EditScenario) {
-    assert_eq!(scenario.drifted_content.lines().count(), 10_001);
+    // 10_000 original + 5 inserted lines = 10_005
+    assert_eq!(scenario.drifted_content.lines().count(), 10_005);
 
     let error = hashline_edit_once(scenario)
         .expect_err("hashline should fail when lines shift above the target");

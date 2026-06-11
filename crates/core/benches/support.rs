@@ -124,10 +124,14 @@ pub fn generate_line_shift_edit_scenario(line_count: usize) -> EditScenario {
     let mut scenario = build_base_edit_scenario(line_count, false);
     let mut drifted_lines = split_lines(&scenario.original_content);
     let target_index = scenario.target_line_number - 1;
-    drifted_lines.insert(
-        target_index - 1,
-        "fn inserted_line_before_target() { let marker = \"line_shift\"; }".to_owned(),
-    );
+    // Insert 5 lines to exceed the fuzzy relocation radius (±3 lines),
+    // forcing hashline to report StaleAnchor rather than relocating.
+    for offset in (1..=5).rev() {
+        drifted_lines.insert(
+            target_index - offset,
+            format!("fn inserted_line_{offset}_before_target() {{ let marker = \"line_shift\"; }}"),
+        );
+    }
     scenario.drifted_content = drifted_lines.join("\n") + "\n";
     scenario
 }
