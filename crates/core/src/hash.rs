@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use xxhash_rust::xxh32::xxh32;
+use xxhash_rust::xxh3;
 
 pub type ShortHash = u8;
 
@@ -16,6 +17,20 @@ pub fn full_hash(line: &str) -> u32 {
 
 pub fn full_hash_bytes(bytes: &[u8]) -> u32 {
     xxh32(bytes, 0)
+}
+
+/// 64-bit content hash using xxh3 — 2-4x faster than xxh32 on modern
+/// CPUs with SIMD (SSE2/AVX2). Used by the hash sidecar for collision
+/// resistance at no extra cost. Not used for anchor generation (short
+/// hashes remain xxh32 for backward compatibility).
+pub fn full_hash64(line: &str) -> u64 {
+    full_hash_bytes64(line.trim_end().as_bytes())
+}
+
+/// Raw xxh3 64-bit hash for byte slices. Approximately 2-4x faster
+/// than xxh32 on modern x86_64 and arm64 hardware.
+pub fn full_hash_bytes64(bytes: &[u8]) -> u64 {
+    xxh3::xxh3_64(bytes)
 }
 
 pub fn short_hash(line: &str) -> String {

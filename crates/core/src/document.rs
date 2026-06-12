@@ -334,7 +334,7 @@ impl Document {
             return Err(HashlineError::BinaryFile { path: path_string });
         }
 
-        let content_hash = crate::hash::full_hash_bytes(bytes);
+        let content_hash = crate::hash::full_hash_bytes64(bytes);
         let mtime = metadata
             .modified()
             .ok()
