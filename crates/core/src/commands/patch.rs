@@ -11,6 +11,7 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::{Document, LineRecord};
 use crate::error::HashlineError;
 use crate::hash;
+use crate::hash_cache::discover_sidecar_root;
 use crate::mutation::validate_single_line_content;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
@@ -22,7 +23,7 @@ pub fn run<W: Write, E: Write>(
     let patch = read_patch(&cmd.patch)?;
     validate_patch_target(&patch, &cmd.file)?;
 
-    let original = Document::load(&cmd.file)?;
+    let original = Document::load_with_hash_cache(&cmd.file, &discover_sidecar_root(&cmd.file))?;
     check_guard(&original, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| original.render());

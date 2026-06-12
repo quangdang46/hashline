@@ -1,0 +1,24 @@
+# Baseline benchmarks (pre-fix) — branch: fix/agent-perf-fullstack
+# Date: 2026-06-12
+# Commit: 9684edb (main)
+# Hash algorithm: xxh32 only
+# Cache: SessionCache (in-memory LRU)
+# Sidecar: only used by read/grep/index/verify/stats/doctor (NOT by edit/insert/delete/etc.)
+
+# Hash benchmarks
+hash_long_lines/lines/10000     time: [417.25 µs 426.36 µs 435.19 µs]  thrpt: 3.91 GiB/s
+hash_real_world/support.rs       time: [6.63 µs 6.84 µs 7.09 µs]       thrpt: 1.16 GiB/s
+hash_real_world/document.rs      time: [41.40 µs 42.32 µs 43.24 µs]     thrpt: 1.09 GiB/s
+
+# Edit pipeline (per single edit on 1000-line file)
+edit_pipeline/1_parse_document  time: [248.06 µs 249.60 µs 251.11 µs]  thrpt: 2.14 GiB/s
+edit_pipeline/2_resolve_anchor  time: [249.00 µs 250.26 µs 251.41 µs]  thrpt: 2.13 GiB/s
+edit_pipeline/3_mutate_render   time: [292.99 µs 295.22 µs 297.38 µs]  thrpt: 1.81 GiB/s
+edit_pipeline/4_full_edit       time: [299.49 µs 301.10 µs 302.76 µs]  thrpt: 1.77 GiB/s
+
+# Edit comparison (different line counts)
+edit_comparison/str_replace/10000  time: ~2.65 ms
+edit_comparison/str_replace/100000 time: ~1.09 ms
+
+# Key insight: 10 sequential edits = 10 × ~300µs = ~3ms
+#              With perfect cache: 1 × ~300µs = ~0.3ms (10x speedup potential)
