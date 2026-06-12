@@ -298,6 +298,13 @@ impl HashlineError {
                 | HashlineError::InvalidMutationRange { .. }
         )
     }
+
+    /// Returns `true` if this is a [`StaleAnchor`] error, meaning the
+    /// file content changed since the anchor was fetched. Retrying after
+    /// a forced re-read may resolve it.
+    pub fn is_stale_anchor(&self) -> bool {
+        matches!(self, HashlineError::StaleAnchor { .. })
+    }
 }
 
 #[cfg(test)]

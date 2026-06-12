@@ -285,87 +285,52 @@ pub fn dispatch_tool(
         "hashline_read" => tool_read(arguments, session),
         "hashline_index" => tool_index(arguments, session),
         "hashline_edit" => {
-            let mut cmd: EditCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Edit(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_edit", session, &|a| {
+                let mut cmd: EditCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Edit(cmd)))
+            })
         }
         "hashline_insert" => {
-            let mut cmd: InsertCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Insert(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_insert", session, &|a| {
+                let mut cmd: InsertCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Insert(cmd)))
+            })
         }
         "hashline_delete" => {
-            let mut cmd: DeleteCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Delete(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_delete", session, &|a| {
+                let mut cmd: DeleteCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Delete(cmd)))
+            })
         }
         "hashline_verify" => tool_verify(arguments, session),
         "hashline_patch" => {
-            let mut cmd: PatchCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Patch(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_patch", session, &|a| {
+                let mut cmd: PatchCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Patch(cmd)))
+            })
         }
         "hashline_swap" => {
-            let cmd: SwapCmd = parse_args(arguments)?;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Swap(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_swap", session, &|a| {
+                let cmd: SwapCmd = parse_args(a)?;
+                Ok((cmd.file.clone(), Commands::Swap(cmd)))
+            })
         }
         "hashline_move" => {
-            let cmd: MoveCmd = parse_args(arguments)?;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Move(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_move", session, &|a| {
+                let cmd: MoveCmd = parse_args(a)?;
+                Ok((cmd.file.clone(), Commands::Move(cmd)))
+            })
         }
         "hashline_indent" => {
-            let mut cmd: IndentCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Indent(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_indent", session, &|a| {
+                let mut cmd: IndentCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Indent(cmd)))
+            })
         }
         "hashline_stats" => tool_stats(arguments, session),
         "hashline_doctor" => tool_doctor(arguments, session),
@@ -382,6 +347,65 @@ pub fn dispatch_tool(
         "hashline_from_diff" => tool_from_diff(arguments, session),
         "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
+    }
+}
+
+/// Helper for mutation tool dispatch with stale-anchor retry.
+///
+/// Calls `invoke_command` with the given command. If the command fails
+/// with a stale-anchor error (file content changed since anchor fetch),
+/// the session cache is invalidated and the command is retried once with
+/// a fresh file read. This avoids the agent having to manually re-read
+/// and retry.
+fn dispatch_mutation<F>(
+    arguments: &Value,
+    _tool_name: &str,
+    session: &mut SessionCache,
+    mk_cmd: &F,
+) -> Result<Value, JsonRpcError>
+where
+    F: Fn(&Value) -> Result<(PathBuf, Commands), JsonRpcError>,
+{
+    let (path, command) = mk_cmd(arguments)?;
+
+    // First attempt
+    match invoke_command(command) {
+        Ok((payload, Some(doc))) => {
+            session.after_mutation(&path, doc);
+            return Ok(payload);
+        }
+        Ok((payload, None)) => {
+            session.invalidate(&path);
+            return Ok(payload);
+        }
+        Err(err) => {
+            // Stale-anchor retry: if the anchor changed since last read,
+            // invalidate cache and retry once with a fresh file read.
+            let is_stale = err.code == -32001
+                && err.message.contains("content changed since last read");
+
+            if is_stale {
+                session.invalidate(&path);
+                let retry_path = path.clone();
+                let cmd2 = mk_cmd(arguments)?;
+                match invoke_command(cmd2.1) {
+                    Ok((payload, Some(doc))) => {
+                        session.after_mutation(&retry_path, doc);
+                        return Ok(payload);
+                    }
+                    Ok((payload, _)) => {
+                        session.invalidate(&retry_path);
+                        return Ok(payload);
+                    }
+                    Err(err2) => {
+                        session.invalidate(&retry_path);
+                        return Err(err2);
+                    }
+                }
+            }
+
+            return Err(err);
+        }
     }
 }
 
