@@ -71,11 +71,21 @@ pub struct ReadCmd {
     #[serde(default)]
     #[arg(long)]
     pub no_cache: bool,
+    /// Omit the hash column from output. Hash is still computed internally for
+    /// anchor safety; just not displayed.
+    #[serde(default)]
+    #[arg(long)]
+    pub compact: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct IndexCmd {
     pub file: PathBuf,
+    /// Omit the hash column from output. Hash is still computed internally for
+    /// anchor safety; just not displayed.
+    #[serde(default)]
+    #[arg(long)]
+    pub compact: bool,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,

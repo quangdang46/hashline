@@ -374,11 +374,11 @@ where
     match invoke_command(command) {
         Ok((payload, Some(doc))) => {
             session.after_mutation(&path, doc);
-            return Ok(payload);
+            Ok(payload)
         }
         Ok((payload, None)) => {
             session.invalidate(&path);
-            return Ok(payload);
+            Ok(payload)
         }
         Err(err) => {
             // Stale-anchor retry: if the anchor changed since last read,
@@ -393,20 +393,20 @@ where
                 match invoke_command(cmd2.1) {
                     Ok((payload, Some(doc))) => {
                         session.after_mutation(&retry_path, doc);
-                        return Ok(payload);
+                        Ok(payload)
                     }
                     Ok((payload, _)) => {
                         session.invalidate(&retry_path);
-                        return Ok(payload);
+                        Ok(payload)
                     }
                     Err(err2) => {
                         session.invalidate(&retry_path);
-                        return Err(err2);
+                        Err(err2)
                     }
                 }
+            } else {
+                Err(err)
             }
-
-            return Err(err);
         }
     }
 }
@@ -414,8 +414,13 @@ where
 fn tool_read(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: ReadCmd = parse_args(arguments)?;
     session.set_no_cache(cmd.no_cache);
+
+    // get_or_load handles both sticky entries (just mutated, skip stat) and
+    // mtime-based cache hit/miss detection for external file changes.
     let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
-    let data = read_payload(entry.doc(), &cmd.anchor, cmd.context).map_err(command_error)?;
+    let data =
+        read_payload(entry.doc(), &cmd.anchor, cmd.context, cmd.compact).map_err(command_error)?;
+
     Ok(success_payload(
         "read",
         0,

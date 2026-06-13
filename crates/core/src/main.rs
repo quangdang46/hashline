@@ -529,6 +529,7 @@ mod tests {
                 pretty: false,
                 ndjson: false,
                 no_cache: false,
+                compact: false,
             }),
         };
         let mut stdout = Vec::new();

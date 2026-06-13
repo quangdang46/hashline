@@ -155,6 +155,7 @@ mod tests {
             pretty: false,
             ndjson: false,
             no_cache: false,
+            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -264,6 +265,7 @@ mod tests {
             pretty: true,
             ndjson: false,
             no_cache: false,
+            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -280,6 +282,7 @@ mod tests {
             pretty: true,
             ndjson: false,
             no_cache: false,
+            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
@@ -296,6 +299,7 @@ mod tests {
             pretty: true,
             ndjson: true,
             no_cache: false,
+            compact: false,
         });
 
         // ndjson wins over json/pretty

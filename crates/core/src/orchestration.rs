@@ -121,14 +121,18 @@ pub fn read_payload(
     doc: &Document,
     anchors: &[String],
     context: usize,
+    compact: bool,
 ) -> Result<ReadPayload, HashlineError> {
+    let hash_value = |short: u8| -> String {
+        if compact { String::new() } else { format_short_hash(short) }
+    };
     let lines = if anchors.is_empty() {
         doc.lines
             .iter()
             .enumerate()
             .map(|(index, line)| LineView {
                 n: index + 1,
-                hash: format_short_hash(line.short_hash),
+                hash: hash_value(line.short_hash),
                 content: line.content.to_string(),
             })
             .collect()
@@ -141,7 +145,7 @@ pub fn read_payload(
                 let line = &doc.lines[index];
                 LineView {
                     n: index + 1,
-                    hash: format_short_hash(line.short_hash),
+                    hash: hash_value(line.short_hash),
                     content: line.content.to_string(),
                 }
             })
@@ -168,6 +172,10 @@ pub fn read_payload(
 }
 
 pub fn index_payload(doc: &Document) -> IndexPayload {
+    index_payload_with_compact(doc, false)
+}
+
+pub fn index_payload_with_compact(doc: &Document, compact: bool) -> IndexPayload {
     IndexPayload {
         file: doc.path.display().to_string(),
         lines: doc
@@ -176,7 +184,7 @@ pub fn index_payload(doc: &Document) -> IndexPayload {
             .enumerate()
             .map(|(index, line)| IndexLineView {
                 n: index + 1,
-                hash: format_short_hash(line.short_hash),
+                hash: if compact { String::new() } else { format_short_hash(line.short_hash) },
             })
             .collect(),
     }
@@ -395,7 +403,7 @@ mod tests {
     fn read_payload_respects_anchor_context() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
         let anchor = format!("2:{}", super::format_short_hash(doc.lines[1].short_hash));
-        let payload = read_payload(&doc, &[anchor], 1).unwrap();
+        let payload = read_payload(&doc, &[anchor], 1, false).unwrap();
 
         assert_eq!(payload.lines.len(), 3);
         assert_eq!(payload.lines[0].content, "alpha");

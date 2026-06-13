@@ -26,7 +26,7 @@ pub fn run<W: Write, E: Write>(
             output::print_index_json(ctx.stdout(), &payload, style)?;
         }
         OutputMode::Pretty => {
-            output::print_index(ctx.stdout(), &doc)?;
+            output::print_index(ctx.stdout(), &doc, cmd.compact)?;
         }
     }
 
