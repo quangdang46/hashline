@@ -84,6 +84,8 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Stats(cmd) => flag_mode(cmd.json),
         Commands::Doctor(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
+        Commands::ApplyDiff(cmd) => flag_mode(cmd.json),
+        Commands::Batch(cmd) => flag_mode(cmd.json),
         Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => {
             OutputMode::Pretty
         }
@@ -107,6 +109,8 @@ pub fn json_pretty_for(command: &Commands) -> bool {
         Commands::Stats(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Doctor(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::FindBlock(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::ApplyDiff(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Batch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => false,
     }
 }

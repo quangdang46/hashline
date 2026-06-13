@@ -36,6 +36,8 @@ pub enum Commands {
     Stats(StatsCmd),
     Doctor(DoctorCmd),
     FindBlock(FindBlockCmd),
+    ApplyDiff(DiffApplyCmd),
+    Batch(BatchCmd),
     Serve(ServeCmd),
     Mcp(McpCmd),
 }
@@ -440,6 +442,59 @@ pub struct DoctorCmd {
 pub struct FindBlockCmd {
     pub file: PathBuf,
     pub anchor: String,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(
+    about = "Apply a unified diff to a file",
+    long_about = "Accept a unified diff content string (or read from stdin) and apply it to the target file. Each hunk is matched against current file content; unmatched hunks are reported as conflicts. Atomic: all hunks or none."
+)]
+pub struct DiffApplyCmd {
+    pub file: PathBuf,
+    /// Diff content as a string. If not provided, reads from stdin.
+    #[serde(default)]
+    #[arg(long)]
+    pub diff: Option<String>,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(
+    about = "Apply multiple edits in a single atomic batch",
+    long_about = "Apply multiple edits (replace, insert-after, delete, range) to the same file in a single read+hash+write pass. All anchors are validated before any mutation. Edits are applied bottom-up so line numbers remain stable. If any anchor is stale, the entire batch fails with no side effects."
+)]
+pub struct BatchCmd {
+    pub file: PathBuf,
+    /// JSON array of edit operations. Each op has `{type, anchor, content?}`.
+    /// Types: "replace", "insertAfter", "delete", "range".
+    #[serde(default, deserialize_with = "deserialize_edits")]
+    #[arg(long, value_parser = parse_edits_json)]
+    pub edits: Vec<EditOp>,
+    #[serde(default)]
+    #[arg(long)]
+    pub dry_run: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub receipt: bool,
+    #[arg(long)]
+    pub audit_log: Option<PathBuf>,
+    #[arg(long)]
+    pub expect_mtime: Option<i64>,
+    #[arg(long)]
+    pub expect_inode: Option<u64>,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,

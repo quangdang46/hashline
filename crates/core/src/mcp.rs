@@ -344,7 +344,9 @@ pub fn dispatch_tool(
         "hashline_symbol" => tool_symbol(arguments),
         "hashline_callees" => tool_callees(arguments),
         "hashline_find_block" => tool_find_block(arguments, session),
+        "hashline_batch_edit" => tool_batch_edit(arguments, session),
         "hashline_from_diff" => tool_from_diff(arguments, session),
+        "hashline_apply_diff" => tool_apply_diff(arguments, session),
         "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
@@ -1964,6 +1966,36 @@ fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Valu
         },
         "cache": { "used": false },
     }))
+}
+
+fn tool_apply_diff(
+    arguments: &Value,
+    session: &mut SessionCache,
+) -> Result<Value, JsonRpcError> {
+    let file: String = parse_arg(arguments, "file")?;
+    let diff: String = parse_arg(arguments, "diff")?;
+
+    let path = std::path::Path::new(&file);
+    let receipt =
+        crate::commands::diff_apply::apply_diff(path, &diff).map_err(command_error)?;
+
+    let exit_code = if receipt.applied { 0 } else { 1 };
+
+    // Invalidate the session cache since the file changed
+    session.invalidate(path);
+
+    Ok(success_payload(
+        "apply_diff",
+        exit_code,
+        serde_json::to_value(&receipt).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize apply_diff receipt: {error}"),
+                None,
+            )
+        })?,
+        session.stats(),
+    ))
 }
 
 fn tool_merge_patches(

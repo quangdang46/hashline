@@ -80,7 +80,9 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Indent(_) => "indent",
         Commands::Stats(_) => "stats",
         Commands::Doctor(_) => "doctor",
+        Commands::Batch(_) => "batch",
         Commands::FindBlock(_) => "find-block",
+        Commands::ApplyDiff(_) => "apply-diff",
         Commands::Serve(_) => "serve",
         Commands::Mcp(_) => "mcp",
     }
@@ -374,6 +376,8 @@ pub fn run_command<W: Write, E: Write>(
         Commands::Stats(cmd) => commands::stats::run(&mut context, cmd).map(|_| 0),
         Commands::Doctor(cmd) => commands::doctor::run(&mut context, cmd).map(|_| 0),
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
+        Commands::ApplyDiff(cmd) => commands::diff_apply::run(&mut context, cmd).map(|_| 0),
+        Commands::Batch(cmd) => commands::batch::run(&mut context, cmd).map(|_| 0),
         Commands::Serve(cmd) => commands::serve::run(&mut context, cmd).map(|_| 0),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
     }?;
