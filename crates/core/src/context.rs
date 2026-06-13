@@ -169,6 +169,9 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             interpret_escapes: false,
+            streaming: false,
+            start_query: None,
+            end_query: None,
             json: false,
             pretty: false,
         });

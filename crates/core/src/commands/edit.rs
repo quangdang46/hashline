@@ -11,7 +11,7 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::HashlineError;
 use crate::hash_cache::discover_sidecar_root;
-use crate::mutation::{replace_line, replace_range, split_content_lines};
+use crate::mutation::{replace_line, replace_range, split_content_lines, stream_replace_line};
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -19,6 +19,10 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: EditCmd,
 ) -> Result<(), HashlineError> {
+    if cmd.streaming {
+        return run_streaming(ctx, cmd);
+    }
+
     let root = discover_sidecar_root(&cmd.file);
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
@@ -148,6 +152,85 @@ pub fn run<W: Write, E: Write>(
             };
             output::write_post_edit_snippet(ctx, &doc, first, last).map_err(HashlineError::from)?;
             Ok(())
+        }
+    }
+}
+
+/// Streaming edit path: reads the file line-by-line with BufReader instead
+/// of loading the full Document into memory. Requires a qualified anchor
+/// (line:hash) and single-line content.
+///
+/// No post-mutation cache is populated since the full document was never
+/// loaded. This saves significant memory on files over 100k lines.
+fn run_streaming<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    cmd: EditCmd,
+) -> Result<(), HashlineError> {
+    // Streaming mode only supports qualified line:hash anchors (not raw hashes or ranges).
+    if looks_like_range_anchor(&cmd.anchor) {
+        return Err(HashlineError::InvalidAnchor {
+            anchor: cmd.anchor,
+        });
+    }
+
+    let anchor = parse_anchor(&cmd.anchor)?;
+    let (line_no, short) = match anchor {
+        crate::anchor::Anchor::LineHash { line, short } => (line, short),
+        _ => {
+            return Err(HashlineError::InvalidAnchor {
+                anchor: cmd.anchor,
+            })
+        }
+    };
+    // line_no is 1-indexed; convert to 0-indexed.
+    let target_line = line_no.checked_sub(1).ok_or_else(|| {
+        HashlineError::InvalidAnchor {
+            anchor: cmd.anchor.clone(),
+        }
+    })?;
+
+    let content = if cmd.interpret_escapes {
+        interpret_escapes(&cmd.content)
+    } else {
+        cmd.content
+    };
+
+    // Streaming mode requires single-line content.
+    if content.contains(['\n', '\r']) {
+        return Err(HashlineError::MultiLineContentUnsupported);
+    }
+
+    // Determine newline style and trailing-newline flag via a lightweight
+    // streaming scan that avoids loading the full file.
+    let streaming_doc = crate::document::StreamingDocument::scan(&cmd.file)?;
+
+    if cmd.dry_run {
+        let summary = EditSummary::Single {
+            line_no,
+            before: "(streaming)".to_owned(),
+            after: content.clone(),
+        };
+        return write_dry_run(ctx, &cmd.file, &summary);
+    }
+
+    stream_replace_line(
+        &cmd.file,
+        target_line,
+        &content,
+        short,
+        streaming_doc.newline,
+        streaming_doc.trailing_newline,
+    )?;
+
+    // No post-mutation cache since the Document was never loaded.
+    // ctx.modified_doc remains None, matching the trade-off of memory
+    // over convenience.
+
+    match ctx.output_mode() {
+        OutputMode::Json | OutputMode::Ndjson => Ok(()),
+        OutputMode::Pretty => {
+            output::write_success_line(ctx, &format!("Edited line {line_no}."))
+                .map_err(HashlineError::from)
         }
     }
 }

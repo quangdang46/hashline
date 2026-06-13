@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -39,7 +39,7 @@ pub enum NewlineStyle {
 }
 
 impl NewlineStyle {
-    fn separator(self) -> &'static str {
+    pub fn separator(self) -> &'static str {
         match self {
             NewlineStyle::Lf => "\n",
             NewlineStyle::Crlf => "\r\n",
@@ -102,6 +102,94 @@ pub struct FileStats {
     pub recommended_anchor_mode: &'static str,
     pub recommended_workflow: &'static str,
     pub warnings: Vec<&'static str>,
+}
+
+/// Minimal document metadata obtained via a lightweight streaming scan
+/// that never loads the full file content into memory.
+///
+/// Unlike [`Document`], this struct only holds metadata — path, newline
+/// style, trailing-newline flag, and line count — all determined in a
+/// single pass with a BufReader. Use it when you need to know the shape
+/// of a file without paying the cost of hashing every line.
+///
+/// The [`scan`](Self::scan) method performs a binary-file and UTF-8
+/// check on the first 8 KiB (matching [`Document::load`]) before the
+/// streaming pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamingDocument {
+    pub path: PathBuf,
+    pub newline: NewlineStyle,
+    pub trailing_newline: bool,
+    pub line_count: usize,
+}
+
+impl StreamingDocument {
+    /// Scan `path` in a streaming fashion, detecting newline style and
+    /// counting lines without loading the full file into memory.
+    pub fn scan(path: &Path) -> Result<Self, HashlineError> {
+        use std::io::Read;
+
+        let path_string = path.display().to_string();
+        let metadata = fs::metadata(path)?;
+
+        // Binary-file + UTF-8 check on the first 8 KiB (matching Document::load).
+        if metadata.len() > 0 {
+            let mut header = vec![0u8; 8192.min(metadata.len() as usize)];
+            let mut file = std::fs::File::open(path)?;
+            file.read_exact(&mut header)?;
+            if memchr(0, &header).is_some() {
+                return Err(HashlineError::BinaryFile { path: path_string });
+            }
+            std::str::from_utf8(&header).map_err(|_| HashlineError::InvalidUtf8 {
+                path: path_string,
+            })?;
+        }
+
+        // Streaming pass: count lines, detect newline style.
+        let file = std::fs::File::open(path)?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut line_count = 0usize;
+        let mut newline = NewlineStyle::Lf;
+        let mut trailing_newline = false;
+        let mut saw_crlf = false;
+        let mut buf = Vec::new();
+
+        loop {
+            buf.clear();
+            let n = reader.read_until(b'\n', &mut buf)?;
+            if n == 0 {
+                break;
+            }
+            line_count += 1;
+            if buf.last() == Some(&b'\n') {
+                trailing_newline = true;
+                if buf.len() >= 2 && buf[buf.len() - 2] == b'\r' {
+                    saw_crlf = true;
+                }
+            } else {
+                trailing_newline = false;
+            }
+        }
+
+        if saw_crlf {
+            newline = NewlineStyle::Crlf;
+        }
+
+        Ok(StreamingDocument {
+            path: path.to_path_buf(),
+            newline,
+            trailing_newline,
+            line_count,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.line_count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.line_count == 0
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

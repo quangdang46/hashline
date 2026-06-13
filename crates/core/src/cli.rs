@@ -112,6 +112,21 @@ pub struct EditCmd {
     #[serde(default)]
     #[arg(short = 'e', long)]
     pub interpret_escapes: bool,
+    /// Stream the file line-by-line with BufReader instead of loading the
+    /// entire Document into memory. Requires a qualified anchor (line:hash)
+    /// and single-line content. No post-mutation cache is populated.
+    /// Saves significant memory on files over 100k lines.
+    #[serde(default)]
+    #[arg(long)]
+    pub streaming: bool,
+    /// Content query to find the anchor line (mutually exclusive with anchor).
+    #[serde(default)]
+    #[arg(long)]
+    pub start_query: Option<String>,
+    /// Content query to find the end line (only with --start-query; for insert this determines placement).
+    #[serde(default)]
+    #[arg(long)]
+    pub end_query: Option<String>,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
