@@ -13,6 +13,7 @@ use crate::error::HashlineError;
 use crate::hash;
 use crate::hash_cache::discover_sidecar_root;
 use crate::mutation::validate_single_line_content;
+use crate::commands::fast_edit;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -23,16 +24,9 @@ pub fn run<W: Write, E: Write>(
     let patch = read_patch(&cmd.patch)?;
     validate_patch_target(&patch, &cmd.file)?;
     // Fast path: single Edit op with simple anchor
-    if patch.ops.len() == 1 && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
+    if !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
         && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
-        if let PatchOp::Edit(edit_op) = &patch.ops[0] {
-            if let Some((line_no, hash)) = crate::anchor::try_parse_line_anchor(&edit_op.anchor) {
-                return crate::commands::fast_edit::run_fast_edit(
-                    ctx, &cmd.file, line_no, hash, &edit_op.content,
-                );
-            }
-        }
     }
     validate_patch_target(&patch, &cmd.file)?;
 
@@ -90,7 +84,7 @@ struct PatchFile {
     ops: Vec<PatchOp>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 enum PatchOp {
     Edit(EditOp),
@@ -98,14 +92,14 @@ enum PatchOp {
     Delete(DeleteOp),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EditOp {
     anchor: String,
     content: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InsertOp {
     anchor: String,
@@ -113,7 +107,7 @@ struct InsertOp {
     before: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeleteOp {
     anchor: String,
@@ -183,6 +177,90 @@ impl PatchSummary {
     }
 }
 
+
+struct FastOp { line: usize, op: PatchOp, op_index: usize }
+fn run_fast_patch<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    file: &std::path::Path,
+    patch: &PatchFile,
+) -> Result<(), HashlineError> {
+    use crate::anchor::try_parse_line_anchor;
+
+    // Read file content
+    let mut content = fast_edit::read_file(file)?;
+    let mut changes: Vec<(usize, String)> = Vec::new();
+
+    // Collect all ops that can be resolved via try_parse_line_anchor
+    let mut fast_ops: Vec<FastOp> = Vec::new();
+
+    for (idx, op) in patch.ops.iter().enumerate() {
+        let anchor = match op {
+            PatchOp::Edit(e) => Some(&e.anchor),
+            PatchOp::Insert(i) => Some(&i.anchor),
+            PatchOp::Delete(d) => Some(&d.anchor),
+        };
+        // _ = anchor to suppress warning
+        if let Some(anchor_str) = anchor {
+            if let Some((line_no, _hash)) = try_parse_line_anchor(anchor_str) {
+                fast_ops.push(FastOp { line: line_no, op: op.clone(), op_index: idx });
+            }
+        }
+    }
+
+    // If any op can't be resolved, fall through
+    if fast_ops.len() != patch.ops.len() {
+        return Err(HashlineError::PatchFailed { op_index: 0, reason: "complex anchors not supported in fast path".into() });
+    }
+
+    // Sort by line number descending (bottom-up)
+    fast_ops.sort_by(|a, b| b.line.cmp(&a.line));
+
+    for fop in &fast_ops {
+        content = apply_fast_op(&content, fop)?;
+        changes.push((fop.line + 1, format!("{:?}", fop.op)));
+    }
+
+    // Atomic write
+    fast_edit::atomic_write(file, &content)?;
+    if let Ok(doc) = crate::document::Document::from_str(file, &content) {
+        ctx.modified_doc = Some(doc);
+    }
+    if ctx.output_mode() == OutputMode::Pretty {
+        output::write_success_line(ctx, &format!("Applied {} change(s).", changes.len()))
+            .map_err(HashlineError::from)?;
+    }
+    Ok(())
+}
+
+fn apply_fast_op(content: &str, fop: &FastOp) -> Result<String, HashlineError> {
+    use crate::commands::fast_edit;
+    use crate::anchor::try_parse_line_anchor;
+
+    match &fop.op {
+        PatchOp::Edit(e) => {
+            if let Some((line, hash)) = try_parse_line_anchor(&e.anchor) {
+                let (nc, _) = fast_edit::fast_replace_line(content, line, hash, &e.content)?;
+                Ok(nc)
+            } else {
+                Err(HashlineError::PatchFailed { op_index: fop.op_index, reason: "invalid anchor".into() })
+            }
+        }
+        PatchOp::Insert(i) => {
+            if let Some((line, _hash)) = try_parse_line_anchor(&i.anchor) {
+                fast_edit::fast_insert_line(content, line, &i.content)
+            } else {
+                Err(HashlineError::PatchFailed { op_index: fop.op_index, reason: "invalid anchor".into() })
+            }
+        }
+        PatchOp::Delete(d) => {
+            if let Some((line, hash)) = try_parse_line_anchor(&d.anchor) {
+                fast_edit::fast_delete_lines(content, line, line, hash)
+            } else {
+                Err(HashlineError::PatchFailed { op_index: fop.op_index, reason: "invalid anchor".into() })
+            }
+        }
+    }
+}
 fn read_patch(path: &str) -> Result<PatchFile, HashlineError> {
     let raw = if path == "-" {
         let mut buffer = String::new();

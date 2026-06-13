@@ -23,7 +23,7 @@ pub fn run<W: Write, E: Write>(
         let parts: Vec<&str> = cmd.range.split("..").collect();
         if let Some(first_anchor) = parts.first().and_then(|a| try_parse_line_anchor(a)) {
             let (l1, h1) = first_anchor;
-            let (l2, h2) = if let Some(end) = parts.get(1).and_then(|a| try_parse_line_anchor(a)) { end } else { (l1, h1) };
+            let (l2, _h2) = if let Some(end) = parts.get(1).and_then(|a| try_parse_line_anchor(a)) { end } else { (l1, h1) };
             let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
             let content = crate::commands::fast_edit::read_file(&cmd.file)?;
             let nc = crate::commands::fast_edit::fast_indent_lines(&content, l1, l2, h1, amt)?;
