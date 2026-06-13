@@ -42,6 +42,46 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
+        if !cmd.range.is_empty() && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none() {
+            let parts: Vec<&str> = cmd.range.split("..").collect();
+            if let Some(first) = parts.first().and_then(|a| try_parse_line_anchor(a)) {
+                let (l1, h1) = first;
+                let (l2, _) = parts.get(1).and_then(|a| try_parse_line_anchor(a)).unwrap_or((l1, h1));
+                let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
+                let raw = std::fs::read_to_string(&cmd.file)?;
+                let ht = raw.lines().any(|l| l.starts_with('\t'));
+                let hs = raw.lines().any(|l| l.starts_with(' '));
+                if ht && hs { /* fall through */ }
+                else {
+                    if amt < 0 {
+                        let fl: Vec<&str> = raw.lines().collect();
+                        for li in l1..=l2.min(fl.len().saturating_sub(1)) {
+                            let lead = fl[li].chars().take_while(|c| *c == ' ').count();
+                            if (lead as isize) < -amt {
+                                return Err(HashlineError::IndentUnderflow {
+                            line_no: li + 1, amount: (-amt) as usize, available: lead, kind: "spaces",
+                                });
+                            }
+                        }
+                    }
+                    let nc = crate::commands::fast_edit::fast_indent_lines(&raw, l1, l2, h1, amt)?;
+                    crate::commands::fast_edit::atomic_write(&cmd.file, &nc)?;
+                    if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &std::fs::read_to_string(&cmd.file)?) {
+                        ctx.modified_doc = Some(doc);
+                    }
+                    let by = cmd.amount.trim_start_matches('+');
+                    let msg = if l1 == l2 {
+                        format!("Indented line {} by {} spaces.", l1 + 1, by)
+                    } else {
+                        format!("Indented lines {}-{} by {} spaces.", l1 + 1, l2 + 1, by)
+                    };
+                    if ctx.output_mode() == OutputMode::Pretty {
+                        crate::output::write_success_line(ctx, &msg).map_err(HashlineError::from)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
