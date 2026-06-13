@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use crate::commands::batch::EditOp;
 
 fn default_context() -> usize {
     5
@@ -536,4 +537,33 @@ pub struct ServeCmd {
     /// PID file path (default: ~/.hashline/daemon.pid).
     #[arg(long)]
     pub pid_file: Option<PathBuf>,
+}
+
+/// Deserialize `edits` from either a JSON array or a JSON string (which
+/// itself contains a JSON array).  This lets the MCP server pass the edits
+/// as a structured array while the CLI can accept them as `--edits '[...]'`.
+pub fn deserialize_edits<'de, D>(deserializer: D) -> Result<Vec<EditOp>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    // First try to deserialize as a json array
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Edits {
+        Array(Vec<EditOp>),
+        String(String),
+    }
+    let edits = Edits::deserialize(deserializer)?;
+    match edits {
+        Edits::Array(ops) => Ok(ops),
+        Edits::String(s) => {
+            serde_json::from_str(&s).map_err(de::Error::custom)
+        }
+    }
+}
+
+/// clap value parser: parse a JSON array string into `Vec<EditOp>`.
+pub fn parse_edits_json(s: &str) -> Result<Vec<EditOp>, String> {
+    serde_json::from_str(s).map_err(|e| e.to_string())
 }

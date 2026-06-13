@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd,
-    McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
+    AnnotateCmd, BatchCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd,
+    InsertCmd, McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::Document;
 use crate::error::HashlineError;
@@ -1919,6 +1919,37 @@ fn tool_find_block(arguments: &Value, session: &mut SessionCache) -> Result<Valu
     ))
 }
 
+fn tool_batch_edit(
+    arguments: &Value,
+    session: &mut SessionCache,
+) -> Result<Value, JsonRpcError> {
+    let cmd: BatchCmd = parse_args(arguments)?;
+    let path = cmd.file.clone();
+
+    // Use batch::batch_edit directly for the core logic.
+    let (modified_doc, receipt) =
+        crate::commands::batch::batch_edit(&path, cmd.edits).map_err(command_error)?;
+
+    session.after_mutation(&path, modified_doc);
+
+    let result = serde_json::to_value(&receipt).map_err(|error| {
+        tool_error(
+            -32603,
+            &format!("failed to serialize batch receipt: {error}"),
+            None,
+        )
+    })?;
+
+    Ok(json!({
+        "command": "batch_edit",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "data": result,
+        "cache": { "used": false },
+    }))
+}
+
 fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
     let diff: String = parse_arg(arguments, "diff")?;
@@ -2256,6 +2287,40 @@ pub fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
+            "hashline_batch_edit",
+            "Apply multiple edits to the same file in a single atomic pass. All anchors are validated before any mutation. If any anchor is stale, the entire batch fails with no side effects. Edits are applied bottom-up so line numbers remain stable. Use this instead of calling hashline_edit repeatedly when you need several changes on one file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "edits": {
+                        "type": "array",
+                        "description": "Array of edit operations.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["replace", "insertAfter", "delete", "range"],
+                                    "description": "Edit operation type."
+                                },
+                                "anchor": {
+                                    "type": "string",
+                                    "description": "Line:hash anchor (e.g. '2:f1') or range anchor (e.g. '2:f1..4:9c' for range type)."
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Replacement or inserted content. Required for replace, insertAfter, and range types."
+                                }
+                            },
+                            "required": ["type", "anchor"]
+                        }
+                    }
+                },
+                "required": ["file", "edits"]
+            }),
+        ),
+        tool(
             "hashline_stats",
             "Compute collision and workflow guidance for a file.",
             json!({
@@ -2299,6 +2364,18 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "file": string_schema("Target file path."),
                     "diff": string_schema("Path to unified diff file.")
+                },
+                "required": ["file", "diff"]
+            }),
+        ),
+        tool(
+            "hashline_apply_diff",
+            "Apply a unified diff to a file with conflict reporting. Accepts diff content as a string (not a file path). Each hunk is matched against current file content; unmatched hunks are reported as conflicts. The operation is atomic: all hunks succeed or none are written.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "diff": string_schema("Unified diff content string to apply.")
                 },
                 "required": ["file", "diff"]
             }),
