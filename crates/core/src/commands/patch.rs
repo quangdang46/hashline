@@ -14,7 +14,7 @@ use crate::error::HashlineError;
 use crate::hash;
 use crate::hash_cache::discover_sidecar_root;
 use crate::mutation::validate_single_line_content;
-use crate::commands::fast_edit;
+use crate::fast;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -210,7 +210,7 @@ fn run_fast_patch<W: Write, E: Write>(
     use crate::anchor::try_parse_line_anchor;
 
     // Read file content
-    let mut content = fast_edit::read_file(file)?;
+    let mut content = crate::fast::read_file(file)?;
     let mut changes: Vec<(usize, String)> = Vec::new();
 
     // Collect all ops that can be resolved via try_parse_line_anchor
@@ -244,7 +244,7 @@ fn run_fast_patch<W: Write, E: Write>(
     }
 
     // Atomic write
-    fast_edit::atomic_write(file, &content)?;
+    crate::fast::atomic_write(file, &content)?;
     if let Ok(doc) = crate::document::Document::from_str(file, &content) {
         ctx.modified_doc = Some(doc);
     }
@@ -256,13 +256,13 @@ fn run_fast_patch<W: Write, E: Write>(
 }
 
 fn apply_fast_op(content: &str, fop: &FastOp) -> Result<String, HashlineError> {
-    use crate::commands::fast_edit;
+    use crate::fast;
     use crate::anchor::try_parse_line_anchor;
 
     match &fop.op {
         PatchOp::Edit(e) => {
             if let Some((line, hash)) = try_parse_line_anchor(&e.anchor) {
-                let (nc, _) = fast_edit::fast_replace_line(content, line, hash, &e.content)?;
+                let (nc, _) = crate::fast::fast_replace_line(content, line, hash, &e.content)?;
                 Ok(nc)
             } else {
                 Err(HashlineError::PatchFailed { op_index: fop.op_index, reason: "invalid anchor".into() })
@@ -270,14 +270,14 @@ fn apply_fast_op(content: &str, fop: &FastOp) -> Result<String, HashlineError> {
         }
         PatchOp::Insert(i) => {
             if let Some((line, _hash)) = try_parse_line_anchor(&i.anchor) {
-                fast_edit::fast_insert_line(content, line, &i.content)
+                crate::fast::fast_insert_line(content, line, &i.content)
             } else {
                 Err(HashlineError::PatchFailed { op_index: fop.op_index, reason: "invalid anchor".into() })
             }
         }
         PatchOp::Delete(d) => {
             if let Some((line, hash)) = try_parse_line_anchor(&d.anchor) {
-                fast_edit::fast_delete_lines(content, line, line, hash)
+                crate::fast::fast_delete_lines(content, line, line, hash)
             } else {
                 Err(HashlineError::PatchFailed { op_index: fop.op_index, reason: "invalid anchor".into() })
             }

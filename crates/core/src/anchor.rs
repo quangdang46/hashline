@@ -354,10 +354,7 @@ pub struct RegionPattern {
 ///
 /// The query is a plain substring match (not regex). Returns an error if
 /// the query matches zero lines or more than one line.
-pub fn find_line_by_query(
-    doc: &Document,
-    query: &str,
-) -> Result<usize, HashlineError> {
+pub fn find_line_by_query(doc: &Document, query: &str) -> Result<usize, HashlineError> {
     let path = doc.path.display().to_string();
     let matches: Vec<usize> = doc
         .lines
@@ -426,7 +423,10 @@ pub fn resolve_query_region(
         });
     }
 
-    Ok(Some(RegionPattern { start_line, end_line }))
+    Ok(Some(RegionPattern {
+        start_line,
+        end_line,
+    }))
 }
 
 /// Try to parse a simple "line:hexhash" anchor.

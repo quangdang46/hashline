@@ -143,9 +143,7 @@ pub enum HashlineError {
     #[error("query '{query}' not found in {path}")]
     QueryNotFound { query: String, path: String },
 
-    #[error(
-        "query '{query}' matches {count} lines in {path} (lines {lines})"
-    )]
+    #[error("query '{query}' matches {count} lines in {path} (lines {lines})")]
     AmbiguousQuery {
         query: String,
         count: usize,
@@ -153,9 +151,7 @@ pub enum HashlineError {
         path: String,
     },
 
-    #[error(
-        "query range covers {count} lines, exceeds maximum of {max}"
-    )]
+    #[error("query range covers {count} lines, exceeds maximum of {max}")]
     QueryRangeTooLarge { count: usize, max: usize },
 
     /// Free-form error for the SHA-256 backward-compat module
@@ -258,9 +254,9 @@ impl HashlineError {
             HashlineError::QueryNotFound { .. } => {
                 Some("check the query text against the file content and retry")
             }
-            HashlineError::AmbiguousQuery { .. } => {
-                Some("use a more specific query that matches exactly one line, or use an explicit anchor instead")
-            }
+            HashlineError::AmbiguousQuery { .. } => Some(
+                "use a more specific query that matches exactly one line, or use an explicit anchor instead",
+            ),
             HashlineError::QueryRangeTooLarge { .. } => {
                 Some("narrow the query range by using a more specific start-query or end-query")
             }

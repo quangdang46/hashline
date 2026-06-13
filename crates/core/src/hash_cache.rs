@@ -78,8 +78,7 @@ impl HashSidecar {
         let mtime_secs = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
         let size = u64::from_le_bytes(buf[off + 8..off + 16].try_into().unwrap());
         let content_hash = u64::from_le_bytes(buf[off + 16..off + 24].try_into().unwrap());
-        let line_count =
-            u32::from_le_bytes(buf[off + 24..off + 28].try_into().unwrap()) as usize;
+        let line_count = u32::from_le_bytes(buf[off + 24..off + 28].try_into().unwrap()) as usize;
         let hdr_end = off + 28;
 
         if buf.len() < hdr_end + line_count {

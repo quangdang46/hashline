@@ -140,9 +140,8 @@ impl StreamingDocument {
             if memchr(0, &header).is_some() {
                 return Err(HashlineError::BinaryFile { path: path_string });
             }
-            std::str::from_utf8(&header).map_err(|_| HashlineError::InvalidUtf8 {
-                path: path_string,
-            })?;
+            std::str::from_utf8(&header)
+                .map_err(|_| HashlineError::InvalidUtf8 { path: path_string })?;
         }
 
         // Streaming pass: count lines, detect newline style.

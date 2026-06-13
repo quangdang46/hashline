@@ -26,9 +26,9 @@ pub fn run<W: Write, E: Write>(
             let (l1, h1) = first_anchor;
             let (l2, _h2) = if let Some(end) = parts.get(1).and_then(|a| try_parse_line_anchor(a)) { end } else { (l1, h1) };
             let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
-            let content = crate::commands::fast_edit::read_file(&cmd.file)?;
-            let nc = crate::commands::fast_edit::fast_indent_lines(&content, l1, l2, h1, amt)?;
-            crate::commands::fast_edit::atomic_write(&cmd.file, &nc)?;
+            let content = crate::fast::read_file(&cmd.file)?;
+            let nc = crate::fast::fast_indent_lines(&content, l1, l2, h1, amt)?;
+            crate::fast::atomic_write(&cmd.file, &nc)?;
             if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &nc) { ctx.modified_doc = Some(doc); }
             match ctx.output_mode() {
                 crate::context::OutputMode::Pretty => {
@@ -65,8 +65,8 @@ pub fn run<W: Write, E: Write>(
                             }
                         }
                     }
-                    let nc = crate::commands::fast_edit::fast_indent_lines(&raw, l1, l2, h1, amt)?;
-                    crate::commands::fast_edit::atomic_write(&cmd.file, &nc)?;
+                    let nc = crate::fast::fast_indent_lines(&raw, l1, l2, h1, amt)?;
+                    crate::fast::atomic_write(&cmd.file, &nc)?;
                     if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &std::fs::read_to_string(&cmd.file)?) {
                         ctx.modified_doc = Some(doc);
                     }

@@ -125,7 +125,11 @@ pub fn read_payload(
     compact: bool,
 ) -> Result<ReadPayload, HashlineError> {
     let hash_value = |short: u8| -> String {
-        if compact { String::new() } else { format_short_hash(short) }
+        if compact {
+            String::new()
+        } else {
+            format_short_hash(short)
+        }
     };
     let lines = if anchors.is_empty() {
         doc.lines
@@ -185,7 +189,11 @@ pub fn index_payload_with_compact(doc: &Document, compact: bool) -> IndexPayload
             .enumerate()
             .map(|(index, line)| IndexLineView {
                 n: index + 1,
-                hash: if compact { String::new() } else { format_short_hash(line.short_hash) },
+                hash: if compact {
+                    String::new()
+                } else {
+                    format_short_hash(line.short_hash)
+                },
             })
             .collect(),
     }

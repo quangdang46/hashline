@@ -21,7 +21,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let (Some((l1, h1)), Some((l2, h2))) = (try_parse_line_anchor(&cmd.anchor_a), try_parse_line_anchor(&cmd.anchor_b)) {
-            let r = crate::commands::fast_edit::run_fast_swap(ctx, &cmd.file, l1, l2, h1, h2, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
+            let r = crate::fast::run_fast_swap(ctx, &cmd.file, l1, l2, h1, h2, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
             if r.is_ok() { return r; }
         }
     }

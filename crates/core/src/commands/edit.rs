@@ -52,7 +52,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            let r = crate::commands::fast_edit::run_fast_edit(
+            let r = crate::fast::run_fast_edit(
                 ctx, &cmd.file, line_no, hash, &cmd.content,
                 cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
             );
@@ -522,7 +522,7 @@ fn run_fast_range_edit<W: Write, E: Write>(
     cmd: EditCmd,
     range: crate::anchor::RangeAnchor,
 ) -> Result<(), HashlineError> {
-    use crate::commands::fast_edit;
+    use crate::fast;
     use std::io::Read;
 
     // Read file as string
@@ -533,7 +533,7 @@ fn run_fast_range_edit<W: Write, E: Write>(
     let (s_line, s_hash) = resolve_anchor_line(&range.start, &content)?;
     let (e_line, e_hash) = resolve_anchor_line(&range.end, &content)?;
 
-    let (new_content, _, _) = fast_edit::fast_replace_range(
+    let (new_content, _, _) = crate::fast::fast_replace_range(
         &content, s_line, e_line, s_hash, e_hash, &cmd.content,
     )?;
 
@@ -558,7 +558,7 @@ fn run_fast_query_edit<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: EditCmd,
 ) -> Result<(), HashlineError> {
-    use crate::commands::fast_edit;
+    use crate::fast;
     use crate::hash;
     use std::io::Read;
 
@@ -588,7 +588,7 @@ fn run_fast_query_edit<W: Write, E: Write>(
     let short_hash = hash::short_hash_value(line_content);
 
     // Apply via fast edit
-    let (new_content, _) = fast_edit::fast_replace_line(&content, line_no, short_hash, &cmd.content)?;
+    let (new_content, _) = crate::fast::fast_replace_line(&content, line_no, short_hash, &cmd.content)?;
 
     // Atomic write
     let parent = cmd.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));

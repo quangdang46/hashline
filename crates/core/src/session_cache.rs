@@ -99,10 +99,7 @@ impl SessionCache {
         // just seeded by a mutation. Use a `bool` check to avoid holding a
         // reference across the subsequent mutable borrow of `self.docs`.
         if !self.no_cache {
-            let is_sticky = self
-                .docs
-                .get(&key)
-                .is_some_and(|entry| entry.is_sticky);
+            let is_sticky = self.docs.get(&key).is_some_and(|entry| entry.is_sticky);
             if is_sticky {
                 self.stats.hits += 1;
                 self.stats.entries = self.docs.len();

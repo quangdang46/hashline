@@ -7,8 +7,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 mod support;
 
 use hashline::anchor::{parse_anchor, resolve, resolve_without_index};
-use hashline::document::Document;
 use hashline::commands::fast_edit as hashline_fast;
+use hashline::document::Document;
 use hashline::error::HashlineError;
 use hashline::mutation::replace_line;
 use support::{
@@ -546,7 +546,6 @@ fn bench_edit_comparison_scaling(c: &mut Criterion) {
     }
     group.finish();
 }
-
 
 // --- Pipeline breakdown: parse vs resolve vs mutate ---
 fn bench_edit_pipeline_breakdown(c: &mut Criterion) {

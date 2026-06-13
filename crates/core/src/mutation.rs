@@ -321,8 +321,7 @@ pub fn stream_replace_line(
     temp.as_file().sync_all()?;
 
     // Atomically replace the original file.
-    temp.persist(path)
-        .map_err(|e| HashlineError::Io(e.error))?;
+    temp.persist(path).map_err(|e| HashlineError::Io(e.error))?;
 
     Ok(())
 }

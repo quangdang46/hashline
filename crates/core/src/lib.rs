@@ -31,6 +31,7 @@
 pub mod anchor;
 pub mod document;
 pub mod error;
+pub mod fast;
 pub mod hash;
 pub mod hash_cache;
 pub mod mutation;
