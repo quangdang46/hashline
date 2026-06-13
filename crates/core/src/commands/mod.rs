@@ -1,5 +1,7 @@
 pub mod annotate;
 pub mod batch;
+pub mod replace;
+pub mod fast_edit;
 pub mod common;
 pub mod diff_apply;
 pub mod delete;

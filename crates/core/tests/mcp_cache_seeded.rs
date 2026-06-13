@@ -234,3 +234,63 @@ fn insert_and_delete_also_seed_cache() {
     );
 }
 
+#[test]
+fn stale_anchor_retry_invalidates_cache_then_rereads() {
+    // When an edit fails with StaleAnchor (file changed externally),
+    // dispatch_mutation should:
+    //   1. Invalidate the session cache
+    //   2. Retry once with a fresh file load (which also fails since the
+    //      anchor is genuinely stale)
+    //   3. After retry, the cache should be missing (invalidated) so a
+    //      subsequent read re-loads from disk with fresh anchors.
+    let file = tmpfile("alpha\nbeta\ngamma\n");
+    let path = file.to_string_lossy().into_owned();
+    let mut session = new_session();
+
+    // Load into cache via read
+    let read_payload = mcp_read(&mut session, &path);
+    let line2_anchor = format!(
+        "{}:{}",
+        read_payload["lines"][1]["n"].as_u64().unwrap(),
+        read_payload["lines"][1]["hash"].as_str().unwrap()
+    );
+    // Capture misses after initial load for context
+    let _ = session.stats().misses;
+
+    // Modify the file externally (simulates concurrent agent modifying the
+    // same line). This makes the anchor stale.
+    fs::write(&path, "alpha\nCHANGED\ngamma\n").expect("external write");
+
+    // Edit with the now-stale anchor should fail after retry
+    let result = dispatch_tool(
+        "hashline_edit",
+        &json!({ "file": path, "anchor": line2_anchor, "content": "modified" }),
+        &mut session,
+    );
+    assert!(result.is_err(), "edit with stale anchor must fail");
+
+    // The cache should have been invalidated by the stale-anchor retry path.
+    // A fresh read should be a cache miss (reload from disk).
+    let misses_before_reread = session.stats().misses;
+    let _ = mcp_read(&mut session, &path);
+    assert_eq!(
+        session.stats().misses,
+        misses_before_reread + 1,
+        "read after stale-anchor failure must be a cache miss (entry was invalidated)"
+    );
+
+    // Now read with the fresh anchor and edit should succeed
+    let read_payload = mcp_read(&mut session, &path);
+    let line2_anchor = format!(
+        "{}:{}",
+        read_payload["lines"][1]["n"].as_u64().unwrap(),
+        read_payload["lines"][1]["hash"].as_str().unwrap()
+    );
+    let result = dispatch_tool(
+        "hashline_edit",
+        &json!({ "file": path, "anchor": line2_anchor, "content": "MODIFIED" }),
+        &mut session,
+    );
+    assert!(result.is_ok(), "edit with fresh anchor must succeed after stale retry");
+}
+

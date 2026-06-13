@@ -284,10 +284,6 @@ pub fn print_read_json_streaming(
     if style == JsonStyle::Pretty {
         // Pretty output is requested only for human inspection. Build a
         // full payload and let serde_json::to_writer_pretty do the work.
-        if compact {
-            // Compact pretty path: use serde_json serialization of payload
-            // which skips hash via skip_serializing_if.
-        }
         let payload = crate::orchestration::read_payload(doc, &[], 0, compact)
             .map_err(|err| io::Error::other(err.to_string()))?;
         return serialize_json(writer, &payload, style);

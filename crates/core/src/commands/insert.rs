@@ -18,6 +18,30 @@ pub fn run<W: Write, E: Write>(
     cmd: InsertCmd,
 ) -> Result<(), HashlineError> {
     let root = discover_sidecar_root(&cmd.file);
+
+    // Fast path: simple anchor insert (no receipt, no content query, no CRLF issues for now)
+    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.start_query.is_none() && !cmd.before && !cmd.interpret_escapes
+        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
+            return crate::commands::fast_edit::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content);
+        }
+    }
+
+
+    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.start_query.is_none() && !cmd.before && !cmd.interpret_escapes
+        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
+            let r = crate::commands::fast_edit::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content);
+            if r.is_ok() { return r; }
+        }
+    }
+
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();

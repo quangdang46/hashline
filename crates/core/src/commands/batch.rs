@@ -10,6 +10,7 @@ use crate::cli::BatchCmd;
 use crate::commands::common::{atomic_write_document, check_guard};
 use crate::context::CommandContext;
 use crate::document::{Document, ShortHashIndex};
+use crate::hash_cache::discover_sidecar_root;
 use crate::error::HashlineError;
 use crate::mutation::{delete_line, insert_line, replace_line, replace_range};
 use crate::output;
@@ -90,12 +91,37 @@ impl ResolvedOp {
 /// 2. Operations are applied **bottom-up** (descending line number) so that
 ///    earlier operations do not shift the indices of later operations.
 /// 3. The file is written once, after all mutations succeed.
+///
+/// # Note on InsertAfter with same-line operations
+///
+/// When an `InsertAfter` and another operation (e.g. `Delete`) target the same
+/// line index, the bottom-up sort may process `Delete` before `InsertAfter`.
+/// This means `InsertAfter` inserts after the line that shifts into the target
+/// position after the delete, which may not be the originally intended target.
+/// Avoid combining `InsertAfter` with other operations on the same line index.
+///
+/// # Note on InsertAfter with same-line operations
+///
+/// When an  and another operation (e.g. ) target the same
+/// line index, the bottom-up sort may process  before .
+/// This means  inserts after the line that shifts into the target
+/// position after the delete, which may not be the originally intended target.
+/// Avoid combining  with other operations on the same line index.
+///
+/// # Note on InsertAfter with same-line operations
+///
+/// When an  and another operation (e.g. ) target the same
+/// line index, the bottom-up sort may process  before .
+/// This means  inserts after the line that shifts into the target
+/// position after the delete, which may not be the originally intended target.
+/// Avoid combining  with other operations on the same line index.
 pub fn batch_edit(
     path: &Path,
     ops: Vec<EditOp>,
 ) -> Result<(Document, BatchReceipt), HashlineError> {
     let start_time = std::time::Instant::now();
-    let mut doc = Document::load(path)?;
+    let root = discover_sidecar_root(path);
+    let mut doc = Document::load_with_hash_cache(path, &root)?;
     let index = doc.build_index();
 
     // Phase 1: resolve ALL anchors upfront (atomic validation).
@@ -159,7 +185,7 @@ pub fn run<W: Write, E: Write>(
     cmd: BatchCmd,
 ) -> Result<(), HashlineError> {
     check_guard(
-        &Document::load(&cmd.file)?,
+        &Document::load_with_hash_cache(&cmd.file, &discover_sidecar_root(&cmd.file))?,
         cmd.expect_mtime,
         cmd.expect_inode,
     )?;
@@ -468,6 +494,46 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn batch_insert_after_and_delete_same_line() -> anyhow::Result<()> {
+        // When InsertAfter and Delete target the same line, the bottom-up
+        // sort processes Delete first (same sort_key, stable sort preserves
+        // original order, then reverse() places Delete before InsertAfter).
+        // After Delete removes the line, InsertAfter inserts after what was
+        // originally the next line. This behavior is intentional: callers
+        // should avoid contradictory ops on the same line.
+        let dir = must(TempDir::new())?;
+        let path = dir.path().join("demo.txt");
+        write(&path, "alpha\nbeta\ngamma\n")?;
+
+        let doc = Document::load(&path)?;
+        let a2 = anchor_from_line(&doc, 1); // second line index = 1
+
+        let receipt = run_batch(
+            &path,
+            vec![
+                EditOp::InsertAfter {
+                    anchor: a2.clone(),
+                    content: "inserted".into(),
+                },
+                EditOp::Delete {
+                    anchor: a2,
+                },
+            ],
+        )?;
+        assert_eq!(receipt.edits_applied, 2);
+
+        let content = read_to_string(&path)?;
+        // Delete(line 2) removes "beta", then InsertAfter(original line 2)
+        // inserts after the shifted line 2 (original "gamma").
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "alpha");
+        assert_eq!(lines[1], "gamma");
+        assert_eq!(lines[2], "inserted");
         Ok(())
     }
 }

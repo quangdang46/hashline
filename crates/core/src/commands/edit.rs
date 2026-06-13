@@ -25,6 +25,20 @@ pub fn run<W: Write, E: Write>(
         return run_streaming(ctx, cmd);
     }
 
+    // Fast path: simple line:hash anchor via string scanning (str_replace speed)
+    if !cmd.anchor.is_empty() && cmd.start_query.is_none()
+        && !cmd.anchor.contains("..") && !cmd.dry_run && !cmd.receipt
+        && cmd.audit_log.is_none() && !cmd.interpret_escapes
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
+            let r = crate::commands::fast_edit::run_fast_edit(ctx, &cmd.file, line_no, hash, &cmd.content);
+            if r.is_ok() { return r; } // fall through to standard path on error
+        }
+    }
+
+
     let root = discover_sidecar_root(&cmd.file);
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;

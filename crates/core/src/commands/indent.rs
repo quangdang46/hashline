@@ -15,6 +15,19 @@ pub fn run<W: Write, E: Write>(
     cmd: IndentCmd,
 ) -> Result<(), HashlineError> {
     let root = discover_sidecar_root(&cmd.file);
+
+    if !cmd.range.is_empty() && !cmd.range.contains("..") && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none() && !cmd.dry_run && !cmd.receipt
+    {
+        use crate::anchor::try_parse_line_anchor;
+        let first = cmd.range.split("..").next().unwrap_or(&cmd.range);
+        if let Some((l, h)) = try_parse_line_anchor(first) {
+            let amt: isize = cmd.amount.trim_start_matches('+').parse::<isize>().unwrap_or(0);
+            let r = crate::commands::fast_edit::run_fast_indent(ctx, &cmd.file, l, l, h, amt);
+            if r.is_ok() { return r; }
+        }
+    }
+
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();

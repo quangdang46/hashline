@@ -40,6 +40,7 @@ pub enum Commands {
     ApplyDiff(DiffApplyCmd),
     Batch(BatchCmd),
     Serve(ServeCmd),
+    Replace(ReplaceCmd),
     Mcp(McpCmd),
 }
 
@@ -515,6 +516,42 @@ pub struct BatchCmd {
     pub pretty: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+pub struct ReplaceCmd {
+    pub file: PathBuf,
+    /// Text to find in the file.
+    pub old_text: String,
+    /// Replacement text.
+    pub new_text: String,
+    /// Number of occurrences to replace (0 = all occurrences).
+    #[serde(default)]
+    #[arg(long, default_value = "0")]
+    pub count: usize,
+    /// When set, interpret the old text as a regex pattern.
+    #[serde(default)]
+    #[arg(long)]
+    pub regex: bool,
+    /// Print changes without modifying the file.
+    #[serde(default)]
+    #[arg(long)]
+    pub dry_run: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub receipt: bool,
+    #[arg(long)]
+    pub audit_log: Option<PathBuf>,
+    #[arg(long)]
+    pub expect_mtime: Option<i64>,
+    #[arg(long)]
+    pub expect_inode: Option<u64>,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+}
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Run as an MCP server over stdio",
