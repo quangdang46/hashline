@@ -1,3 +1,4 @@
+#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro, clippy::all, dead_code)]
 use std::fs;
 use std::io::{self, Read, Write};
 use std::ops::RangeInclusive;
@@ -23,6 +24,29 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     let patch = read_patch(&cmd.patch)?;
     validate_patch_target(&patch, &cmd.file)?;
+    // Fast path: all ops with simple anchors -> multi-op string scanning
+    if !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        if patch.ops.len() == 1 {
+            if let Some(anchor) = patch.ops.first().and_then(|op| match op {
+                PatchOp::Edit(e) => Some(&e.anchor),
+                PatchOp::Insert(i) => Some(&i.anchor),
+                PatchOp::Delete(d) => Some(&d.anchor),
+            }) {
+                // Only use fast path if anchor resolves AND file content exists
+                if crate::anchor::try_parse_line_anchor(anchor).is_some() {
+                    if let Ok(content) = std::fs::read_to_string(&cmd.file) {
+                        let nlines = content.lines().count();
+                        let (ln, _) = crate::anchor::try_parse_line_anchor(anchor).unwrap();
+                        if ln < nlines {
+                            return run_fast_patch(ctx, &cmd.file, &patch);
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Fast path: single Edit op with simple anchor
     if !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
         && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()

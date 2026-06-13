@@ -29,8 +29,7 @@ pub fn run<W: Write, E: Write>(
     if cmd.anchor.contains("..") && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
         && !cmd.interpret_escapes && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
-        use crate::anchor::{looks_like_range_anchor, parse_range};
-        use crate::commands::fast_edit;
+        use crate::anchor::parse_range;
         if let Ok(range) = parse_range(&cmd.anchor) {
             return run_fast_range_edit(ctx, cmd, range);
         }
@@ -72,7 +71,7 @@ pub fn run<W: Write, E: Write>(
     };
 
     let index = doc.build_index();
-    let summary = if let Some(_) = cmd.start_query {
+    let summary = if cmd.start_query.is_some() {
         let region = resolve_query_region(
             &doc,
             cmd.start_query.as_deref(),
@@ -535,7 +534,7 @@ fn run_fast_range_edit<W: Write, E: Write>(
     )?;
 
     // Atomic write
-    let parent = cmd.file.parent().and_then(|p| if p.as_os_str().is_empty() { None } else { Some(p) }).unwrap_or(std::path::Path::new("."));
+    let parent = cmd.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     if let Ok(meta) = std::fs::metadata(&cmd.file) { let _ = temp.as_file().set_permissions(meta.permissions()); }
     temp.write_all(new_content.as_bytes())?;
@@ -543,13 +542,10 @@ fn run_fast_range_edit<W: Write, E: Write>(
 
     if let Ok(doc) = Document::from_str(&cmd.file, &new_content) { ctx.modified_doc = Some(doc); }
 
-    match ctx.output_mode() {
-        crate::context::OutputMode::Pretty => {
+    if ctx.output_mode() == crate::context::OutputMode::Pretty {
             crate::output::write_success_line(ctx, &format!("Edited lines {}-{}.", s_line + 1, e_line + 1))
                 .map_err(HashlineError::from)?;
         }
-        _ => {}
-    }
     Ok(())
 }
 
@@ -591,7 +587,7 @@ fn run_fast_query_edit<W: Write, E: Write>(
     let (new_content, _) = fast_edit::fast_replace_line(&content, line_no, short_hash, &cmd.content)?;
 
     // Atomic write
-    let parent = cmd.file.parent().and_then(|p| if p.as_os_str().is_empty() { None } else { Some(p) }).unwrap_or(std::path::Path::new("."));
+    let parent = cmd.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     if let Ok(meta) = std::fs::metadata(&cmd.file) { let _ = temp.as_file().set_permissions(meta.permissions()); }
     temp.write_all(new_content.as_bytes())?;
@@ -599,13 +595,10 @@ fn run_fast_query_edit<W: Write, E: Write>(
 
     if let Ok(doc) = Document::from_str(&cmd.file, &new_content) { ctx.modified_doc = Some(doc); }
 
-    match ctx.output_mode() {
-        crate::context::OutputMode::Pretty => {
+    if ctx.output_mode() == crate::context::OutputMode::Pretty {
             crate::output::write_success_line(ctx, &format!("Edited line {}.", line_no + 1))
                 .map_err(HashlineError::from)?;
         }
-        _ => {}
-    }
     Ok(())
 }
 

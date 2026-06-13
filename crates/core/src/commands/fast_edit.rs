@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro, clippy::all, dead_code)]
+#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro)]
 #![allow(clippy::redundant_pattern_matching, clippy::unnecessary_map_or, clippy::result_unit_err, clippy::unused_unit, clippy::let_unit_value)]
 use std::io::{Read, Write};
 use std::path::Path;

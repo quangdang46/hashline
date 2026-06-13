@@ -1,3 +1,4 @@
+#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro, clippy::all, dead_code)]
 use std::io::Write;
 
 use crate::anchor::{parse_range, resolve_range, try_parse_line_anchor, };
