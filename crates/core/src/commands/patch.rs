@@ -35,12 +35,11 @@ pub fn run<W: Write, E: Write>(
                 PatchOp::Delete(d) => Some(&d.anchor),
             }) {
                 // Only use fast path if anchor resolves AND file content exists
-                if crate::anchor::try_parse_line_anchor(anchor).is_some() {
+                if crate::anchor::try_parse_line_anchor(anchor).is_some() && crate::anchor::try_parse_line_anchor(anchor).unwrap().0 < std::fs::read_to_string(&cmd.file).map(|c| c.lines().count()).unwrap_or(0) {
                     if let Ok(content) = std::fs::read_to_string(&cmd.file) {
                         let nlines = content.lines().count();
                         let (ln, _) = crate::anchor::try_parse_line_anchor(anchor).unwrap();
                         if ln < nlines {
-                            return run_fast_patch(ctx, &cmd.file, &patch);
                         }
                     }
                 }

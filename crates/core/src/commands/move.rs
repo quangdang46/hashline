@@ -22,7 +22,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let (Some((src, h)), Some((tgt, _))) = (try_parse_line_anchor(&cmd.anchor), try_parse_line_anchor(&cmd.target)) {
-            let r = crate::commands::fast_edit::run_fast_move(ctx, &cmd.file, src, tgt, h, matches!(cmd.direction, crate::cli::MoveDirection::Before));
+            let r = crate::commands::fast_edit::run_fast_move(ctx, &cmd.file, src, tgt, h, matches!(cmd.direction, crate::cli::MoveDirection::Before), cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
             if r.is_ok() { return r; }
         }
     }

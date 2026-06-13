@@ -26,7 +26,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            return crate::commands::fast_edit::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash);
+            return crate::commands::fast_edit::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
         }
     }
 
@@ -37,7 +37,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            let r = crate::commands::fast_edit::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash);
+            let r = crate::commands::fast_edit::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
             if r.is_ok() { return r; }
         }
     }
