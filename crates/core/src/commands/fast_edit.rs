@@ -9,14 +9,14 @@ use crate::error::HashlineError;
 use crate::hash::{self, ShortHash};
 use crate::output;
 
-fn read_file(path: &Path) -> Result<String, HashlineError> {
+pub fn read_file(path: &Path) -> Result<String, HashlineError> {
     let mut content = String::new();
     let mut file = std::fs::File::open(path)?;
     file.read_to_string(&mut content)?;
     Ok(content)
 }
 
-fn atomic_write(path: &Path, content: &str) -> Result<(), HashlineError> {
+pub fn atomic_write(path: &Path, content: &str) -> Result<(), HashlineError> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let mut temp = NamedTempFile::new_in(parent)?;
     if let Ok(meta) = std::fs::metadata(path) { let _ = temp.as_file().set_permissions(meta.permissions()); }

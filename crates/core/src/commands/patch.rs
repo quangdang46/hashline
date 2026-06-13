@@ -22,6 +22,19 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     let patch = read_patch(&cmd.patch)?;
     validate_patch_target(&patch, &cmd.file)?;
+    // Fast path: single Edit op with simple anchor
+    if patch.ops.len() == 1 && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        if let PatchOp::Edit(edit_op) = &patch.ops[0] {
+            if let Some((line_no, hash)) = crate::anchor::try_parse_line_anchor(&edit_op.anchor) {
+                return crate::commands::fast_edit::run_fast_edit(
+                    ctx, &cmd.file, line_no, hash, &edit_op.content,
+                );
+            }
+        }
+    }
+    validate_patch_target(&patch, &cmd.file)?;
 
     let original = Document::load_with_hash_cache(&cmd.file, &discover_sidecar_root(&cmd.file))?;
     check_guard(&original, cmd.expect_mtime, cmd.expect_inode)?;

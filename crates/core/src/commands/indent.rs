@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::anchor::{parse_range, resolve_range};
+use crate::anchor::{parse_range, resolve_range, try_parse_line_anchor, };
 use crate::cli::IndentCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
@@ -25,8 +25,20 @@ pub fn run<W: Write, E: Write>(
             let (l1, h1) = first_anchor;
             let (l2, h2) = if let Some(end) = parts.get(1).and_then(|a| try_parse_line_anchor(a)) { end } else { (l1, h1) };
             let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
-            let r = crate::commands::fast_edit::run_fast_indent(ctx, &cmd.file, l1, l2, h1, amt);
-            if r.is_ok() { return r; }
+            let content = crate::commands::fast_edit::read_file(&cmd.file)?;
+            let nc = crate::commands::fast_edit::fast_indent_lines(&content, l1, l2, h1, amt)?;
+            crate::commands::fast_edit::atomic_write(&cmd.file, &nc)?;
+            if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &nc) { ctx.modified_doc = Some(doc); }
+            match ctx.output_mode() {
+                crate::context::OutputMode::Pretty => {
+                    let by = cmd.amount.trim_start_matches('+');
+                    let msg = if l1 == l2 { format!("Indented line {} by {} spaces.", l1 + 1, by) }
+                                    else { format!("Indented lines {}-{} by {} spaces.", l1 + 1, l2 + 1, by) };
+                    crate::output::write_success_line(ctx, &msg).map_err(HashlineError::from)?;
+                }
+                _ => {}
+            }
+            return Ok(());
         }
     }
 
