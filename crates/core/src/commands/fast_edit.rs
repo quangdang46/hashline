@@ -9,6 +9,12 @@ use crate::error::HashlineError;
 use crate::hash::{self, ShortHash};
 use crate::output;
 
+
+/// Check mtime/inode guards. Returns Ok if no guard mismatch.
+fn check_guards(path: &Path, expect_mtime: Option<i64>, expect_inode: Option<u64>) -> Result<(), HashlineError> {
+    if expect_mtime.is_none() && expect_inode.is_none() { return Ok(()); }
+    let meta = std::fs::metadata(path)?;
+}
 pub fn read_file(path: &Path) -> Result<String, HashlineError> {
     let mut content = String::new();
     let mut file = std::fs::File::open(path)?;
@@ -238,10 +244,18 @@ pub fn run_fast_edit<W: Write, E: Write>(
     Ok(())
 }
 
-pub fn run_fast_insert<W: Write, E: Write>(ctx: &mut CommandContext<'_, W, E>, path: &Path, target_line: usize, _: ShortHash, new_content: &str) -> Result<(), HashlineError> {
+pub fn run_fast_insert<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>, path: &Path,
+    target_line: usize, _hash: ShortHash, new_content: &str,
+    dry_run: bool, expect_mtime: Option<i64>, expect_inode: Option<u64>,
+) -> Result<(), HashlineError> {
+    check_guards(path, expect_mtime, expect_inode)?;
     let content = read_file(path)?;
     let nc = fast_insert_line(&content, target_line, new_content)?;
-    atomic_write(path, &nc)?; seed_cache(ctx, path, &nc);
+    if !dry_run {
+        atomic_write(path, &nc)?;
+        if let Ok(doc) = Document::from_str(path, &nc) { ctx.modified_doc = Some(doc); }
+    }
     if ctx.output_mode() == OutputMode::Pretty { output::write_success_line(ctx, &format!("Inserted line {}.", target_line + 2)).map_err(HashlineError::from)?; }
     Ok(())
 }
