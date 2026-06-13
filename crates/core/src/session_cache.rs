@@ -37,6 +37,12 @@ pub struct CacheEntry {
     doc: Document,
     stats: Option<FileStats>,
     created: Instant,
+    /// When `true`, the entry was placed by a recent mutation and its content
+    /// is trusted without re-checking the file mtime. `get_or_load` returns
+    /// sticky entries directly, avoiding a `stat()` syscall.
+    ///
+    /// Set by `after_mutation`, cleared when a fresh load from disk occurs.
+    is_sticky: bool,
 }
 
 /// Aggregate cache statistics exposed via the MCP [`CacheStats`] payload.
@@ -77,16 +83,50 @@ impl SessionCache {
     /// incremented, and the entry is stored (potentially evicting an older
     /// entry if at capacity). The short-hash index is pre-populated so
     /// subsequent anchor resolutions skip the one-shot index build.
+    ///
+    /// # Sticky optimization
+    ///
+    /// Entries placed by `after_mutation` are marked *sticky*: on the next
+    /// `get_or_load` call the mtime check is skipped entirely, avoiding even
+    /// the `stat()` syscall. This is safe because a mutation tool wrote the
+    /// document directly into the cache a few microseconds ago; any external
+    /// modification between then and the next read is an agent‑actionable
+    /// sequence that would be caught by the mutation tool's own validation.
     pub fn get_or_load(&mut self, path: &Path) -> Result<&mut CacheEntry, HashlineError> {
-        let meta = read_file_meta(path)?;
         let key = path.to_path_buf();
 
+        // Sticky fast path: skip mtime check entirely for entries that were
+        // just seeded by a mutation. Use a `bool` check to avoid holding a
+        // reference across the subsequent mutable borrow of `self.docs`.
+        if !self.no_cache {
+            let is_sticky = self
+                .docs
+                .get(&key)
+                .is_some_and(|entry| entry.is_sticky);
+            if is_sticky {
+                self.stats.hits += 1;
+                self.stats.entries = self.docs.len();
+                return Ok(self
+                    .docs
+                    .get_mut(&key)
+                    .expect("entry confirmed present above"));
+            }
+        }
+
+        let meta = read_file_meta(path)?;
+
         // Fast path: return cached entry when mtime matches (and no_cache
-        // is not active). Use a `bool` check to avoid holding a reference
-        // across the subsequent mutable borrow of `self.docs`.
+        // is not active). If the entry was sticky but we reached here
+        // (no_cache was enabled, for example), un-sticky it so the next
+        // call goes through the normal mtime check.
         if !self.no_cache {
             let is_hit = self.docs.get(&key).is_some_and(|entry| entry.meta == meta);
             if is_hit {
+                // Clear sticky flag on a normal mtime-matched hit so stale
+                // external edits can be detected on subsequent requests.
+                if let Some(entry) = self.docs.get_mut(&key) {
+                    entry.is_sticky = false;
+                }
                 self.stats.hits += 1;
                 self.stats.entries = self.docs.len();
                 return Ok(self
@@ -107,6 +147,9 @@ impl SessionCache {
             doc,
             stats: None,
             created: Instant::now(),
+            // Freshly loaded entries are never sticky; stickiness is
+            // granted only by after_mutation.
+            is_sticky: false,
         };
         self.docs.insert(key.clone(), entry);
         self.stats.entries = self.docs.len();
@@ -136,6 +179,12 @@ impl SessionCache {
     /// already reflect the edit. The cache stores it immediately and
     /// records the current file metadata so subsequent `get_or_load` calls
     /// hit the cache.
+    ///
+    /// The entry is marked *sticky*, meaning the next `get_or_load` call
+    /// will skip the mtime verification and return the cached document
+    /// immediately (avoiding even a `stat()` syscall). Stickiness lasts
+    /// for one `get_or_load` call, after which the entry reverts to the
+    /// normal mtime‑checked fast path.
     pub fn after_mutation(&mut self, path: &Path, doc: Document) {
         let meta = match read_file_meta(path) {
             Ok(m) => m,
@@ -155,9 +204,24 @@ impl SessionCache {
                 doc,
                 stats: None,
                 created: Instant::now(),
+                is_sticky: true,
             },
         );
         self.stats.entries = self.docs.len();
+    }
+
+    /// Read-only peek into the cache. Returns `Some(&Document)` if the path
+    /// is currently cached, without performing an mtime check, without
+    /// incrementing hit/miss counters, and without loading from disk.
+    ///
+    /// This is intended for read‑only MCP tools (notably `hasinline_read`)
+    /// that can tolerate a slightly stale entry and want to avoid the
+    /// `stat()` syscall of `get_or_load` when the file was just mutated.
+    ///
+    /// The returned reference borrows the cache; if the caller needs a
+    /// mutable entry they should fall through to `get_or_load`.
+    pub fn peek(&self, path: &Path) -> Option<&Document> {
+        self.docs.get(path).map(|entry| &entry.doc)
     }
 
     /// Return a reference to the current cache statistics.
