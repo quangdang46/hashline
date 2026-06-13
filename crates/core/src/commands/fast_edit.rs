@@ -199,11 +199,42 @@ pub fn fast_fuzzy_resolve(content: &str, line_no: usize, hash: ShortHash) -> Opt
     }
     None
 }
-pub fn run_fast_edit<W: Write, E: Write>(ctx: &mut CommandContext<'_, W, E>, path: &Path, target_line: usize, expected_hash: ShortHash, new_content: &str) -> Result<(), HashlineError> {
-    let content = read_file(path)?;
-    let (nc, _) = fast_replace_line(&content, target_line, expected_hash, new_content)?;
-    atomic_write(path, &nc)?; seed_cache(ctx, path, &nc);
-    if ctx.output_mode() == OutputMode::Pretty { output::write_success_line(ctx, &format!("Edited line {}.", target_line + 1)).map_err(HashlineError::from)?; }
+pub fn run_fast_edit<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    path: &Path,
+    target_line: usize,
+    expected_hash: ShortHash,
+    new_content: &str,
+    dry_run: bool,
+    expect_mtime: Option<i64>,
+    expect_inode: Option<u64>,
+) -> Result<(), HashlineError> {
+    if let Ok(meta) = std::fs::metadata(path) {
+        use std::os::unix::fs::MetadataExt;
+        if let Some(expected) = expect_mtime {
+            let actual = meta.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64).unwrap_or(0);
+            if actual != expected {
+                return Err(HashlineError::StaleFile { path: path.display().to_string() });
+            }
+        }
+        if let Some(expected) = expect_inode {
+            let actual = meta.ino() as u64;
+            if actual != expected {
+                return Err(HashlineError::StaleFile { path: path.display().to_string() });
+            }
+        }
+    }
+    let content_str = read_file(path)?;
+    let (nc, _old) = fast_replace_line(&content_str, target_line, expected_hash, new_content)?;
+    if !dry_run {
+        atomic_write(path, &nc)?;
+        if let Ok(doc) = Document::from_str(path, &nc) { ctx.modified_doc = Some(doc); }
+    }
+    if ctx.output_mode() == OutputMode::Pretty {
+        output::write_success_line(ctx, &format!("Edited line {}.", target_line + 1)).map_err(HashlineError::from)?;
+    }
     Ok(())
 }
 

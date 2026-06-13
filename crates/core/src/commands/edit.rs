@@ -52,7 +52,10 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            let r = crate::commands::fast_edit::run_fast_edit(ctx, &cmd.file, line_no, hash, &cmd.content);
+            let r = crate::commands::fast_edit::run_fast_edit(
+                ctx, &cmd.file, line_no, hash, &cmd.content,
+                cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
+            );
             if r.is_ok() { return r; } // fall through to standard path on error
         } else {
         }
