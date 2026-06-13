@@ -54,6 +54,7 @@ pub fn run<W: Write, E: Write>(
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
             let r = crate::commands::fast_edit::run_fast_edit(ctx, &cmd.file, line_no, hash, &cmd.content);
             if r.is_ok() { return r; } // fall through to standard path on error
+        } else {
         }
     }
 

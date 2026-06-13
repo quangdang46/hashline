@@ -1,5 +1,3 @@
-#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro, clippy::all, dead_code)]
-#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro)]
 #![allow(clippy::redundant_pattern_matching, clippy::unnecessary_map_or, clippy::result_unit_err, clippy::unused_unit, clippy::let_unit_value)]
 use std::io::{Read, Write};
 use std::path::Path;
@@ -138,6 +136,69 @@ pub fn fast_indent_lines(content: &str, start_line: usize, end_line: usize, hash
 }
 
 // ===== Command handlers =====
+
+/// Find a line by its short hash (raw hash anchor, no line number).
+/// Returns 0-indexed line number if found.
+pub fn fast_from_hash(content: &str, hash: ShortHash) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let mut line_start = 0usize;
+    let mut line_no = 0usize;
+    loop {
+        let line_end = match memchr::memchr(b'\n', &bytes[line_start..]) {
+            Some(rel) => line_start + rel,
+            None => content.len(),
+        };
+        let he = if line_end > line_start && bytes[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        if hash::short_hash_value(&content[line_start..he]) == hash {
+            return Some(line_no);
+        }
+        if line_end >= content.len() {
+            break;
+        }
+        line_start = line_end + 1;
+        line_no += 1;
+    }
+    None
+}
+
+/// Fuzzy anchor resolution: check hash at exact line, if no match, scan ±3 lines.
+/// Useful when lines shifted due to concurrent edits.
+pub fn fast_fuzzy_resolve(content: &str, line_no: usize, hash: ShortHash) -> Option<usize> {
+    let bytes = content.as_bytes();
+    // Helper to check hash at a given line
+    let check = |ln: usize| -> bool {
+        let mut current = 0usize;
+        for _ in 0..ln {
+            match memchr::memchr(b'\n', &bytes[current..]) {
+                Some(r) => current += r + 1,
+                None => return false,
+            }
+        }
+        let start = current;
+        let end = memchr::memchr(b'\n', &bytes[current..]).map_or(content.len(), |r| current + r);
+        let he = if end > start && bytes[end - 1] == b'\r' { end - 1 } else { end };
+        hash::short_hash_value(&content[start..he]) == hash
+    };
+    // Try exact first
+    if check(line_no) {
+        return Some(line_no);
+    }
+    // Scan ±3 neighbors
+    let max = content.lines().count().saturating_sub(1);
+    let start = line_no.saturating_sub(3);
+    let end = (line_no + 3).min(max);
+    for attempt in start..=end {
+        if attempt == line_no { continue; }
+        if check(attempt) {
+            return Some(attempt);
+        }
+    }
+    None
+}
 pub fn run_fast_edit<W: Write, E: Write>(ctx: &mut CommandContext<'_, W, E>, path: &Path, target_line: usize, expected_hash: ShortHash, new_content: &str) -> Result<(), HashlineError> {
     let content = read_file(path)?;
     let (nc, _) = fast_replace_line(&content, target_line, expected_hash, new_content)?;
