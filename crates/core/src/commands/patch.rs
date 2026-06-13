@@ -256,7 +256,6 @@ fn run_fast_patch<W: Write, E: Write>(
 }
 
 fn apply_fast_op(content: &str, fop: &FastOp) -> Result<String, HashlineError> {
-    use crate::fast;
     use crate::anchor::try_parse_line_anchor;
 
     match &fop.op {
