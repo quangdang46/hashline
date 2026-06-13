@@ -2120,7 +2120,9 @@ pub fn tool_definitions() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": base_mutation_properties().into_iter().chain([
-                    ("anchor".to_string(), string_schema("Anchor or range to delete."))
+                    ("anchor".to_string(), string_schema("Anchor or range to delete.")),
+                    ("start_query".to_string(), string_schema("Content query to find the start line of the target range (alternative to anchor).")),
+                    ("end_query".to_string(), string_schema("Content query to find the end line of the target range (only with start_query).")),
                 ]).collect::<serde_json::Map<String, Value>>(),
                 "required": ["file", "anchor"]
             }),
@@ -2424,6 +2426,14 @@ fn mutation_properties(anchor_key: &str, include_before: bool) -> serde_json::Ma
     properties.insert(
         "content".to_string(),
         string_schema("Replacement or inserted line content."),
+    );
+    properties.insert(
+        "start_query".to_string(),
+        string_schema("Content query to find the start line of the target range (alternative to anchor)."),
+    );
+    properties.insert(
+        "end_query".to_string(),
+        string_schema("Content query to find the end line of the target range (only with start_query)."),
     );
     if include_before {
         properties.insert(

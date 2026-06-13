@@ -1,6 +1,8 @@
 use std::io::Write;
 
-use crate::anchor::{looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range};
+use crate::anchor::{
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
+};
 use crate::cli::DeleteCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
@@ -21,7 +23,23 @@ pub fn run<W: Write, E: Write>(
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
 
-    let summary = match looks_like_range_anchor(&cmd.anchor) {
+    let summary = if cmd.start_query.is_some() {
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
+        let start_idx = region.start_line - 1;
+        let end_idx = region.end_line - 1;
+        let deleted = doc.lines[start_idx..=end_idx]
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>();
+        delete_range(&mut doc, start_idx, end_idx)?;
+        DeleteSummary::range(region.start_line, region.end_line, deleted)
+    } else {
+        match looks_like_range_anchor(&cmd.anchor) {
         true => {
             let range = parse_range(&cmd.anchor)?;
             let index = doc.build_index();
@@ -40,6 +58,7 @@ pub fn run<W: Write, E: Write>(
             let deleted = doc.lines[resolved.index].content.to_string();
             delete_line(&mut doc, resolved.index)?;
             DeleteSummary::single(resolved.line_no, deleted)
+        }
         }
     };
 

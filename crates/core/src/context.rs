@@ -192,6 +192,8 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             interpret_escapes: false,
+            start_query: None,
+            end_query: None,
             json: true,
             pretty: false,
         });
@@ -227,6 +229,8 @@ mod tests {
             audit_log: None,
             expect_mtime: None,
             expect_inode: None,
+            start_query: None,
+            end_query: None,
             json: true,
             pretty: false,
         });

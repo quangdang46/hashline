@@ -161,6 +161,14 @@ pub struct InsertCmd {
     #[serde(default)]
     #[arg(short = 'e', long)]
     pub interpret_escapes: bool,
+    /// Content query to find the anchor line (mutually exclusive with anchor).
+    #[serde(default)]
+    #[arg(long)]
+    pub start_query: Option<String>,
+    /// Content query to find the end line (only with --start-query; for insert this determines placement).
+    #[serde(default)]
+    #[arg(long)]
+    pub end_query: Option<String>,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
@@ -193,6 +201,14 @@ pub struct DeleteCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
+        /// Content query to find the start line of the target range (mutually exclusive with anchor).
+    #[serde(default)]
+    #[arg(long)]
+    pub start_query: Option<String>,
+    /// Content query to find the end line of the target range (only with --start-query).
+    #[serde(default)]
+    #[arg(long)]
+    pub end_query: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]

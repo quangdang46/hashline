@@ -1,6 +1,8 @@
 use std::io::Write;
 
-use crate::anchor::{looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range};
+use crate::anchor::{
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
+};
 use crate::cli::EditCmd;
 use memmap2::Mmap;
 
@@ -36,45 +38,68 @@ pub fn run<W: Write, E: Write>(
     };
 
     let index = doc.build_index();
-    let summary = match looks_like_range_anchor(&cmd.anchor) {
-        true => {
-            let range = parse_range(&cmd.anchor)?;
-            let (start, end) = resolve_range(&range, &doc, &index)?;
-            let before = doc.lines[start.index..=end.index]
-                .iter()
-                .map(|line| line.content.to_string())
-                .collect::<Vec<_>>();
-            let after = split_content_lines(&content);
-            replace_range(&mut doc, start.index, end.index, &content)?;
-            EditSummary::Range {
-                start_line: start.line_no,
-                end_line: end.line_no,
-                before,
-                after: after.iter().map(|s| s.to_string()).collect(),
-            }
+    let summary = if let Some(_) = cmd.start_query {
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
+        let start_idx = region.start_line - 1;
+        let end_idx = region.end_line - 1;
+        let before = doc.lines[start_idx..=end_idx]
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>();
+        let after = split_content_lines(&content);
+        replace_range(&mut doc, start_idx, end_idx, &content)?;
+        EditSummary::Range {
+            start_line: region.start_line,
+            end_line: region.end_line,
+            before,
+            after: after.iter().map(|s| s.to_string()).collect(),
         }
-        false => {
-            let anchor = parse_anchor(&cmd.anchor)?;
-            let resolved = resolve(&anchor, &doc, &index)?;
-            let before = doc.lines[resolved.index].content.to_string();
-            if content.contains(['\n', '\r']) {
-                // Replacement content spans multiple lines; treat the single
-                // anchor as a one-line range so callers can expand a single
-                // line into many without explicitly writing `H..H`.
-                let after_lines = split_content_lines(&content);
-                replace_range(&mut doc, resolved.index, resolved.index, &content)?;
+    } else {
+        match looks_like_range_anchor(&cmd.anchor) {
+            true => {
+                let range = parse_range(&cmd.anchor)?;
+                let (start, end) = resolve_range(&range, &doc, &index)?;
+                let before = doc.lines[start.index..=end.index]
+                    .iter()
+                    .map(|line| line.content.to_string())
+                    .collect::<Vec<_>>();
+                let after = split_content_lines(&content);
+                replace_range(&mut doc, start.index, end.index, &content)?;
                 EditSummary::Range {
-                    start_line: resolved.line_no,
-                    end_line: resolved.line_no,
-                    before: vec![before],
-                    after: after_lines.iter().map(|s| s.to_string()).collect(),
-                }
-            } else {
-                replace_line(&mut doc, resolved.index, &content)?;
-                EditSummary::Single {
-                    line_no: resolved.line_no,
+                    start_line: start.line_no,
+                    end_line: end.line_no,
                     before,
-                    after: content,
+                    after: after.iter().map(|s| s.to_string()).collect(),
+                }
+            }
+            false => {
+                let anchor = parse_anchor(&cmd.anchor)?;
+                let resolved = resolve(&anchor, &doc, &index)?;
+                let before = doc.lines[resolved.index].content.to_string();
+                if content.contains(['\n', '\r']) {
+                    // Replacement content spans multiple lines; treat the single
+                    // anchor as a one-line range so callers can expand a single
+                    // line into many without explicitly writing `H..H`.
+                    let after_lines = split_content_lines(&content);
+                    replace_range(&mut doc, resolved.index, resolved.index, &content)?;
+                    EditSummary::Range {
+                        start_line: resolved.line_no,
+                        end_line: resolved.line_no,
+                        before: vec![before],
+                        after: after_lines.iter().map(|s| s.to_string()).collect(),
+                    }
+                } else {
+                    replace_line(&mut doc, resolved.index, &content)?;
+                    EditSummary::Single {
+                        line_no: resolved.line_no,
+                        before,
+                        after: content,
+                    }
                 }
             }
         }
