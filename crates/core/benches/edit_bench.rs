@@ -8,6 +8,7 @@ mod support;
 
 use hashline::anchor::{parse_anchor, resolve, resolve_without_index};
 use hashline::document::Document;
+use hashline::commands::fast_edit as hashline_fast;
 use hashline::error::HashlineError;
 use hashline::mutation::replace_line;
 use support::{
@@ -520,9 +521,32 @@ fn bench_edit_comparison_scaling(c: &mut Criterion) {
             &scenario,
             |b, scenario| b.iter(|| black_box(naive_str_replace_line_once(black_box(scenario)))),
         );
+
+        group.bench_with_input(
+            BenchmarkId::new("fast_edit", size),
+            &scenario,
+            |b, scenario| {
+                b.iter(|| {
+                    let content = &scenario.drifted_content;
+                    let target_line = scenario.target_line_number - 1;
+                    let line = content.lines().nth(target_line).unwrap();
+                    let short_hash = hashline::hash::short_hash_value(line);
+                    black_box(
+                        hashline_fast::fast_replace_line(
+                            black_box(content),
+                            target_line,
+                            short_hash,
+                            &scenario.replacement_line,
+                        )
+                        .expect("fast_edit succeeds"),
+                    )
+                })
+            },
+        );
     }
     group.finish();
 }
+
 
 // --- Pipeline breakdown: parse vs resolve vs mutate ---
 fn bench_edit_pipeline_breakdown(c: &mut Criterion) {
