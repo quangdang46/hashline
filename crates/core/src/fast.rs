@@ -673,6 +673,64 @@ pub fn fast_indent_lines(
     Ok(lines.join(sep) + if content.ends_with('\n') { "\n" } else { "" })
 }
 
+/// When a stale anchor is detected, try to find the line by fuzzy matching content.
+/// Returns the relocated line number if found within ±tolerance lines.
+pub fn try_fuzzy_recover(content: &str, original_line: usize, expected_hash: ShortHash, _tolerance: usize) -> Option<usize> {
+    // First try exact line
+    if let Some(found) = fast_fuzzy_resolve(content, original_line, expected_hash) {
+        return Some(found);
+    }
+    // Try broader search: scan all lines for matching hash
+    if let Ok(found) = fast_from_hash(content, expected_hash) {
+        return Some(found);
+    }
+    None
+}
+
+/// Try to recover from a stale anchor by finding the relocated line and re-applying the edit.
+/// Returns the new content and the new line number if recovery succeeded.
+pub fn try_recover_edit(content: &str, original_line: usize, expected_hash: ShortHash, new_content: &str) -> Result<(String, usize), HashlineError> {
+    if let Some(found) = try_fuzzy_recover(content, original_line, expected_hash, 3) {
+        // Line found at new location - apply the edit there
+        let (result, _) = fast_replace_line(content, found, expected_hash, new_content)?;
+        return Ok((result, found));
+    }
+    Err(HashlineError::StaleAnchor {
+        anchor: format!("{}:{}", original_line + 1, hash::format_short_hash(expected_hash)).into(),
+        line: original_line + 1,
+        expected: hash::format_short_hash(expected_hash).into(),
+        actual: "???".into(),
+        path: "".into(),
+        relocated_suffix: " (fuzzy recovery attempted but no matching line found)".into(),
+    })
+}
+
+/// Repair common model mistakes in replacement operations.
+/// For a range edit where the model accidentally restates unchanged boundaries,
+/// detect and fix the content.
+pub fn repair_replacement(old_lines: &[String], new_lines: &[String]) -> Vec<String> {
+    if old_lines.is_empty() || new_lines.is_empty() || old_lines.len() < 2 {
+        return new_lines.to_vec();
+    }
+
+    let mut trimmed = new_lines.to_vec();
+
+    // Trailing context: if new content ends with same line as old content,
+    // model likely restated the unchanged closing boundary
+    while trimmed.len() > 1 && trimmed.last() == old_lines.last() {
+        trimmed.pop();
+    }
+
+    // Leading context: if new content starts with same line as old content,
+    // model likely restated the unchanged opening boundary
+    if trimmed.len() > 1 && trimmed.first() == old_lines.first() {
+        trimmed.remove(0);
+    }
+
+    trimmed
+}
+
+
 // ===== Comprehensive command handlers =====
 #[allow(clippy::too_many_arguments)]
 pub fn run_fast_edit<W: Write, E: Write>(
@@ -700,7 +758,26 @@ pub fn run_fast_edit<W: Write, E: Write>(
     } else {
         None
     };
-    let (nc, _old) = fast_replace_line(&raw, target_line, expected_hash, &content_to_use)?;
+    let (nc, _old) = match fast_replace_line(&raw, target_line, expected_hash, &content_to_use) {
+        Ok(result) => result,
+        Err(HashlineError::StaleAnchor { .. }) => {
+            // Auto-recovery: try fuzzy resolve
+            match try_recover_edit(&raw, target_line, expected_hash, &content_to_use) {
+                Ok((recovered, new_line)) => {
+                    // Recovery succeeded — continue with recovered content
+                    if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
+                        let _ = output::write_success_line(
+                            ctx,
+                            &format!("Anchor line moved from {} to {} — edit applied at new location.", target_line + 1, new_line + 1),
+                        );
+                    }
+                    (recovered, String::new())
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(e) => return Err(e),
+    };
     let after_bytes = if receipt_flag || audit_log.is_some() {
         Some(nc.as_bytes().to_vec())
     } else {
@@ -1357,14 +1434,53 @@ pub fn run_fast_range_edit<W: Write, E: Write>(
     } else {
         None
     };
-    let (nc, _first_line, _last_line) = fast_replace_range(
-        &raw,
-        start_line,
-        end_line,
-        start_hash,
-        end_hash,
-        &content_to_use,
-    )?;
+    // Try repair heuristics: detect if model restated unchanged boundaries
+    let content_to_use_repaired = {
+        let old_lines: Vec<String> = get_line_range(&raw, start_line, end_line);
+        let new_lines: Vec<String> = content_to_use.lines().map(String::from).collect();
+        let repaired = repair_replacement(&old_lines, &new_lines);
+        if repaired.len() != new_lines.len() {
+            if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
+                let _ = output::write_success_line(
+                    ctx,
+                    &format!("Repaired replacement boundaries ({} lines → {} lines)", new_lines.len(), repaired.len()),
+                );
+            }
+            repaired.join("\n")
+        } else {
+            content_to_use.clone()
+        }
+    };
+    let (nc, _first_line, _last_line) = match fast_replace_range(
+        &raw, start_line, end_line, start_hash, end_hash, &content_to_use_repaired,
+    ) {
+        Ok(result) => result,
+        Err(HashlineError::StaleAnchor { .. }) => {
+            // Try recovery on start anchor
+            let recovered = try_fuzzy_recover(&raw, start_line, start_hash, 3);
+            if let Some(found) = recovered {
+                let new_end = end_line + found.saturating_sub(start_line);
+                let (nc2, _, _) = fast_replace_range(&raw, found, new_end, start_hash, end_hash, &content_to_use_repaired)?;
+                if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
+                    let _ = output::write_success_line(
+                        ctx,
+                        &format!("Range anchor recovered: lines {}-{}", found + 1, new_end + 1),
+                    );
+                }
+                (nc2, String::new(), String::new())
+            } else {
+                return Err(HashlineError::StaleAnchor {
+                    anchor: format!("{}:{}", start_line + 1, hash::format_short_hash(start_hash)).into(),
+                    line: start_line + 1,
+                    expected: hash::format_short_hash(start_hash).into(),
+                    actual: "???".into(),
+                    path: path.display().to_string().into(),
+                    relocated_suffix: " (fuzzy recovery attempted but no matching line found)".into(),
+                });
+            }
+        }
+        Err(e) => return Err(e),
+    };
     let after_bytes = if receipt_flag || audit_log.is_some() {
         Some(nc.as_bytes().to_vec())
     } else {
@@ -1372,7 +1488,7 @@ pub fn run_fast_range_edit<W: Write, E: Write>(
     };
     if receipt_flag {
         if let (Some(before), Some(after)) = (&before_bytes, &after_bytes) {
-            let changes = make_range_changes(&raw, start_line, end_line, &content_to_use);
+            let changes = make_range_changes(&raw, start_line, end_line, &content_to_use_repaired);
             handle_receipt(ctx, "edit", path, changes, before, after, true, None)?;
         }
     }
