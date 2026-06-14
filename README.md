@@ -425,100 +425,18 @@ Hint: re-read the file metadata and retry with fresh --expect-mtime/--expect-ino
 
 ## Benchmarks
 
-All measurements collected via `cargo bench --bench edit_bench` (criterion) on Apple M1,
-`cargo build --release` profile. Reported as **median** with statistical noise below 5%.
+All measurements via `cargo bench --bench edit_bench` on **Apple M1** (`cargo build --release`).  
+Hashline fast path uses memchr-based byte scanning instead of loading the full Document.
 
-### Edit comparison: hashline vs str_replace vs fast_edit (fast path)
+| Approach | 1,000 lines | 10,000 lines | 100,000 lines |
+|----------|:-----------:|:------------:|:-------------:|
+| **hashline** (Document pipeline) | 30.0 µs (5× chậm) | 299 µs (5× chậm) | 2.6 ms (2.4× chậm) |
+| str_replace (baseline) | **6.3 µs** | **57 µs** | **1.1 ms** |
+| **hashline fast path** (edit/insert/delete/swap/move/indent) | **8.5 µs (1.3× chậm)** | **86 µs (1.5× chậm)** | **0.9 ms (nhanh hơn str_replace 🚀)** |
 
-The fast path ("fast_edit") uses `memchr()`-based byte scanning instead of loading the full
-Document into memory. At scale, SIMD-optimized `memchr` outperforms `str::find()` —
-making fast_edit **faster than str_replace** on files >100k lines.
+> **Fast path** là mặc định cho mọi mutation tool. SIMD memchr vượt `str::find()` ở 100k+ dòng.
 
-| Lines | Approach | Time | Throughput | vs str_replace |
-|-------|----------|-----:|-----------:|:--------------:|
-| 1,000 | Standard hashline | 31.85 µs | 1.65 GiB/s | 4.8× slower |
-| 1,000 | str_replace | 6.64 µs | 7.93 GiB/s | — |
-| 1,000 | **fast_edit** | **8.63 µs** | **6.09 GiB/s** | **1.3× slower** |
-| 10,000 | Standard hashline | 400.96 µs | 1.33 GiB/s | 4.8× slower |
-| 10,000 | str_replace | 82.66 µs | 6.45 GiB/s | — |
-| 10,000 | **fast_edit** | **106.62 µs** | **5.00 GiB/s** | **1.3× slower** |
-| 100,000 | Standard hashline | 3.14 ms | 1.72 GiB/s | 2.3× slower |
-| 100,000 | str_replace | 1.39 ms | 3.87 GiB/s | — |
-| 100,000 | **fast_edit** | **927 µs** | **5.82 GiB/s** | **1.5× faster** |
 
-**Key takeaway:** fast_edit is within 1.3× of str_replace at all file sizes, and
-**exceeds str_replace throughput at 100k+ lines** (5.82 GiB/s vs 3.87 GiB/s) due to
-SIMD-accelerated `memchr` scanning.
-
-### Pipeline breakdown (100k lines)
-
-| Stage | Time | Throughput |
-|-------|-----:|-----------:|
-| 1. Parse document | 263.94 µs | 2.02 GiB/s |
-| 2. Resolve anchor | 257.60 µs | 2.07 GiB/s |
-| 3. Mutate + render | 316.12 µs | 1.69 GiB/s |
-| 4. Full edit (1+2+3) | 312.36 µs | 1.71 GiB/s |
-
-### How fast_edit works (ASCII flow)
-
-```
-  ┌──────────────────────────────────────────────────────────────┐
-  │                    File on disk                              │
-  └───────────────┬──────────────────────────────────────────────┘
-                  │ read_file()
-                  ▼
-  ┌──────────────────────────────┐     ┌─────────────────────────┐
-  │      String content          │     │  Anchor: "42:a3f2"     │
-  │   (bytes in memory)          │     │  → line=42, hash=a3f2  │
-  └───────────────┬──────────────┘     └───────────┬─────────────┘
-                  │                                │
-                  ▼                                ▼
-  ┌──────────────────────────────────────────────────────────────┐
-  │  fast_replace_line()                                        │
-  │                                                              │
-  │   1. Skip to line 42 via memchr('
-') × 41                  │
-  │   2. Find line end via memchr('
-') from offset              │
-  │   3. Hash byte span, compare with a3f2                       │
-  │   4. Build new String: [..line_start] + new_content + [rest] │
-  │                                                              │
-  │   ⚡ O(target_line) scan — no full-document overhead        │
-  └───────────────────────┬──────────────────────────────────────┘
-                          │ atomic_write()
-                          ▼
-  ┌──────────────────────────────────────────────────────────────┐
-  │              File on disk (updated)                          │
-  └──────────────────────────────────────────────────────────────┘
-```
-
-### Standard path vs fast path decision
-
-```
-  ┌──────────────┐
-  │  Command in  │
-  └──────┬───────┘
-         ▼
-  ┌──────────────────────────────────┐
-  │  Is it a simple line:hash        │
-  │  anchor (e.g., "42:a3f2")?       │──── No ──→ Full Document path
-  │                                  │           (parse+index+resolve+
-  │  Is receipt/audit-log needed?    │            mutate+render)
-  │                                  │
-  │  Is interpret_escapes needed?    │
-  └──────────────┬───────────────────┘
-                 │ Yes
-                 ▼
-  ┌──────────────────────────────────┐
-  │      Fast path                   │
-  │  ┌─ read_file() → String         │
-  │  ├─ fast_replace_line()          │
-  │  ├─ handle_receipt() (if needed) │
-  │  └─ atomic_write()               │
-  │                                  │
-  │  1.3× str_replace speed          │
-  │  No full Document overhead       │
-  └──────────────────────────────────┘
 ## Roadmap
 
 - [ ] `hashline diff` — show pending edits before applying
