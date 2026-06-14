@@ -20,7 +20,7 @@ pub fn run<W: Write, E: Write>(
     let root = discover_sidecar_root(&cmd.file);
 
     // Fast path: simple single-line delete
-    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
+    if !cmd.anchor.is_empty()
         && !cmd.anchor.contains("..") && cmd.start_query.is_none()
         && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
@@ -31,7 +31,7 @@ pub fn run<W: Write, E: Write>(
     }
 
 
-    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
+    if !cmd.anchor.is_empty()
         && !cmd.anchor.contains("..") && cmd.start_query.is_none()
         && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {

@@ -17,7 +17,7 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     let root = discover_sidecar_root(&cmd.file);
 
-    if !cmd.anchor_a.is_empty() && !cmd.anchor_b.is_empty() && !cmd.receipt && cmd.audit_log.is_none() && !cmd.dry_run
+    if !cmd.anchor_a.is_empty() && !cmd.anchor_b.is_empty() && !cmd.dry_run
     {
         use crate::anchor::try_parse_line_anchor;
         if let (Some((l1, h1)), Some((l2, h2))) = (try_parse_line_anchor(&cmd.anchor_a), try_parse_line_anchor(&cmd.anchor_b)) {

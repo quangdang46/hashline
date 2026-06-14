@@ -20,8 +20,8 @@ pub fn run<W: Write, E: Write>(
     let root = discover_sidecar_root(&cmd.file);
 
     // Fast path: simple anchor insert (no receipt, no content query, no CRLF issues for now)
-    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
-        && cmd.start_query.is_none() && !cmd.before && !cmd.interpret_escapes
+    if !cmd.anchor.is_empty()
+        && cmd.start_query.is_none() && !cmd.before
         && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
@@ -31,8 +31,8 @@ pub fn run<W: Write, E: Write>(
     }
 
 
-    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
-        && cmd.start_query.is_none() && !cmd.before && !cmd.interpret_escapes
+    if !cmd.anchor.is_empty()
+        && cmd.start_query.is_none() && !cmd.before
         && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
