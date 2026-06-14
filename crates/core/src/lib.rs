@@ -34,6 +34,7 @@ pub mod error;
 pub mod fast;
 pub mod hash;
 pub mod hash_cache;
+pub mod merge;
 pub mod mutation;
 
 /// SHA-256 window-hash anchors (backward-compat with jcode and other

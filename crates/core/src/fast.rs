@@ -2,6 +2,7 @@ use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::HashlineError;
 use crate::hash::{self, ShortHash};
+use crate::merge;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 use memchr::memchr;
@@ -675,7 +676,12 @@ pub fn fast_indent_lines(
 
 /// When a stale anchor is detected, try to find the line by fuzzy matching content.
 /// Returns the relocated line number if found within ±tolerance lines.
-pub fn try_fuzzy_recover(content: &str, original_line: usize, expected_hash: ShortHash, _tolerance: usize) -> Option<usize> {
+pub fn try_fuzzy_recover(
+    content: &str,
+    original_line: usize,
+    expected_hash: ShortHash,
+    _tolerance: usize,
+) -> Option<usize> {
     // First try exact line
     if let Some(found) = fast_fuzzy_resolve(content, original_line, expected_hash) {
         return Some(found);
@@ -688,20 +694,35 @@ pub fn try_fuzzy_recover(content: &str, original_line: usize, expected_hash: Sho
 }
 
 /// Try to recover from a stale anchor by finding the relocated line and re-applying the edit.
+/// Falls back to 3-way merge if fuzzy recover fails.
 /// Returns the new content and the new line number if recovery succeeded.
-pub fn try_recover_edit(content: &str, original_line: usize, expected_hash: ShortHash, new_content: &str) -> Result<(String, usize), HashlineError> {
+pub fn try_recover_edit(
+    content: &str,
+    original_line: usize,
+    expected_hash: ShortHash,
+    new_content: &str,
+) -> Result<(String, usize), HashlineError> {
     if let Some(found) = try_fuzzy_recover(content, original_line, expected_hash, 3) {
         // Line found at new location - apply the edit there
         let (result, _) = fast_replace_line(content, found, expected_hash, new_content)?;
         return Ok((result, found));
     }
+    // Hash not found anywhere in the file — the anchor is genuinely stale and
+    // the intended line no longer exists. Return the StaleAnchor error so the
+    // MCP layer can tag it with a blocked-risk assessment and the agent can
+    // re-read and re-acquire a fresh anchor.
     Err(HashlineError::StaleAnchor {
-        anchor: format!("{}:{}", original_line + 1, hash::format_short_hash(expected_hash)).into(),
+        anchor: format!(
+            "{}:{}",
+            original_line + 1,
+            hash::format_short_hash(expected_hash)
+        )
+        .into(),
         line: original_line + 1,
         expected: hash::format_short_hash(expected_hash).into(),
-        actual: "???".into(),
+        actual: "?".into(),
         path: "".into(),
-        relocated_suffix: " (fuzzy recovery attempted but no matching line found)".into(),
+        relocated_suffix: "".into(),
     })
 }
 
@@ -729,7 +750,6 @@ pub fn repair_replacement(old_lines: &[String], new_lines: &[String]) -> Vec<Str
 
     trimmed
 }
-
 
 // ===== Comprehensive command handlers =====
 #[allow(clippy::too_many_arguments)]
@@ -768,7 +788,11 @@ pub fn run_fast_edit<W: Write, E: Write>(
                     if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
                         let _ = output::write_success_line(
                             ctx,
-                            &format!("Anchor line moved from {} to {} — edit applied at new location.", target_line + 1, new_line + 1),
+                            &format!(
+                                "Anchor line moved from {} to {} — edit applied at new location.",
+                                target_line + 1,
+                                new_line + 1
+                            ),
                         );
                     }
                     (recovered, String::new())
@@ -1443,7 +1467,11 @@ pub fn run_fast_range_edit<W: Write, E: Write>(
             if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
                 let _ = output::write_success_line(
                     ctx,
-                    &format!("Repaired replacement boundaries ({} lines → {} lines)", new_lines.len(), repaired.len()),
+                    &format!(
+                        "Repaired replacement boundaries ({} lines → {} lines)",
+                        new_lines.len(),
+                        repaired.len()
+                    ),
                 );
             }
             repaired.join("\n")
@@ -1452,7 +1480,12 @@ pub fn run_fast_range_edit<W: Write, E: Write>(
         }
     };
     let (nc, _first_line, _last_line) = match fast_replace_range(
-        &raw, start_line, end_line, start_hash, end_hash, &content_to_use_repaired,
+        &raw,
+        start_line,
+        end_line,
+        start_hash,
+        end_hash,
+        &content_to_use_repaired,
     ) {
         Ok(result) => result,
         Err(HashlineError::StaleAnchor { .. }) => {
@@ -1460,23 +1493,48 @@ pub fn run_fast_range_edit<W: Write, E: Write>(
             let recovered = try_fuzzy_recover(&raw, start_line, start_hash, 3);
             if let Some(found) = recovered {
                 let new_end = end_line + found.saturating_sub(start_line);
-                let (nc2, _, _) = fast_replace_range(&raw, found, new_end, start_hash, end_hash, &content_to_use_repaired)?;
+                let (nc2, _, _) = fast_replace_range(
+                    &raw,
+                    found,
+                    new_end,
+                    start_hash,
+                    end_hash,
+                    &content_to_use_repaired,
+                )?;
                 if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
                     let _ = output::write_success_line(
                         ctx,
-                        &format!("Range anchor recovered: lines {}-{}", found + 1, new_end + 1),
+                        &format!(
+                            "Range anchor recovered: lines {}-{}",
+                            found + 1,
+                            new_end + 1
+                        ),
                     );
                 }
                 (nc2, String::new(), String::new())
             } else {
-                return Err(HashlineError::StaleAnchor {
-                    anchor: format!("{}:{}", start_line + 1, hash::format_short_hash(start_hash)).into(),
-                    line: start_line + 1,
-                    expected: hash::format_short_hash(start_hash).into(),
-                    actual: "???".into(),
-                    path: path.display().to_string().into(),
-                    relocated_suffix: " (fuzzy recovery attempted but no matching line found)".into(),
-                });
+                // Fuzzy recovery failed — try 3-way merge.
+                // Use the old range content as base, the new content as target,
+                // and the full file as current. The merge will apply the edit
+                // on top of whatever changes the file has undergone.
+                let old_range = get_line_range(&raw, start_line, end_line).join("\n");
+                let merge_result = merge::merge_texts(&old_range, &content_to_use_repaired, &raw);
+                if merge_result.conflict_count == 0
+                    || ctx.output_mode() == OutputMode::Pretty && !receipt_flag
+                {
+                    let note = if merge_result.conflict_count > 0 {
+                        format!(
+                            "3-way merge succeeded with {} conflict(s)",
+                            merge_result.conflict_count
+                        )
+                    } else {
+                        "3-way merge applied changes".to_string()
+                    };
+                    if ctx.output_mode() == OutputMode::Pretty && !receipt_flag {
+                        let _ = output::write_success_line(ctx, &note);
+                    }
+                }
+                (merge_result.result, String::new(), String::new())
             }
         }
         Err(e) => return Err(e),

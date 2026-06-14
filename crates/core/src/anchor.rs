@@ -6,8 +6,18 @@ use crate::hash::ShortHash;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Anchor {
-    Hash { short: ShortHash },
-    LineHash { line: usize, short: ShortHash },
+    Hash {
+        short: ShortHash,
+    },
+    LineHash {
+        line: usize,
+        short: ShortHash,
+    },
+    /// Structural block containing a specific line, e.g. "block 15:".
+    /// Resolved via brace/indent matching in `find_block_boundaries`.
+    BlockAnchor {
+        line: usize,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,11 +34,32 @@ pub struct ResolvedLine {
 }
 
 pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
-    let normalized = normalize_anchor_input(s);
+    let trimmed = s.trim();
+
+    // Check for "block N:" syntax first (case-insensitive prefix).
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(line_str) = lower
+        .strip_prefix("block ")
+        .and_then(|rest| rest.strip_suffix(':'))
+    {
+        let line = line_str
+            .parse::<usize>()
+            .map_err(|_| HashlineError::InvalidAnchor {
+                anchor: trimmed.to_owned(),
+            })?;
+        if line == 0 {
+            return Err(HashlineError::InvalidAnchor {
+                anchor: trimmed.to_owned(),
+            });
+        }
+        return Ok(Anchor::BlockAnchor { line });
+    }
+
+    let normalized = normalize_anchor_input(trimmed);
 
     if normalized.contains("..") {
         return Err(HashlineError::InvalidAnchor {
-            anchor: s.trim().to_owned(),
+            anchor: trimmed.to_owned(),
         });
     }
 
@@ -91,6 +122,7 @@ pub fn resolve(
     match anchor {
         Anchor::Hash { short } => resolve_unqualified(*short, doc, index),
         Anchor::LineHash { line, short } => resolve_qualified(*line, *short, doc, Some(index)),
+        Anchor::BlockAnchor { line } => resolve_block_anchor(*line, doc),
     }
 }
 
@@ -111,6 +143,7 @@ pub fn resolve_without_index(
             }
             Err(error) => Err(error),
         },
+        Anchor::BlockAnchor { line } => resolve_block_anchor(*line, doc),
     }
 }
 
@@ -311,6 +344,27 @@ fn resolve_qualified(
     })
 }
 
+/// Resolve a block anchor to the first line of the block (basic line validation).
+/// The caller is expected to use `find_block_boundaries` separately to get the
+/// full block range for range-based operations like edit.
+fn resolve_block_anchor(line: usize, doc: &Document) -> Result<ResolvedLine, HashlineError> {
+    let idx = line
+        .checked_sub(1)
+        .ok_or_else(|| HashlineError::InvalidAnchor {
+            anchor: format!("block {line}:"),
+        })?;
+    if idx >= doc.lines.len() {
+        return Err(HashlineError::InvalidAnchor {
+            anchor: format!("block {line}:"),
+        });
+    }
+    Ok(ResolvedLine {
+        index: idx,
+        line_no: line,
+        short_hash: String::new(),
+    })
+}
+
 fn normalize_anchor_input(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
@@ -443,10 +497,25 @@ pub fn try_parse_line_anchor(anchor: &str) -> Option<(usize, crate::hash::ShortH
     })
 }
 
+/// Try to parse a "block N:" anchor.
+/// Returns `Some(line)` with the 1-indexed line number on success,
+/// `None` if the string is not a valid block anchor (case-insensitive "block" prefix).
+pub fn looks_like_block_anchor(s: &str) -> Option<usize> {
+    let trimmed = s.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let line_str = lower.strip_prefix("block ")?.strip_suffix(':')?;
+    let line: usize = line_str.parse().ok()?;
+    if line == 0 {
+        return None;
+    }
+    Some(line)
+}
+
 fn display_anchor(anchor: &Anchor) -> String {
     match anchor {
         Anchor::Hash { short } => format_short_hash(*short),
         Anchor::LineHash { line, short } => format!("{line}:{}", format_short_hash(*short)),
+        Anchor::BlockAnchor { line } => format!("block {line}:"),
     }
 }
 

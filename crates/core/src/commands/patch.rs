@@ -10,6 +10,8 @@ use std::io::{self, Read, Write};
 use std::ops::RangeInclusive;
 
 use serde::Deserialize;
+#[cfg(test)]
+use serde::Serialize;
 
 use crate::anchor::{parse_anchor, parse_range, resolve, resolve_range};
 use crate::cli::PatchCmd;
@@ -19,7 +21,6 @@ use crate::document::{Document, LineRecord};
 use crate::error::HashlineError;
 use crate::hash;
 use crate::hash_cache::discover_sidecar_root;
-use crate::mutation::validate_single_line_content;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -28,43 +29,6 @@ pub fn run<W: Write, E: Write>(
     cmd: PatchCmd,
 ) -> Result<(), HashlineError> {
     let patch = read_patch(&cmd.patch)?;
-    validate_patch_target(&patch, &cmd.file)?;
-    // Fast path: all ops with simple anchors -> multi-op string scanning
-    if !cmd.dry_run
-        && !cmd.receipt
-        && cmd.audit_log.is_none()
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
-    {
-        if patch.ops.len() == 1 {
-            if let Some(anchor) = patch.ops.first().and_then(|op| match op {
-                PatchOp::Edit(e) => Some(&e.anchor),
-                PatchOp::Insert(i) => Some(&i.anchor),
-                PatchOp::Delete(d) => Some(&d.anchor),
-            }) {
-                // Only use fast path if anchor resolves AND file content exists
-                if crate::anchor::try_parse_line_anchor(anchor).is_some()
-                    && crate::anchor::try_parse_line_anchor(anchor).unwrap().0
-                        < std::fs::read_to_string(&cmd.file)
-                            .map(|c| c.lines().count())
-                            .unwrap_or(0)
-                {
-                    if let Ok(content) = std::fs::read_to_string(&cmd.file) {
-                        let nlines = content.lines().count();
-                        let (ln, _) = crate::anchor::try_parse_line_anchor(anchor).unwrap();
-                        if ln < nlines {}
-                    }
-                }
-            }
-        }
-    }
-    // Fast path: single Edit op with simple anchor
-    if !cmd.dry_run
-        && !cmd.receipt
-        && cmd.audit_log.is_none()
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
-    {}
     validate_patch_target(&patch, &cmd.file)?;
 
     let original = Document::load_with_hash_cache(&cmd.file, &discover_sidecar_root(&cmd.file))?;
@@ -174,6 +138,11 @@ enum PlannedOp {
         op_index: usize,
         line: usize,
         deleted: String,
+    },
+    DeleteRange {
+        op_index: usize,
+        range: RangeInclusive<usize>,
+        before: Vec<String>,
     },
 }
 
@@ -325,7 +294,197 @@ fn read_patch(path: &str) -> Result<PatchFile, HashlineError> {
         fs::read_to_string(path)?
     };
 
-    serde_json::from_str(&raw).map_err(HashlineError::from)
+    let trimmed = raw.trim();
+    if trimmed.starts_with('[') {
+        parse_hashline_patch(trimmed)
+    } else {
+        serde_json::from_str(&raw).map_err(HashlineError::from)
+    }
+}
+
+// --- hashline-style patch format parser ---
+
+enum OpType {
+    Replace,
+    InsertAfter,
+    InsertBefore,
+}
+
+struct PendingOp {
+    op_type: OpType,
+    anchor: String,
+    content_lines: Vec<String>,
+}
+
+/// Finalize a pending op that accumulates content lines (replace or insert).
+fn finalize_op(pending: PendingOp, op_index: &mut usize) -> Result<PatchOp, HashlineError> {
+    *op_index += 1;
+    match pending.op_type {
+        OpType::Replace => {
+            let content = if pending.content_lines.is_empty() {
+                String::new()
+            } else {
+                pending.content_lines.join("\n")
+            };
+            Ok(PatchOp::Edit(EditOp {
+                anchor: pending.anchor,
+                content,
+            }))
+        }
+        OpType::InsertAfter | OpType::InsertBefore => {
+            let content = if pending.content_lines.is_empty() {
+                String::new()
+            } else {
+                pending.content_lines.join("\n")
+            };
+            Ok(PatchOp::Insert(InsertOp {
+                anchor: pending.anchor,
+                content,
+                before: Some(matches!(pending.op_type, OpType::InsertBefore)),
+            }))
+        }
+    }
+}
+
+/// Parse a hashline-style patch file.
+///
+/// Format:
+///   [file.txt#TAG]
+///   replace A..B:
+///   +new line 1
+///   +new line 2
+///   delete C..D
+///   insert after E:
+///   +inserted line
+///
+/// Operations and their content lines:
+///   - `replace <anchor>:` or `replace <anchor>` followed by `+` lines
+///   - `delete <anchor>` no content lines
+///   - `insert after <anchor>:` or `insert before <anchor>:` followed by `+` lines
+///
+/// Leading whitespace on content lines is preserved (only the `+`
+/// prefix is stripped). The `#TAG` suffix in the header is optional metadata
+/// and is not parsed.
+fn parse_hashline_patch(input: &str) -> Result<PatchFile, HashlineError> {
+    let mut lines = input.lines();
+
+    // Parse header: [path#tag] or [path]
+    let header = lines.next().ok_or_else(|| HashlineError::PatchFailed {
+        op_index: 0,
+        reason: "empty patch file".into(),
+    })?;
+
+    let header = header.trim();
+    if !header.starts_with('[') || !header.ends_with(']') {
+        return Err(HashlineError::PatchFailed {
+            op_index: 0,
+            reason: format!("expected patch header like [path] or [path#tag], got {header:?}"),
+        });
+    }
+
+    let inner = &header[1..header.len() - 1];
+    let file = inner.split('#').next().map(|s| s.trim().to_string());
+    let file = file.filter(|s| !s.is_empty());
+
+    // Parse operations
+    let mut ops: Vec<PatchOp> = Vec::new();
+    let mut pending_op: Option<PendingOp> = None;
+    let mut op_index: usize = 0;
+
+    for line in lines {
+        let trimmed = line.trim();
+
+        // Skip blank lines
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Content line (belongs to previous op)
+        if trimmed.starts_with('+') {
+            let content = &trimmed[1..]; // strip the '+' prefix
+            if let Some(ref mut pending) = pending_op {
+                pending.content_lines.push(content.to_string());
+            } else {
+                return Err(HashlineError::PatchFailed {
+                    op_index,
+                    reason: format!("content line without preceding operation: {trimmed:?}"),
+                });
+            }
+            continue;
+        }
+
+        // If we have a pending op, finalize it
+        if let Some(pending) = pending_op.take() {
+            ops.push(finalize_op(pending, &mut op_index)?);
+        }
+
+        // Parse the command line
+        // Format: "replace A..B:" or "replace A..B" or "delete A..B" or "insert after/before X:" etc.
+        let trimmed_no_colon = trimmed.strip_suffix(':').unwrap_or(trimmed);
+
+        if let Some(anchor) = trimmed_no_colon.strip_prefix("replace ") {
+            let anchor = anchor.trim().to_string();
+            if anchor.is_empty() {
+                return Err(HashlineError::PatchFailed {
+                    op_index: op_index + 1,
+                    reason: "replace operation missing anchor".into(),
+                });
+            }
+            pending_op = Some(PendingOp {
+                op_type: OpType::Replace,
+                anchor,
+                content_lines: Vec::new(),
+            });
+        } else if let Some(anchor) = trimmed_no_colon.strip_prefix("delete ") {
+            let anchor = anchor.trim().to_string();
+            if anchor.is_empty() {
+                return Err(HashlineError::PatchFailed {
+                    op_index: op_index + 1,
+                    reason: "delete operation missing anchor".into(),
+                });
+            }
+            ops.push(PatchOp::Delete(DeleteOp { anchor }));
+            op_index += 1;
+        } else if let Some(after) = trimmed_no_colon.strip_prefix("insert after ") {
+            let anchor = after.trim().to_string();
+            if anchor.is_empty() {
+                return Err(HashlineError::PatchFailed {
+                    op_index: op_index + 1,
+                    reason: "insert after operation missing anchor".into(),
+                });
+            }
+            pending_op = Some(PendingOp {
+                op_type: OpType::InsertAfter,
+                anchor,
+                content_lines: Vec::new(),
+            });
+        } else if let Some(before) = trimmed_no_colon.strip_prefix("insert before ") {
+            let anchor = before.trim().to_string();
+            if anchor.is_empty() {
+                return Err(HashlineError::PatchFailed {
+                    op_index: op_index + 1,
+                    reason: "insert before operation missing anchor".into(),
+                });
+            }
+            pending_op = Some(PendingOp {
+                op_type: OpType::InsertBefore,
+                anchor,
+                content_lines: Vec::new(),
+            });
+        } else {
+            return Err(HashlineError::PatchFailed {
+                op_index: op_index + 1,
+                reason: format!("unrecognized patch operation: {trimmed:?}"),
+            });
+        }
+    }
+
+    // Finalize any pending op
+    if let Some(pending) = pending_op.take() {
+        ops.push(finalize_op(pending, &mut op_index)?);
+    }
+
+    Ok(PatchFile { file, ops })
 }
 
 fn validate_patch_target(patch: &PatchFile, file: &std::path::Path) -> Result<(), HashlineError> {
@@ -374,8 +533,6 @@ fn resolve_edit(
     index: &crate::document::ShortHashIndex,
     occupied: &mut [Option<Occupancy>],
 ) -> Result<PlannedOp, HashlineError> {
-    validate_single_line_content(&edit.content).map_err(|error| patch_error(op_index, error))?;
-
     if let Ok(range) = parse_range(&edit.anchor) {
         let (start, end) =
             resolve_range(&range, original, index).map_err(|error| patch_error(op_index, error))?;
@@ -415,7 +572,6 @@ fn resolve_insert(
     original: &Document,
     index: &crate::document::ShortHashIndex,
 ) -> Result<PlannedOp, HashlineError> {
-    validate_single_line_content(&insert.content).map_err(|error| patch_error(op_index, error))?;
     let anchor = parse_anchor(&insert.anchor).map_err(|error| patch_error(op_index, error))?;
     let resolved =
         resolve(&anchor, original, index).map_err(|error| patch_error(op_index, error))?;
@@ -441,6 +597,26 @@ fn resolve_delete(
     index: &crate::document::ShortHashIndex,
     occupied: &mut [Option<Occupancy>],
 ) -> Result<PlannedOp, HashlineError> {
+    if let Ok(range) = parse_range(&delete.anchor) {
+        let (start, end) =
+            resolve_range(&range, original, index).map_err(|error| patch_error(op_index, error))?;
+        mark_occupied(
+            occupied,
+            start.index..=end.index,
+            Occupancy::Delete,
+            op_index,
+        )?;
+        let before = original.lines[start.index..=end.index]
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect();
+        return Ok(PlannedOp::DeleteRange {
+            op_index,
+            range: start.index..=end.index,
+            before,
+        });
+    }
+
     let anchor = parse_anchor(&delete.anchor).map_err(|error| patch_error(op_index, error))?;
     let resolved =
         resolve(&anchor, original, index).map_err(|error| patch_error(op_index, error))?;
@@ -504,6 +680,7 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Ha
                 content,
                 before,
             } => {
+                // Multi-line content expands into individual lines via assembly loop
                 let slot =
                     replacement_at
                         .get_mut(*line)
@@ -512,6 +689,11 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Ha
                             reason: format!("resolved line {} is out of bounds", line + 1),
                         })?;
                 *slot = Some(content.clone());
+                let display = if content.contains('\n') {
+                    format!("{} {} lines", before, content.split('\n').count())
+                } else {
+                    format!("{:?} -> {:?}", before, content)
+                };
                 changes.push(LineChange {
                     line_no: line + 1,
                     kind: ChangeKind::Modified,
@@ -519,12 +701,9 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Ha
                     after: Some(content.clone()),
                 });
                 summary.edit_count += 1;
-                summary.actions.push(format!(
-                    "edit line {}: {:?} -> {:?}",
-                    line + 1,
-                    before,
-                    content
-                ));
+                summary
+                    .actions
+                    .push(format!("edit line {}: {}", line + 1, display));
             }
             PlannedOp::EditRange {
                 op_index,
@@ -584,7 +763,14 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Ha
                 anchor_line,
                 ..
             } => {
-                inserts_before[*boundary].push(content.clone());
+                // Multi-line insert needs to push each line separately
+                if content.contains('\n') {
+                    for cl in content.split('\n') {
+                        inserts_before[*boundary].push(cl.to_string());
+                    }
+                } else {
+                    inserts_before[*boundary].push(content.clone());
+                }
                 changes.push(LineChange {
                     line_no: boundary + 1,
                     kind: ChangeKind::Inserted,
@@ -621,6 +807,39 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Ha
                     .actions
                     .push(format!("delete line {}: {:?}", line + 1, content));
             }
+            PlannedOp::DeleteRange {
+                op_index,
+                range,
+                before,
+            } => {
+                let start = *range.start();
+                let end = *range.end();
+                for idx in start..=end {
+                    let slot = deleted
+                        .get_mut(idx)
+                        .ok_or_else(|| HashlineError::PatchFailed {
+                            op_index: *op_index,
+                            reason: format!("resolved line {} is out of bounds", idx + 1),
+                        })?;
+                    *slot = true;
+                }
+                for (offset, removed) in before.iter().enumerate() {
+                    changes.push(LineChange {
+                        line_no: start + offset + 1,
+                        kind: ChangeKind::Deleted,
+                        before: Some(removed.clone()),
+                        after: None,
+                    });
+                }
+                summary.delete_count += before.len();
+                summary.actions.push(format!(
+                    "delete lines {}-{}: {} line{}",
+                    start + 1,
+                    end + 1,
+                    before.len(),
+                    plural_suffix(before.len())
+                ));
+            }
         }
     }
 
@@ -634,7 +853,13 @@ fn apply_plan(original: &Document, plan: &[PlannedOp]) -> Result<PatchResult, Ha
             continue;
         }
         if let Some(replacement) = &replacement_at[boundary] {
-            new_contents.push(replacement.clone());
+            // Multi-line content needs to be split into individual lines
+            if replacement.contains('\n') {
+                let lines: Vec<&str> = replacement.split('\n').collect();
+                new_contents.extend(lines.iter().map(|s| s.to_string()));
+            } else {
+                new_contents.push(replacement.clone());
+            }
         } else {
             new_contents.push(original.lines[boundary].content.to_string());
         }
@@ -705,4 +930,256 @@ fn patch_error(op_index: usize, error: HashlineError) -> HashlineError {
 
 fn plural_suffix(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_replace() {
+        let input = "[demo.txt]\nreplace 2:aa:\n+hello world\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.file, Some("demo.txt".into()));
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Edit(e) => {
+                assert_eq!(e.anchor, "2:aa");
+                assert_eq!(e.content, "hello world");
+            }
+            _ => panic!("expected edit op"),
+        }
+    }
+
+    #[test]
+    fn parse_replace_no_file_header() {
+        let input = "[]\nreplace 2:aa:\n+hello world\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.file, None);
+    }
+
+    #[test]
+    fn parse_replace_with_tag() {
+        let input = "[demo.txt#feature-x]\nreplace 2:aa:\n+new content\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.file, Some("demo.txt".into()));
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Edit(e) => {
+                assert_eq!(e.anchor, "2:aa");
+                assert_eq!(e.content, "new content");
+            }
+            _ => panic!("expected edit op"),
+        }
+    }
+
+    #[test]
+    fn parse_replace_multi_line() {
+        let input = "\
+[demo.txt]
+replace 2:aa:
++line one
++line two
++line three
+";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Edit(e) => {
+                assert_eq!(e.anchor, "2:aa");
+                assert_eq!(e.content, "line one\nline two\nline three");
+            }
+            _ => panic!("expected edit op"),
+        }
+    }
+
+    #[test]
+    fn parse_replace_no_content() {
+        // replace with empty content (0 lines) is valid
+        let input = "[test.txt]\nreplace 2:aa:\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Edit(e) => {
+                assert_eq!(e.content, "");
+            }
+            _ => panic!("expected edit op"),
+        }
+    }
+
+    #[test]
+    fn parse_delete() {
+        let input = "[file.txt]\ndelete 3:bb\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Delete(d) => {
+                assert_eq!(d.anchor, "3:bb");
+            }
+            _ => panic!("expected delete op"),
+        }
+    }
+
+    #[test]
+    fn parse_delete_range() {
+        let input = "[file.txt]\ndelete 2:aa..4:cc\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Delete(d) => {
+                assert_eq!(d.anchor, "2:aa..4:cc");
+            }
+            _ => panic!("expected delete op"),
+        }
+    }
+
+    #[test]
+    fn parse_insert_after() {
+        let input = "[file.txt]\ninsert after 5:dd:\n+inserted line\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Insert(i) => {
+                assert_eq!(i.anchor, "5:dd");
+                assert_eq!(i.content, "inserted line");
+                assert_eq!(i.before, Some(false));
+            }
+            _ => panic!("expected insert op"),
+        }
+    }
+
+    #[test]
+    fn parse_insert_before() {
+        let input = "[file.txt]\ninsert before 5:dd:\n+inserted line\n";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Insert(i) => {
+                assert_eq!(i.anchor, "5:dd");
+                assert_eq!(i.content, "inserted line");
+                assert_eq!(i.before, Some(true));
+            }
+            _ => panic!("expected insert op"),
+        }
+    }
+
+    #[test]
+    fn parse_mixed_ops() {
+        let input = "\
+[test.txt]
+replace 2:aa:
++replacement line
++second replacement line
+delete 4:cc
+insert after 1:ee:
++new line after
+";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 3);
+
+        // First op: replace
+        match &patch.ops[0] {
+            PatchOp::Edit(e) => {
+                assert_eq!(e.anchor, "2:aa");
+                assert_eq!(e.content, "replacement line\nsecond replacement line");
+            }
+            _ => panic!("expected edit op"),
+        }
+
+        // Second op: delete
+        match &patch.ops[1] {
+            PatchOp::Delete(d) => {
+                assert_eq!(d.anchor, "4:cc");
+            }
+            _ => panic!("expected delete op"),
+        }
+
+        // Third op: insert after
+        match &patch.ops[2] {
+            PatchOp::Insert(i) => {
+                assert_eq!(i.anchor, "1:ee");
+                assert_eq!(i.content, "new line after");
+                assert_eq!(i.before, Some(false));
+            }
+            _ => panic!("expected insert op"),
+        }
+    }
+
+    #[test]
+    fn parse_skips_blank_lines() {
+        let input = "\
+[test.txt]
+
+replace 2:aa:
++hello
+
+delete 3:bb
+";
+        let patch = parse_hashline_patch(input).unwrap();
+        assert_eq!(patch.ops.len(), 2);
+    }
+
+    #[test]
+    fn parse_content_without_op_errors() {
+        let input = "[test.txt]\n+orphan content\n";
+        let result = parse_hashline_patch(input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_patch_detects_hashline_format() {
+        // Test that read_patch correctly detects hashline vs JSON format
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.hlpatch");
+        std::fs::write(&file_path, "[demo.txt]\nreplace 2:aa:\n+hello world\n").unwrap();
+
+        let patch = read_patch(file_path.to_str().unwrap()).unwrap();
+        assert_eq!(patch.ops.len(), 1);
+        match &patch.ops[0] {
+            PatchOp::Edit(e) => {
+                assert_eq!(e.content, "hello world");
+            }
+            _ => panic!("expected edit op"),
+        }
+    }
+
+    #[test]
+    fn read_patch_detects_json_format() {
+        // JSON format should still work
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.json");
+
+        #[derive(Serialize)]
+        struct JsonPatch {
+            file: Option<String>,
+            ops: Vec<JsonOp>,
+        }
+        #[derive(Serialize)]
+        struct JsonOp {
+            op: String,
+            anchor: String,
+            content: String,
+        }
+
+        let patch_content = serde_json::to_string(&JsonPatch {
+            file: Some("demo.txt".into()),
+            ops: vec![JsonOp {
+                op: "edit".into(),
+                anchor: "2:aa".into(),
+                content: "hello world".into(),
+            }],
+        })
+        .unwrap();
+
+        std::fs::write(&file_path, &patch_content).unwrap();
+
+        // This tests the JSON path - but our test struct might not match serde format exactly.
+        // Just verify the file is read without error (JSON parse should work).
+        let result = read_patch(file_path.to_str().unwrap());
+        assert!(
+            result.is_ok(),
+            "JSON format should parse: {:?}",
+            result.err()
+        );
+    }
 }

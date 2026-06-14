@@ -1,8 +1,8 @@
 use std::io::Write;
 
 use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region,
-    resolve_range,
+    looks_like_block_anchor, looks_like_range_anchor, parse_anchor, parse_range, resolve,
+    resolve_query_region, resolve_range,
 };
 use crate::cli::EditCmd;
 use memmap2::Mmap;
@@ -10,6 +10,7 @@ use memmap2::Mmap;
 use crate::commands::common::{
     atomic_write, atomic_write_document, atomic_write_with, check_guard, interpret_escapes,
 };
+use crate::commands::find_block::find_block_boundaries;
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::HashlineError;
@@ -153,6 +154,26 @@ pub fn run<W: Write, E: Write>(
         EditSummary::Range {
             start_line: region.start_line,
             end_line: region.end_line,
+            before,
+            after: after.iter().map(|s| s.to_string()).collect(),
+        }
+    } else if let Some(line_no) = looks_like_block_anchor(&cmd.anchor) {
+        // Block anchor: resolve structural block and replace the entire block.
+        let target_idx = line_no
+            .checked_sub(1)
+            .ok_or_else(|| HashlineError::InvalidAnchor {
+                anchor: format!("block {line_no}:"),
+            })?;
+        let (_language, block_start, block_end) = find_block_boundaries(&doc, target_idx)?;
+        let before = doc.lines[block_start..=block_end]
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>();
+        let after = split_content_lines(&content);
+        replace_range(&mut doc, block_start, block_end, &content)?;
+        EditSummary::Range {
+            start_line: block_start + 1,
+            end_line: block_end + 1,
             before,
             after: after.iter().map(|s| s.to_string()).collect(),
         }

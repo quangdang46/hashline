@@ -64,6 +64,36 @@ pub fn find_block_payload(
     let resolved = crate::anchor::resolve(&parsed, doc, &index)?;
     let anchor_index = resolved.index;
 
+    let (language, block_start, block_end) = find_block_boundaries(doc, anchor_index)?;
+
+    let block_lines: Vec<IndexLineView> = (block_start..=block_end)
+        .map(|i| {
+            let line = &doc.lines[i];
+            IndexLineView {
+                n: i + 1,
+                hash: crate::hash::format_short_hash(line.short_hash),
+                content: line.content.to_string(),
+            }
+        })
+        .collect();
+
+    Ok(FindBlockPayload {
+        file: doc.path.display().to_string(),
+        line_count: doc.len(),
+        language,
+        block_lines,
+    })
+}
+
+/// Resolve the structural block boundaries containing the given anchor line.
+///
+/// Returns `(language, block_start_index, block_end_index)` where the indices
+/// are 0-based and inclusive. Uses the file extension to pick the block-finding
+/// strategy (brace-balanced, indentation-based, Ruby `end` keywords, etc.).
+pub fn find_block_boundaries(
+    doc: &Document,
+    anchor_index: usize,
+) -> Result<(Option<String>, usize, usize), HashlineError> {
     let extension = doc
         .path
         .extension()
@@ -97,23 +127,7 @@ pub fn find_block_payload(
         });
     }
 
-    let block_lines: Vec<IndexLineView> = (block_start..=block_end)
-        .map(|i| {
-            let line = &doc.lines[i];
-            IndexLineView {
-                n: i + 1,
-                hash: crate::hash::format_short_hash(line.short_hash),
-                content: line.content.to_string(),
-            }
-        })
-        .collect();
-
-    Ok(FindBlockPayload {
-        file: doc.path.display().to_string(),
-        line_count: doc.len(),
-        language,
-        block_lines,
-    })
+    Ok((language, block_start, block_end))
 }
 
 fn language_for_extension(ext: &str) -> Option<String> {
