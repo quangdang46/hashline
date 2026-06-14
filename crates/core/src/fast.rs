@@ -127,6 +127,7 @@ fn check_guards(
         return Ok(());
     }
     let meta = std::fs::metadata(path)?;
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     if let Some(expected) = expect_mtime {
         let actual = meta
@@ -141,6 +142,7 @@ fn check_guards(
             });
         }
     }
+    #[cfg(unix)]
     if let Some(expected) = expect_inode {
         if meta.ino() as u64 != expected {
             return Err(HashlineError::StaleFile {
