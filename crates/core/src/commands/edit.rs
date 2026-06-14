@@ -55,9 +55,9 @@ pub fn run<W: Write, E: Write>(
             let r = crate::fast::run_fast_edit(
                 ctx, &cmd.file, line_no, hash, &cmd.content,
                 cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
+            cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref(),
             );
             if r.is_ok() { return r; } // fall through to standard path on error
-        } else {
         }
     }
 
@@ -522,7 +522,6 @@ fn run_fast_range_edit<W: Write, E: Write>(
     cmd: EditCmd,
     range: crate::anchor::RangeAnchor,
 ) -> Result<(), HashlineError> {
-    use crate::fast;
     use std::io::Read;
 
     // Read file as string
@@ -558,7 +557,6 @@ fn run_fast_query_edit<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: EditCmd,
 ) -> Result<(), HashlineError> {
-    use crate::fast;
     use crate::hash;
     use std::io::Read;
 

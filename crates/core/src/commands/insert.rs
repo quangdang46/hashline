@@ -26,7 +26,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            return crate::fast::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
+            return crate::fast::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref());
         }
     }
 
@@ -37,7 +37,7 @@ pub fn run<W: Write, E: Write>(
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            let r = crate::fast::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode);
+            let r = crate::fast::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref());
             if r.is_ok() { return r; }
         }
     }

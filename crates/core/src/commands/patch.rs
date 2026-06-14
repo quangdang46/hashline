@@ -14,7 +14,6 @@ use crate::error::HashlineError;
 use crate::hash;
 use crate::hash_cache::discover_sidecar_root;
 use crate::mutation::validate_single_line_content;
-use crate::fast;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
