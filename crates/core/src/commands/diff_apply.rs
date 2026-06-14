@@ -129,8 +129,8 @@ struct Hunk {
 /// Parse a hunk header line like `@@ -1,3 +1,4 @@`.
 fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize, usize)> {
     let rest = line.strip_prefix("@@")?;
-    let rest = rest.strip_suffix("@@")?;
-    let rest = rest.trim();
+    let end = rest.find("@@")?;
+    let rest = rest[..end].trim();
 
     // Split on space: we expect two groups like "-1,3" and "+1,4"
     let mut parts = rest.split_whitespace();
@@ -435,5 +435,131 @@ pub fn run<W: Write, E: Write>(
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hunk_header_no_trailing_context() {
+        assert_eq!(parse_hunk_header("@@ -1,3 +1,4 @@"), Some((1, 3, 1, 4)));
+    }
+
+    #[test]
+    fn parse_hunk_header_with_trailing_context() {
+        // Git diff format with trailing function context like "@@ -1,3 +1,4 @@ fn main()"
+        assert_eq!(
+            parse_hunk_header("@@ -1,3 +1,4 @@ fn main()"),
+            Some((1, 3, 1, 4))
+        );
+    }
+
+    #[test]
+    fn parse_hunk_header_single_line() {
+        // Format: "@@ -1 +1 @@" (no count, defaults to 1)
+        assert_eq!(parse_hunk_header("@@ -1 +1 @@"), Some((1, 1, 1, 1)));
+    }
+
+    #[test]
+    fn parse_hunk_header_with_multiline_trailing_context() {
+        // Multiple words after @@
+        assert_eq!(
+            parse_hunk_header("@@ -10,6 +10,8 @@ pub fn foo(bar: &str) -> Result<()>"),
+            Some((10, 6, 10, 8))
+        );
+    }
+
+    #[test]
+    fn parse_unified_diff_empty() {
+        let result = parse_unified_diff("");
+        assert!(result.is_ok());
+        let (old_file, new_file, hunks) = result.unwrap();
+        assert_eq!(old_file, "");
+        assert_eq!(new_file, "");
+        assert!(hunks.is_empty());
+    }
+
+    #[test]
+    fn parse_unified_diff_single_hunk() {
+        let diff =
+            "--- a/demo.txt\n+++ b/demo.txt\n@@ -1,3 +1,4 @@\n alpha\n-beta\n gamma\n+delta\n";
+        let (old_file, new_file, hunks) = parse_unified_diff(diff).unwrap();
+        assert_eq!(old_file, "a/demo.txt");
+        assert_eq!(new_file, "b/demo.txt");
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].old_start, 1);
+        assert_eq!(hunks[0].old_count, 3);
+        assert_eq!(hunks[0].new_start, 1);
+        assert_eq!(hunks[0].new_count, 4);
+        assert_eq!(hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn apply_diff_simple() {
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("demo.txt");
+        fs::write(&file_path, "alpha\nbeta\ngamma\n").unwrap();
+
+        let diff = "@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n";
+        let receipt = apply_diff(&file_path, diff).unwrap();
+        assert!(receipt.applied);
+        assert_eq!(receipt.conflicts.len(), 0);
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "alpha\nBETA\ngamma\n");
+    }
+
+    #[test]
+    fn apply_diff_conflict() {
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("demo.txt");
+        // Content doesn't match the diff context
+        fs::write(&file_path, "完全不同\n不同\n内容\n").unwrap();
+
+        let diff = "@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n";
+        let receipt = apply_diff(&file_path, diff).unwrap();
+        assert!(!receipt.applied);
+        assert!(!receipt.conflicts.is_empty());
+    }
+
+    #[test]
+    fn apply_diff_empty_no_hunks() {
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("demo.txt");
+        fs::write(&file_path, "content\n").unwrap();
+
+        let receipt = apply_diff(&file_path, "").unwrap();
+        assert!(!receipt.applied);
+        assert_eq!(receipt.conflicts.len(), 1);
+        assert!(receipt.conflicts[0].reason.contains("no hunks"));
+    }
+
+    #[test]
+    fn apply_diff_atomic_on_conflict() {
+        // When there's a conflict, the file should not be modified
+        use std::fs;
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("demo.txt");
+        fs::write(&file_path, "original\ncontent\n").unwrap();
+
+        let diff = "@@ -1,2 +1,2 @@\n nonexistent\n-context\n+NEW\n";
+        let receipt = apply_diff(&file_path, diff).unwrap();
+        assert!(!receipt.applied);
+
+        // File must remain unchanged
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "original\ncontent\n");
+    }
+
+    #[test]
+    fn parse_hunk_header_invalid_format() {
+        assert!(parse_hunk_header("not a hunk header").is_none());
+        assert!(parse_hunk_header("@@ invalid @@").is_none());
+        assert!(parse_hunk_header("@@@ -1,3 +1,4 @@@").is_none());
     }
 }

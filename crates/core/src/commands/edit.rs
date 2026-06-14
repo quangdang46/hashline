@@ -26,6 +26,64 @@ pub fn run<W: Write, E: Write>(
         return run_streaming(ctx, cmd);
     }
 
+    // Fast path: range anchors (start..end) via string scanning
+    if cmd.anchor.contains("..") && !cmd.dry_run
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        let parts: Vec<&str> = cmd.anchor.split("..").collect();
+        if let (Some(start), Some(end)) = (
+            parts.first().and_then(|a| try_parse_line_anchor(a)),
+            parts.get(1).and_then(|a| try_parse_line_anchor(a)),
+        ) {
+            let (s_line, s_hash) = start;
+            let (e_line, e_hash) = end;
+            return crate::fast::run_fast_range_edit(
+                ctx, &cmd.file, s_line, s_hash, e_line, e_hash, &cmd.content,
+                cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
+                cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref(),
+            );
+        }
+    }
+
+
+    // Fast path: content queries via string scanning (find query text, hash only matching line)
+    if cmd.start_query.is_some() && !cmd.dry_run
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        let raw = crate::fast::read_file(&cmd.file)?;
+        let line_no = crate::fast::fast_find_query(&raw, cmd.start_query.as_deref().unwrap_or(""))?;
+        let bytes = raw.as_bytes();
+        let mut current = 0;
+        for _ in 0..line_no { match memchr::memchr(b'\n', &bytes[current..]) { Some(r) => current += r + 1, None => break } }
+        let le = memchr::memchr(b'\n', &bytes[current..]).map_or(raw.len(), |r| current + r);
+        let he = if le > current && bytes[le - 1] == b'\r' { le - 1 } else { le };
+        let hash = crate::hash::short_hash_value(&raw[current..he]);
+        return crate::fast::run_fast_edit(
+            ctx, &cmd.file, line_no, hash, &cmd.content,
+            cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
+            cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref(),
+        );
+    }
+
+
+    // Fast path: simple line:hash anchor via string scanning (str_replace speed)
+    if !cmd.anchor.is_empty() && cmd.start_query.is_none()
+        && !cmd.anchor.contains("..") && !cmd.dry_run
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
+            let r = crate::fast::run_fast_edit(
+                ctx, &cmd.file, line_no, hash, &cmd.content,
+                cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
+            cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref(),
+            );
+            if r.is_ok() { return r; } // fall through to standard path on error
+        }
+    }
+
+
     let root = discover_sidecar_root(&cmd.file);
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
@@ -39,10 +97,13 @@ pub fn run<W: Write, E: Write>(
     };
 
     let index = doc.build_index();
-    let summary = if let Some(_) = cmd.start_query {
-        let region =
-            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
-                .expect("start_query is set so region is Some");
+    let summary = if cmd.start_query.is_some() {
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
         let start_idx = region.start_line - 1;
         let end_idx = region.end_line - 1;
         let before = doc.lines[start_idx..=end_idx]
@@ -466,4 +527,5 @@ impl EditSummary {
             }
         }
     }
+
 }

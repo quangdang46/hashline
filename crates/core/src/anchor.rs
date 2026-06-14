@@ -429,6 +429,20 @@ pub fn resolve_query_region(
     }))
 }
 
+/// Try to parse a simple "line:hexhash" anchor.
+/// Returns `(0-indexed line_number, short_hash)` for LineHash anchors.
+/// Returns `None` for range anchors, raw hashes, or invalid formats.
+pub fn try_parse_line_anchor(anchor: &str) -> Option<(usize, crate::hash::ShortHash)> {
+    let normalized = anchor.trim();
+    if normalized.contains("..") {
+        return None;
+    }
+    parse_anchor(normalized).ok().and_then(|a| match a {
+        Anchor::LineHash { line, short } => line.checked_sub(1).map(|zb| (zb, short)),
+        _ => None,
+    })
+}
+
 fn display_anchor(anchor: &Anchor) -> String {
     match anchor {
         Anchor::Hash { short } => format_short_hash(*short),

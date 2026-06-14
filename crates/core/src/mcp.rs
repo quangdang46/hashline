@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{
     AnnotateCmd, BatchCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd,
-    InsertCmd, McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
+    InsertCmd, McpCmd, MoveCmd, PatchCmd, ReadCmd, ReplaceCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::Document;
 use crate::error::HashlineError;
@@ -332,6 +332,7 @@ pub fn dispatch_tool(
         "hashline_find_block" => tool_find_block(arguments, session),
         "hashline_batch_edit" => tool_batch_edit(arguments, session),
         "hashline_from_diff" => tool_from_diff(arguments, session),
+        "hashline_replace" => tool_replace(arguments, session),
         "hashline_apply_diff" => tool_apply_diff(arguments, session),
         "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
@@ -1985,6 +1986,36 @@ fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Valu
         },
         "cache": { "used": false },
     }))
+}
+
+fn tool_replace(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
+    let cmd: ReplaceCmd = parse_args(arguments)?;
+    let path = cmd.file.clone();
+
+    let receipt = crate::commands::replace::stream_replace_text(
+        &path,
+        &cmd.old_text,
+        &cmd.new_text,
+        cmd.count,
+        cmd.regex,
+    )
+    .map_err(command_error)?;
+
+    // Invalidate session cache since the file changed
+    session.invalidate(&path);
+
+    Ok(success_payload(
+        "replace",
+        0,
+        serde_json::to_value(&receipt).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize receipt: {error}"),
+                None,
+            )
+        })?,
+        session.stats(),
+    ))
 }
 
 fn tool_apply_diff(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {

@@ -233,3 +233,51 @@ fn insert_and_delete_also_seed_cache() {
         "read after delete should be a cache hit"
     );
 }
+
+#[test]
+fn stale_anchor_retry_invalidates_cache_then_rereads() {
+    let file = tmpfile("alpha\nbeta\ngamma\n");
+    let path = file.to_string_lossy().into_owned();
+    let mut session = new_session();
+
+    let read_payload = mcp_read(&mut session, &path);
+    let line2_anchor = format!(
+        "{}:{}",
+        read_payload["lines"][1]["n"].as_u64().unwrap(),
+        read_payload["lines"][1]["hash"].as_str().unwrap()
+    );
+    let _ = session.stats().misses;
+
+    fs::write(&path, "alpha\nCHANGED\ngamma\n").expect("external write");
+
+    let result = dispatch_tool(
+        "hashline_edit",
+        &json!({ "file": path, "anchor": line2_anchor, "content": "modified" }),
+        &mut session,
+    );
+    assert!(result.is_err(), "edit with stale anchor must fail");
+
+    let misses_before_reread = session.stats().misses;
+    let _ = mcp_read(&mut session, &path);
+    assert_eq!(
+        session.stats().misses,
+        misses_before_reread + 1,
+        "read after stale-anchor failure must be a cache miss (entry was invalidated)"
+    );
+
+    let read_payload = mcp_read(&mut session, &path);
+    let line2_anchor = format!(
+        "{}:{}",
+        read_payload["lines"][1]["n"].as_u64().unwrap(),
+        read_payload["lines"][1]["hash"].as_str().unwrap()
+    );
+    let result = dispatch_tool(
+        "hashline_edit",
+        &json!({ "file": path, "anchor": line2_anchor, "content": "MODIFIED" }),
+        &mut session,
+    );
+    assert!(
+        result.is_ok(),
+        "edit with fresh anchor must succeed after stale retry"
+    );
+}

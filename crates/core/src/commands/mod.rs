@@ -13,6 +13,7 @@ pub mod insert;
 pub mod r#move;
 pub mod patch;
 pub mod read;
+pub mod replace;
 pub mod serve;
 pub mod stats;
 pub mod swap;

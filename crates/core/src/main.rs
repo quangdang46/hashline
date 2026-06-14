@@ -263,6 +263,7 @@ fn command_to_tool_name(command: &Commands) -> &'static str {
         Commands::FindBlock(_) => "hashline_find_block",
         Commands::ApplyDiff(_) => "hashline_apply_diff",
         Commands::Batch(_) => "hashline_batch",
+        Commands::Replace(_) => "hashline_replace",
         Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
@@ -508,6 +509,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
         Commands::ApplyDiff(cmd) => serde_json::to_value(cmd),
         Commands::Batch(cmd) => serde_json::to_value(cmd),
+        Commands::Replace(cmd) => serde_json::to_value(cmd),
         Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }

@@ -19,6 +19,30 @@ pub fn run<W: Write, E: Write>(
     cmd: DeleteCmd,
 ) -> Result<(), HashlineError> {
     let root = discover_sidecar_root(&cmd.file);
+
+    // Fast path: simple single-line delete
+    if !cmd.anchor.is_empty()
+        && !cmd.anchor.contains("..") && cmd.start_query.is_none()
+        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
+            return crate::fast::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, false, cmd.receipt, cmd.audit_log.as_deref());
+        }
+    }
+
+
+    if !cmd.anchor.is_empty()
+        && !cmd.anchor.contains("..") && cmd.start_query.is_none()
+        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    {
+        use crate::anchor::try_parse_line_anchor;
+        if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
+            let r = crate::fast::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, false, cmd.receipt, cmd.audit_log.as_deref());
+            if r.is_ok() { return r; }
+        }
+    }
+
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
