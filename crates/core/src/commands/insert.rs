@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::anchor::{ResolvedLine, parse_anchor, resolve, resolve_query_region};
+use crate::anchor::{parse_anchor, resolve, resolve_query_region, ResolvedLine};
 use crate::cli::InsertCmd;
 use crate::commands::common::{
     atomic_write, atomic_write_document, check_guard, interpret_escapes,
@@ -20,56 +20,25 @@ pub fn run<W: Write, E: Write>(
     let root = discover_sidecar_root(&cmd.file);
 
     // Fast path: simple anchor insert (no receipt, no content query, no CRLF issues for now)
-    if !cmd.anchor.is_empty()
-        && cmd.start_query.is_none()
-        && !cmd.before
-        && !cmd.dry_run
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
+    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.start_query.is_none() && !cmd.before && !cmd.interpret_escapes
+        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            return crate::fast::run_fast_insert(
-                ctx,
-                &cmd.file,
-                line_no,
-                hash,
-                &cmd.content,
-                cmd.dry_run,
-                cmd.expect_mtime,
-                cmd.expect_inode,
-                cmd.interpret_escapes,
-                cmd.receipt,
-                cmd.audit_log.as_deref(),
-            );
+            return crate::fast::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref());
         }
     }
 
-    if !cmd.anchor.is_empty()
-        && cmd.start_query.is_none()
-        && !cmd.before
-        && !cmd.dry_run
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
+
+    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
+        && cmd.start_query.is_none() && !cmd.before && !cmd.interpret_escapes
+        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            let r = crate::fast::run_fast_insert(
-                ctx,
-                &cmd.file,
-                line_no,
-                hash,
-                &cmd.content,
-                cmd.dry_run,
-                cmd.expect_mtime,
-                cmd.expect_inode,
-                cmd.interpret_escapes,
-                cmd.receipt,
-                cmd.audit_log.as_deref(),
-            );
-            if r.is_ok() {
-                return r;
-            }
+            let r = crate::fast::run_fast_insert(ctx, &cmd.file, line_no, hash, &cmd.content, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref());
+            if r.is_ok() { return r; }
         }
     }
 
@@ -85,9 +54,12 @@ pub fn run<W: Write, E: Write>(
 
     // Resolve the target position: either from start_query or from anchor.
     let (resolved, insert_at) = if cmd.start_query.is_some() {
-        let region =
-            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
-                .expect("start_query is set so region is Some");
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
         // For insertion, anchor at the start_query line
         let idx = region.start_line - 1;
         let anchor_line = region.start_line;

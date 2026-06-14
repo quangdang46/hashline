@@ -407,6 +407,41 @@ pub fn fast_insert_line(
     Ok(r)
 }
 
+
+/// Insert line BEFORE a target line.
+pub fn fast_insert_line_before(
+    content: &str,
+    target_line: usize,
+    new_content: &str,
+) -> Result<String, HashlineError> {
+    let bytes = content.as_bytes();
+    let mut current = 0;
+    for _ in 0..target_line {
+        match memchr(b'\n', &bytes[current..]) {
+            Some(r) => { current += r + 1; }
+            None => { current = content.len(); break; }
+        }
+    }
+    let sep = if content.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut r = String::with_capacity(content.len() + new_content.len() + 2);
+    r.push_str(&content[..current]);
+    r.push_str(new_content);
+    r.push_str(sep);
+    r.push_str(&content[current..]);
+    Ok(r)
+}
+
+/// Find first line matching a content query string, return its 0-indexed line number.
+pub fn fast_find_query(content: &str, query: &str) -> Result<usize, HashlineError> {
+    let idx = content.find(query).ok_or_else(|| HashlineError::QueryNotFound {
+        query: query.to_string(),
+        path: String::new(),
+    })?;
+    let bytes = content.as_bytes();
+    let line_no = bytes[..idx].iter().filter(|&&b| b == b'\n').count();
+    Ok(line_no)
+}
+
 pub fn fast_delete_lines(
     content: &str,
     start_line: usize,
@@ -711,7 +746,14 @@ pub fn run_fast_edit<W: Write, E: Write>(
     if receipt_flag {
         return Ok(());
     }
-    if ctx.output_mode() == OutputMode::Pretty {
+    if dry_run && ctx.output_mode() == OutputMode::Pretty {
+        let before = get_line_content(&raw, target_line).unwrap_or_default();
+        let after = if interpret_escapes_flag { content_to_use.clone() } else { get_line_content(&nc, target_line).unwrap_or_default() };
+        output::write_success_line(ctx, &format!("Would change line {}:", target_line + 1)).map_err(HashlineError::from)?;
+        output::write_success_line(ctx, &format!("  - {:?}", before)).map_err(HashlineError::from)?;
+        output::write_success_line(ctx, &format!("  + {:?}", after)).map_err(HashlineError::from)?;
+        output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)?;
+    } else if ctx.output_mode() == OutputMode::Pretty {
         output::write_success_line(ctx, &format!("Edited line {}.", target_line + 1))
             .map_err(HashlineError::from)?;
     }
@@ -896,7 +938,16 @@ pub fn run_fast_delete<W: Write, E: Write>(
     if receipt_flag {
         return Ok(());
     }
-    if ctx.output_mode() == OutputMode::Pretty {
+    if dry_run && ctx.output_mode() == OutputMode::Pretty {
+        let before_lines = get_line_range(&raw, start_line, end_line);
+        if start_line == end_line {
+            output::write_success_line(ctx, &format!("Would delete line {}:", start_line + 1)).map_err(HashlineError::from)?;
+            output::write_success_line(ctx, &format!("  - {:?}", before_lines.first().unwrap_or(&String::new()))).map_err(HashlineError::from)?;
+        } else {
+            output::write_success_line(ctx, &format!("Would delete lines {}-{}:", start_line + 1, end_line + 1)).map_err(HashlineError::from)?;
+        }
+        output::write_success_line(ctx, "No file was written.").map_err(HashlineError::from)?;
+    } else if ctx.output_mode() == OutputMode::Pretty {
         if start_line == end_line {
             output::write_success_line(ctx, &format!("Deleted line {}.", start_line + 1))
                 .map_err(HashlineError::from)?;
@@ -1250,3 +1301,104 @@ pub fn run_fast_indent<W: Write, E: Write>(
     }
     Ok(())
 }
+
+// ===== Range edit handler (supports receipt/audit/interpret_escapes) =====
+#[allow(clippy::too_many_arguments)]
+pub fn run_fast_range_edit<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    path: &Path,
+    start_line: usize, start_hash: ShortHash,
+    end_line: usize, end_hash: ShortHash,
+    new_content: &str,
+    dry_run: bool,
+    expect_mtime: Option<i64>, expect_inode: Option<u64>,
+    interpret_escapes_flag: bool, receipt_flag: bool, audit_log: Option<&Path>,
+) -> Result<(), HashlineError> {
+    check_guards(path, expect_mtime, expect_inode)?;
+    let raw = read_file(path)?;
+    let content_to_use = if interpret_escapes_flag { interpret_escapes(new_content) } else { new_content.to_string() };
+    let before_bytes = if receipt_flag || audit_log.is_some() { Some(raw.as_bytes().to_vec()) } else { None };
+    let (nc, _first_line, _last_line) = fast_replace_range(&raw, start_line, end_line, start_hash, end_hash, &content_to_use)?;
+    let after_bytes = if receipt_flag || audit_log.is_some() { Some(nc.as_bytes().to_vec()) } else { None };
+    if receipt_flag {
+        if let (Some(before), Some(after)) = (&before_bytes, &after_bytes) {
+            let changes = make_range_changes(&raw, start_line, end_line, &content_to_use);
+            handle_receipt(ctx, "edit", path, changes, before, after, true, None)?;
+        }
+    }
+    if !dry_run { atomic_write(path, &nc)?; if let Ok(doc) = Document::from_str(path, &nc) { ctx.modified_doc = Some(doc); } }
+    if let Some(log_path) = audit_log {
+        if let (Some(before), Some(after)) = (&before_bytes, &after_bytes) {
+            let changes = make_range_changes(&raw, start_line, end_line, &content_to_use);
+            handle_receipt(ctx, "edit", path, changes, before, after, false, Some(log_path))?;
+        }
+    }
+    if receipt_flag { return Ok(()); }
+    if ctx.output_mode() == OutputMode::Pretty {
+        output::write_success_line(ctx, &format!("Edited lines {}-{}.", start_line + 1, end_line + 1)).map_err(HashlineError::from)?;
+    }
+    Ok(())
+}
+
+fn make_range_changes(raw: &str, start: usize, end: usize, new_content: &str) -> Vec<LineChange> {
+    let before_lines: Vec<String> = raw.lines().skip(start).take(end - start + 1).map(String::from).collect();
+    let after_lines: Vec<String> = new_content.lines().map(String::from).collect();
+    let shared = before_lines.len().min(after_lines.len());
+    let mut changes: Vec<LineChange> = (0..shared).map(|i| LineChange {
+        line_no: start + i + 1,
+        kind: ChangeKind::Modified,
+        before: before_lines.get(i).cloned(),
+        after: after_lines.get(i).cloned(),
+    }).collect();
+    for i in shared..before_lines.len() {
+        changes.push(LineChange { line_no: start + i + 1, kind: ChangeKind::Deleted, before: before_lines.get(i).cloned(), after: None });
+    }
+    for i in shared..after_lines.len() {
+        changes.push(LineChange { line_no: start + i + 1, kind: ChangeKind::Inserted, before: None, after: after_lines.get(i).cloned() });
+    }
+    changes
+}
+
+// ===== Query edit handler (supports receipt/audit/interpret_escapes) =====
+#[allow(clippy::too_many_arguments)]
+pub fn run_fast_query_edit<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    path: &Path,
+    query: &str,
+    new_content: &str,
+    dry_run: bool,
+    expect_mtime: Option<i64>, expect_inode: Option<u64>,
+    interpret_escapes_flag: bool, receipt_flag: bool, audit_log: Option<&Path>,
+) -> Result<(), HashlineError> {
+    check_guards(path, expect_mtime, expect_inode)?;
+    let raw = read_file(path)?;
+    let line_no = fast_find_query(&raw, query)?;
+    let content_to_use = if interpret_escapes_flag { interpret_escapes(new_content) } else { new_content.to_string() };
+    let bytes = raw.as_bytes();
+    let mut current = 0; for _ in 0..line_no { match memchr(b'\n', &bytes[current..]) { Some(r) => current += r + 1, None => break } }
+    let line_end = match memchr(b'\n', &bytes[current..]) { Some(r) => current + r, None => raw.len() };
+    let he = if line_end > current && bytes[line_end - 1] == b'\r' { line_end - 1 } else { line_end };
+    let hash = hash::short_hash_value(&raw[current..he]);
+    let before_bytes = if receipt_flag || audit_log.is_some() { Some(raw.as_bytes().to_vec()) } else { None };
+    let (nc, _) = fast_replace_line(&raw, line_no, hash, &content_to_use)?;
+    let after_bytes = if receipt_flag || audit_log.is_some() { Some(nc.as_bytes().to_vec()) } else { None };
+    if receipt_flag {
+        if let (Some(before), Some(after)) = (&before_bytes, &after_bytes) {
+            let changes = vec![LineChange { line_no: line_no + 1, kind: ChangeKind::Modified, before: get_line_content(&raw, line_no), after: get_line_content(&nc, line_no) }];
+            handle_receipt(ctx, "edit", path, changes, before, after, true, None)?;
+        }
+    }
+    if !dry_run { atomic_write(path, &nc)?; if let Ok(doc) = Document::from_str(path, &nc) { ctx.modified_doc = Some(doc); } }
+    if let Some(log_path) = audit_log {
+        if let (Some(before), Some(after)) = (&before_bytes, &after_bytes) {
+            let changes = vec![LineChange { line_no: line_no + 1, kind: ChangeKind::Modified, before: get_line_content(&raw, line_no), after: get_line_content(&nc, line_no) }];
+            handle_receipt(ctx, "edit", path, changes, before, after, false, Some(log_path))?;
+        }
+    }
+    if receipt_flag { return Ok(()); }
+    if ctx.output_mode() == OutputMode::Pretty {
+        output::write_success_line(ctx, &format!("Edited line {}.", line_no + 1)).map_err(HashlineError::from)?;
+    }
+    Ok(())
+}
+

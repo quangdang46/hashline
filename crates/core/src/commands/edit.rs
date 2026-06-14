@@ -1,8 +1,7 @@
 use std::io::Write;
 
 use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region,
-    resolve_range,
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
 };
 use crate::cli::EditCmd;
 use memmap2::Mmap;
@@ -27,12 +26,8 @@ pub fn run<W: Write, E: Write>(
     }
 
     // Fast path: range anchors (start..end) via string scanning
-    if cmd.anchor.contains("..")
-        && !cmd.dry_run
-        && !cmd.receipt
-        && cmd.audit_log.is_none()
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
+    if cmd.anchor.contains("..") && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
+        && !cmd.interpret_escapes && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         use crate::anchor::parse_range;
         if let Ok(range) = parse_range(&cmd.anchor) {
@@ -40,43 +35,32 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
+
     // Fast path: content queries via string scanning (find query text, hash only matching line)
-    if cmd.start_query.is_some()
-        && !cmd.dry_run
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
+    if cmd.start_query.is_some() && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none()
+        && !cmd.interpret_escapes && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         return run_fast_query_edit(ctx, cmd);
     }
 
+
     // Fast path: simple line:hash anchor via string scanning (str_replace speed)
-    if !cmd.anchor.is_empty()
-        && cmd.start_query.is_none()
-        && !cmd.anchor.contains("..")
-        && !cmd.dry_run
-        && cmd.expect_mtime.is_none()
-        && cmd.expect_inode.is_none()
+    if !cmd.anchor.is_empty() && cmd.start_query.is_none()
+        && !cmd.anchor.contains("..") && !cmd.dry_run && !cmd.receipt
+        && cmd.audit_log.is_none() && !cmd.interpret_escapes
+        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
             let r = crate::fast::run_fast_edit(
-                ctx,
-                &cmd.file,
-                line_no,
-                hash,
-                &cmd.content,
-                cmd.dry_run,
-                cmd.expect_mtime,
-                cmd.expect_inode,
-                cmd.interpret_escapes,
-                cmd.receipt,
-                cmd.audit_log.as_deref(),
+                ctx, &cmd.file, line_no, hash, &cmd.content,
+                cmd.dry_run, cmd.expect_mtime, cmd.expect_inode,
+            cmd.interpret_escapes, cmd.receipt, cmd.audit_log.as_deref(),
             );
-            if r.is_ok() {
-                return r;
-            } // fall through to standard path on error
+            if r.is_ok() { return r; } // fall through to standard path on error
         }
     }
+
 
     let root = discover_sidecar_root(&cmd.file);
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
@@ -92,9 +76,12 @@ pub fn run<W: Write, E: Write>(
 
     let index = doc.build_index();
     let summary = if cmd.start_query.is_some() {
-        let region =
-            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
-                .expect("start_query is set so region is Some");
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
         let start_idx = region.start_line - 1;
         let end_idx = region.end_line - 1;
         let before = doc.lines[start_idx..=end_idx]
@@ -243,20 +230,26 @@ fn run_streaming<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     // Streaming mode only supports qualified line:hash anchors (not raw hashes or ranges).
     if looks_like_range_anchor(&cmd.anchor) {
-        return Err(HashlineError::InvalidAnchor { anchor: cmd.anchor });
+        return Err(HashlineError::InvalidAnchor {
+            anchor: cmd.anchor,
+        });
     }
 
     let anchor = parse_anchor(&cmd.anchor)?;
     let (line_no, short) = match anchor {
         crate::anchor::Anchor::LineHash { line, short } => (line, short),
-        _ => return Err(HashlineError::InvalidAnchor { anchor: cmd.anchor }),
+        _ => {
+            return Err(HashlineError::InvalidAnchor {
+                anchor: cmd.anchor,
+            })
+        }
     };
     // line_no is 1-indexed; convert to 0-indexed.
-    let target_line = line_no
-        .checked_sub(1)
-        .ok_or_else(|| HashlineError::InvalidAnchor {
+    let target_line = line_no.checked_sub(1).ok_or_else(|| {
+        HashlineError::InvalidAnchor {
             anchor: cmd.anchor.clone(),
-        })?;
+        }
+    })?;
 
     let content = if cmd.interpret_escapes {
         interpret_escapes(&cmd.content)
@@ -297,8 +290,10 @@ fn run_streaming<W: Write, E: Write>(
 
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
-        OutputMode::Pretty => output::write_success_line(ctx, &format!("Edited line {line_no}."))
-            .map_err(HashlineError::from),
+        OutputMode::Pretty => {
+            output::write_success_line(ctx, &format!("Edited line {line_no}."))
+                .map_err(HashlineError::from)
+        }
     }
 }
 
@@ -520,6 +515,7 @@ impl EditSummary {
     }
 }
 
+
 /// Fast range edit: parses both anchors, hashes both lines, replaces via string scanning.
 fn run_fast_range_edit<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
@@ -536,34 +532,23 @@ fn run_fast_range_edit<W: Write, E: Write>(
     let (s_line, s_hash) = resolve_anchor_line(&range.start, &content)?;
     let (e_line, e_hash) = resolve_anchor_line(&range.end, &content)?;
 
-    let (new_content, _, _) =
-        crate::fast::fast_replace_range(&content, s_line, e_line, s_hash, e_hash, &cmd.content)?;
+    let (new_content, _, _) = crate::fast::fast_replace_range(
+        &content, s_line, e_line, s_hash, e_hash, &cmd.content,
+    )?;
 
     // Atomic write
-    let parent = cmd
-        .file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
+    let parent = cmd.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    if let Ok(meta) = std::fs::metadata(&cmd.file) {
-        let _ = temp.as_file().set_permissions(meta.permissions());
-    }
+    if let Ok(meta) = std::fs::metadata(&cmd.file) { let _ = temp.as_file().set_permissions(meta.permissions()); }
     temp.write_all(new_content.as_bytes())?;
-    temp.persist(&cmd.file)
-        .map_err(|e| HashlineError::Io(std::io::Error::other(e.to_string())))?;
+    temp.persist(&cmd.file).map_err(|e| HashlineError::Io(std::io::Error::other(e.to_string())))?;
 
-    if let Ok(doc) = Document::from_str(&cmd.file, &new_content) {
-        ctx.modified_doc = Some(doc);
-    }
+    if let Ok(doc) = Document::from_str(&cmd.file, &new_content) { ctx.modified_doc = Some(doc); }
 
     if ctx.output_mode() == crate::context::OutputMode::Pretty {
-        crate::output::write_success_line(
-            ctx,
-            &format!("Edited lines {}-{}.", s_line + 1, e_line + 1),
-        )
-        .map_err(HashlineError::from)?;
-    }
+            crate::output::write_success_line(ctx, &format!("Edited lines {}-{}.", s_line + 1, e_line + 1))
+                .map_err(HashlineError::from)?;
+        }
     Ok(())
 }
 
@@ -581,102 +566,62 @@ fn run_fast_query_edit<W: Write, E: Write>(
     // Find the query text in the content
     let query = cmd.start_query.as_deref().unwrap_or("");
     if query.is_empty() {
-        return Err(HashlineError::QueryNotFound {
-            query: String::new(),
-            path: cmd.file.display().to_string(),
-        });
+        return Err(HashlineError::QueryNotFound { query: String::new(), path: cmd.file.display().to_string() });
     }
 
     // Find which line the query is on
     let bytes = content.as_bytes();
-    let query_idx = content
-        .find(query)
-        .ok_or_else(|| HashlineError::QueryNotFound {
-            query: query.to_string(),
-            path: cmd.file.display().to_string(),
-        })?;
+    let query_idx = content.find(query).ok_or_else(|| HashlineError::QueryNotFound {
+        query: query.to_string(), path: cmd.file.display().to_string(),
+    })?;
 
     // Count newlines before query_idx to find the line number
     let line_no = bytes[..query_idx].iter().filter(|&&b| b == b'\n').count();
 
     // Find the full line content for hashing
-    let line_start = bytes[..query_idx]
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map(|p| p + 1)
-        .unwrap_or(0);
-    let line_end = bytes[query_idx..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|p| query_idx + p)
-        .unwrap_or(content.len());
-    let hash_end = if line_end > line_start && bytes[line_end - 1] == b'\r' {
-        line_end - 1
-    } else {
-        line_end
-    };
+    let line_start = bytes[..query_idx].iter().rposition(|&b| b == b'\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = bytes[query_idx..].iter().position(|&b| b == b'\n').map(|p| query_idx + p).unwrap_or(content.len());
+    let hash_end = if line_end > line_start && bytes[line_end - 1] == b'\r' { line_end - 1 } else { line_end };
     let line_content = &content[line_start..hash_end];
     let short_hash = hash::short_hash_value(line_content);
 
     // Apply via fast edit
-    let (new_content, _) =
-        crate::fast::fast_replace_line(&content, line_no, short_hash, &cmd.content)?;
+    let (new_content, _) = crate::fast::fast_replace_line(&content, line_no, short_hash, &cmd.content)?;
 
     // Atomic write
-    let parent = cmd
-        .file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
+    let parent = cmd.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    if let Ok(meta) = std::fs::metadata(&cmd.file) {
-        let _ = temp.as_file().set_permissions(meta.permissions());
-    }
+    if let Ok(meta) = std::fs::metadata(&cmd.file) { let _ = temp.as_file().set_permissions(meta.permissions()); }
     temp.write_all(new_content.as_bytes())?;
-    temp.persist(&cmd.file)
-        .map_err(|e| HashlineError::Io(std::io::Error::other(e.to_string())))?;
+    temp.persist(&cmd.file).map_err(|e| HashlineError::Io(std::io::Error::other(e.to_string())))?;
 
-    if let Ok(doc) = Document::from_str(&cmd.file, &new_content) {
-        ctx.modified_doc = Some(doc);
-    }
+    if let Ok(doc) = Document::from_str(&cmd.file, &new_content) { ctx.modified_doc = Some(doc); }
 
     if ctx.output_mode() == crate::context::OutputMode::Pretty {
-        crate::output::write_success_line(ctx, &format!("Edited line {}.", line_no + 1))
-            .map_err(HashlineError::from)?;
-    }
+            crate::output::write_success_line(ctx, &format!("Edited line {}.", line_no + 1))
+                .map_err(HashlineError::from)?;
+        }
     Ok(())
 }
 
 /// Resolve an Anchor enum to a (0-indexed line, hash) pair by scanning the content.
-fn resolve_anchor_line(
-    anchor: &crate::anchor::Anchor,
-    content: &str,
-) -> Result<(usize, crate::hash::ShortHash), HashlineError> {
+fn resolve_anchor_line(anchor: &crate::anchor::Anchor, content: &str) -> Result<(usize, crate::hash::ShortHash), HashlineError> {
     match anchor {
         crate::anchor::Anchor::LineHash { line, short } => {
-            let line_no = line
-                .checked_sub(1)
-                .ok_or_else(|| HashlineError::InvalidAnchor {
-                    anchor: format!("line {line}"),
-                })?;
+            let line_no = line.checked_sub(1).ok_or_else(|| HashlineError::InvalidAnchor {
+                anchor: format!("line {line}"),
+            })?;
             Ok((line_no, *short))
         }
         crate::anchor::Anchor::Hash { short } => {
             // Find the first line with matching hash
             for (i, l) in content.lines().enumerate() {
-                let he = if l.as_bytes().last() == Some(&b'\r') {
-                    &l[..l.len() - 1]
-                } else {
-                    l
-                };
+                let he = if l.as_bytes().last() == Some(&b'\r') { &l[..l.len()-1] } else { l };
                 if crate::hash::short_hash_value(he) == *short {
                     return Ok((i, *short));
                 }
             }
-            Err(HashlineError::HashNotFound {
-                hash: crate::hash::format_short_hash(*short),
-                path: String::new(),
-            })
+            Err(HashlineError::HashNotFound { hash: crate::hash::format_short_hash(*short), path: String::new() })
         }
     }
 }
