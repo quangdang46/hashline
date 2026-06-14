@@ -53,7 +53,11 @@ fn replace_streaming(
     }
 
     let mut replacements = 0usize;
-    let mut remaining = if max_count == 0 { usize::MAX } else { max_count };
+    let mut remaining = if max_count == 0 {
+        usize::MAX
+    } else {
+        max_count
+    };
 
     for line_result in reader.lines() {
         let line = line_result?;
@@ -75,9 +79,8 @@ fn replace_streaming(
         });
     }
 
-    temp.persist(path).map_err(|e| HashlineError::Io(
-        std::io::Error::other(e.to_string())
-    ))?;
+    temp.persist(path)
+        .map_err(|e| HashlineError::Io(std::io::Error::other(e.to_string())))?;
 
     Ok(ReplaceReceipt {
         matched: true,
@@ -120,9 +123,8 @@ fn replace_full(
         temp.as_file().set_permissions(meta.permissions())?;
     }
     temp.write_all(result.as_bytes())?;
-    temp.persist(path).map_err(|e| HashlineError::Io(
-        std::io::Error::other(e.to_string())
-    ))?;
+    temp.persist(path)
+        .map_err(|e| HashlineError::Io(std::io::Error::other(e.to_string())))?;
 
     Ok(ReplaceReceipt {
         matched: true,
@@ -172,7 +174,11 @@ fn replace_regex(
         return Ok((content.to_owned(), 0));
     }
 
-    let actual = if max_count == 0 { count } else { max_count.min(count) };
+    let actual = if max_count == 0 {
+        count
+    } else {
+        max_count.min(count)
+    };
     let result = if max_count == 0 || max_count >= count {
         re.replace_all(content, new).to_string()
     } else {

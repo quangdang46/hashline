@@ -1,9 +1,8 @@
 pub mod annotate;
 pub mod batch;
-pub mod replace;
 pub mod common;
-pub mod diff_apply;
 pub mod delete;
+pub mod diff_apply;
 pub mod doctor;
 pub mod edit;
 pub mod find_block;
@@ -14,6 +13,7 @@ pub mod insert;
 pub mod r#move;
 pub mod patch;
 pub mod read;
+pub mod replace;
 pub mod serve;
 pub mod stats;
 pub mod swap;

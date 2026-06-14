@@ -3,15 +3,13 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range,
-};
+use crate::anchor::{looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range};
 use crate::cli::BatchCmd;
 use crate::commands::common::{atomic_write_document, check_guard};
 use crate::context::CommandContext;
 use crate::document::{Document, ShortHashIndex};
-use crate::hash_cache::discover_sidecar_root;
 use crate::error::HashlineError;
+use crate::hash_cache::discover_sidecar_root;
 use crate::mutation::{delete_line, insert_line, replace_line, replace_range};
 use crate::output;
 
@@ -136,7 +134,10 @@ pub fn batch_edit(
 
     for r_op in &resolved {
         match r_op {
-            ResolvedOp::Replace { line_index, content } => {
+            ResolvedOp::Replace {
+                line_index,
+                content,
+            } => {
                 replace_line(&mut doc, *line_index, content)?;
                 anchors_changed.push(format!("line {}", line_index + 1));
             }
@@ -297,11 +298,19 @@ mod tests {
 
     fn anchor_from_line(doc: &Document, index: usize) -> String {
         let line = &doc.lines[index];
-        format!("{}:{}", index + 1, crate::hash::format_short_hash(line.short_hash))
+        format!(
+            "{}:{}",
+            index + 1,
+            crate::hash::format_short_hash(line.short_hash)
+        )
     }
 
     fn range_anchor(doc: &Document, start: usize, end: usize) -> String {
-        format!("{}..{}", anchor_from_line(doc, start), anchor_from_line(doc, end))
+        format!(
+            "{}..{}",
+            anchor_from_line(doc, start),
+            anchor_from_line(doc, end)
+        )
     }
 
     #[test]
@@ -373,10 +382,13 @@ mod tests {
         let doc = Document::load(&path).unwrap();
         let range = range_anchor(&doc, 1, 2); // beta..gamma
 
-        let receipt = run_batch(&path, vec![EditOp::Range {
-            anchor: range,
-            content: "B\nG".into(),
-        }])?;
+        let receipt = run_batch(
+            &path,
+            vec![EditOp::Range {
+                anchor: range,
+                content: "B\nG".into(),
+            }],
+        )?;
 
         assert_eq!(receipt.edits_applied, 1);
         assert_eq!(read_to_string(&path)?, "alpha\nB\nG\ndelta\n");
@@ -519,9 +531,7 @@ mod tests {
                     anchor: a2.clone(),
                     content: "inserted".into(),
                 },
-                EditOp::Delete {
-                    anchor: a2,
-                },
+                EditOp::Delete { anchor: a2 },
             ],
         )?;
         assert_eq!(receipt.edits_applied, 2);

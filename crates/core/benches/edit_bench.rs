@@ -7,9 +7,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 mod support;
 
 use hashline::anchor::{parse_anchor, resolve, resolve_without_index};
-use hashline::fast as hashline_fast;
 use hashline::document::Document;
 use hashline::error::HashlineError;
+use hashline::fast as hashline_fast;
 use hashline::mutation::replace_line;
 use support::{
     EditScenario, generate_duplicate_target_edit_scenario, generate_exact_match_edit_scenario,

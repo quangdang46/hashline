@@ -17,12 +17,29 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     let root = discover_sidecar_root(&cmd.file);
 
-    if !cmd.anchor_a.is_empty() && !cmd.anchor_b.is_empty() && !cmd.receipt && cmd.audit_log.is_none() && !cmd.dry_run
-    {
+    if !cmd.anchor_a.is_empty() && !cmd.anchor_b.is_empty() && !cmd.dry_run {
         use crate::anchor::try_parse_line_anchor;
-        if let (Some((l1, h1)), Some((l2, h2))) = (try_parse_line_anchor(&cmd.anchor_a), try_parse_line_anchor(&cmd.anchor_b)) {
-            let r = crate::fast::run_fast_swap(ctx, &cmd.file, l1, l2, h1, h2, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, false, cmd.receipt, cmd.audit_log.as_deref());
-            if r.is_ok() { return r; }
+        if let (Some((l1, h1)), Some((l2, h2))) = (
+            try_parse_line_anchor(&cmd.anchor_a),
+            try_parse_line_anchor(&cmd.anchor_b),
+        ) {
+            let r = crate::fast::run_fast_swap(
+                ctx,
+                &cmd.file,
+                l1,
+                l2,
+                h1,
+                h2,
+                cmd.dry_run,
+                cmd.expect_mtime,
+                cmd.expect_inode,
+                false,
+                cmd.receipt,
+                cmd.audit_log.as_deref(),
+            );
+            if r.is_ok() {
+                return r;
+            }
         }
     }
 

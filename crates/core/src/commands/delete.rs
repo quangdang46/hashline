@@ -1,7 +1,8 @@
 use std::io::Write;
 
 use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region,
+    resolve_range,
 };
 use crate::cli::DeleteCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
@@ -20,25 +21,56 @@ pub fn run<W: Write, E: Write>(
     let root = discover_sidecar_root(&cmd.file);
 
     // Fast path: simple single-line delete
-    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
-        && !cmd.anchor.contains("..") && cmd.start_query.is_none()
-        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    if !cmd.anchor.is_empty()
+        && !cmd.anchor.contains("..")
+        && cmd.start_query.is_none()
+        && !cmd.dry_run
+        && cmd.expect_mtime.is_none()
+        && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            return crate::fast::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, false, cmd.receipt, cmd.audit_log.as_deref());
+            return crate::fast::run_fast_delete(
+                ctx,
+                &cmd.file,
+                line_no,
+                line_no,
+                hash,
+                cmd.dry_run,
+                cmd.expect_mtime,
+                cmd.expect_inode,
+                false,
+                cmd.receipt,
+                cmd.audit_log.as_deref(),
+            );
         }
     }
 
-
-    if !cmd.anchor.is_empty() && !cmd.receipt && cmd.audit_log.is_none()
-        && !cmd.anchor.contains("..") && cmd.start_query.is_none()
-        && !cmd.dry_run && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none()
+    if !cmd.anchor.is_empty()
+        && !cmd.anchor.contains("..")
+        && cmd.start_query.is_none()
+        && !cmd.dry_run
+        && cmd.expect_mtime.is_none()
+        && cmd.expect_inode.is_none()
     {
         use crate::anchor::try_parse_line_anchor;
         if let Some((line_no, hash)) = try_parse_line_anchor(&cmd.anchor) {
-            let r = crate::fast::run_fast_delete(ctx, &cmd.file, line_no, line_no, hash, cmd.dry_run, cmd.expect_mtime, cmd.expect_inode, false, cmd.receipt, cmd.audit_log.as_deref());
-            if r.is_ok() { return r; }
+            let r = crate::fast::run_fast_delete(
+                ctx,
+                &cmd.file,
+                line_no,
+                line_no,
+                hash,
+                cmd.dry_run,
+                cmd.expect_mtime,
+                cmd.expect_inode,
+                false,
+                cmd.receipt,
+                cmd.audit_log.as_deref(),
+            );
+            if r.is_ok() {
+                return r;
+            }
         }
     }
 
@@ -48,12 +80,9 @@ pub fn run<W: Write, E: Write>(
     let before_bytes = needs_receipt.then(|| doc.render());
 
     let summary = if cmd.start_query.is_some() {
-        let region = resolve_query_region(
-            &doc,
-            cmd.start_query.as_deref(),
-            cmd.end_query.as_deref(),
-        )?
-        .expect("start_query is set so region is Some");
+        let region =
+            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
+                .expect("start_query is set so region is Some");
         let start_idx = region.start_line - 1;
         let end_idx = region.end_line - 1;
         let deleted = doc.lines[start_idx..=end_idx]
@@ -64,25 +93,25 @@ pub fn run<W: Write, E: Write>(
         DeleteSummary::range(region.start_line, region.end_line, deleted)
     } else {
         match looks_like_range_anchor(&cmd.anchor) {
-        true => {
-            let range = parse_range(&cmd.anchor)?;
-            let index = doc.build_index();
-            let (start, end) = resolve_range(&range, &doc, &index)?;
-            let deleted = doc.lines[start.index..=end.index]
-                .iter()
-                .map(|line| line.content.to_string())
-                .collect::<Vec<_>>();
-            delete_range(&mut doc, start.index, end.index)?;
-            DeleteSummary::range(start.line_no, end.line_no, deleted)
-        }
-        false => {
-            let index = doc.build_index();
-            let anchor = parse_anchor(&cmd.anchor)?;
-            let resolved = resolve(&anchor, &doc, &index)?;
-            let deleted = doc.lines[resolved.index].content.to_string();
-            delete_line(&mut doc, resolved.index)?;
-            DeleteSummary::single(resolved.line_no, deleted)
-        }
+            true => {
+                let range = parse_range(&cmd.anchor)?;
+                let index = doc.build_index();
+                let (start, end) = resolve_range(&range, &doc, &index)?;
+                let deleted = doc.lines[start.index..=end.index]
+                    .iter()
+                    .map(|line| line.content.to_string())
+                    .collect::<Vec<_>>();
+                delete_range(&mut doc, start.index, end.index)?;
+                DeleteSummary::range(start.line_no, end.line_no, deleted)
+            }
+            false => {
+                let index = doc.build_index();
+                let anchor = parse_anchor(&cmd.anchor)?;
+                let resolved = resolve(&anchor, &doc, &index)?;
+                let deleted = doc.lines[resolved.index].content.to_string();
+                delete_line(&mut doc, resolved.index)?;
+                DeleteSummary::single(resolved.line_no, deleted)
+            }
         }
     };
 

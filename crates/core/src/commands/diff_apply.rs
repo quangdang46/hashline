@@ -316,19 +316,21 @@ pub fn apply_diff(path: &Path, diff_content: &str) -> Result<DiffReceipt, Hashli
     }
 
     // Write the result
-    let output = result_lines.join(
-        match doc.newline {
-            crate::document::NewlineStyle::Lf => "\n",
-            crate::document::NewlineStyle::Crlf => "\r\n",
-        },
-    );
+    let output = result_lines.join(match doc.newline {
+        crate::document::NewlineStyle::Lf => "\n",
+        crate::document::NewlineStyle::Crlf => "\r\n",
+    });
 
     // Preserve trailing newline behavior
     let output = if doc.trailing_newline {
-        format!("{}{}", output, match doc.newline {
-            crate::document::NewlineStyle::Lf => "\n",
-            crate::document::NewlineStyle::Crlf => "\r\n",
-        })
+        format!(
+            "{}{}",
+            output,
+            match doc.newline {
+                crate::document::NewlineStyle::Lf => "\n",
+                crate::document::NewlineStyle::Crlf => "\r\n",
+            }
+        )
     } else {
         output
     };
@@ -420,19 +422,13 @@ pub fn run<W: Write, E: Write>(
             } else {
                 output::write_success_line(
                     ctx,
-                    &format!(
-                        "Diff failed: {} conflict(s).",
-                        receipt.conflicts.len()
-                    ),
+                    &format!("Diff failed: {} conflict(s).", receipt.conflicts.len()),
                 )
                 .map_err(HashlineError::from)?;
                 for conflict in &receipt.conflicts {
                     output::write_success_line(
                         ctx,
-                        &format!(
-                            "  hunk {}: {}",
-                            conflict.hunk_line, conflict.reason
-                        ),
+                        &format!("  hunk {}: {}", conflict.hunk_line, conflict.reason),
                     )
                     .map_err(HashlineError::from)?;
                 }
@@ -448,10 +444,7 @@ mod tests {
 
     #[test]
     fn parse_hunk_header_no_trailing_context() {
-        assert_eq!(
-            parse_hunk_header("@@ -1,3 +1,4 @@"),
-            Some((1, 3, 1, 4))
-        );
+        assert_eq!(parse_hunk_header("@@ -1,3 +1,4 @@"), Some((1, 3, 1, 4)));
     }
 
     #[test]
@@ -466,10 +459,7 @@ mod tests {
     #[test]
     fn parse_hunk_header_single_line() {
         // Format: "@@ -1 +1 @@" (no count, defaults to 1)
-        assert_eq!(
-            parse_hunk_header("@@ -1 +1 @@"),
-            Some((1, 1, 1, 1))
-        );
+        assert_eq!(parse_hunk_header("@@ -1 +1 @@"), Some((1, 1, 1, 1)));
     }
 
     #[test]
@@ -493,7 +483,8 @@ mod tests {
 
     #[test]
     fn parse_unified_diff_single_hunk() {
-        let diff = "--- a/demo.txt\n+++ b/demo.txt\n@@ -1,3 +1,4 @@\n alpha\n-beta\n gamma\n+delta\n";
+        let diff =
+            "--- a/demo.txt\n+++ b/demo.txt\n@@ -1,3 +1,4 @@\n alpha\n-beta\n gamma\n+delta\n";
         let (old_file, new_file, hunks) = parse_unified_diff(diff).unwrap();
         assert_eq!(old_file, "a/demo.txt");
         assert_eq!(new_file, "b/demo.txt");
