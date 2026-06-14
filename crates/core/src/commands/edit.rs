@@ -1,7 +1,8 @@
 use std::io::Write;
 
 use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region,
+    resolve_range,
 };
 use crate::cli::EditCmd;
 use memmap2::Mmap;
@@ -39,12 +40,9 @@ pub fn run<W: Write, E: Write>(
 
     let index = doc.build_index();
     let summary = if let Some(_) = cmd.start_query {
-        let region = resolve_query_region(
-            &doc,
-            cmd.start_query.as_deref(),
-            cmd.end_query.as_deref(),
-        )?
-        .expect("start_query is set so region is Some");
+        let region =
+            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
+                .expect("start_query is set so region is Some");
         let start_idx = region.start_line - 1;
         let end_idx = region.end_line - 1;
         let before = doc.lines[start_idx..=end_idx]
@@ -193,26 +191,20 @@ fn run_streaming<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     // Streaming mode only supports qualified line:hash anchors (not raw hashes or ranges).
     if looks_like_range_anchor(&cmd.anchor) {
-        return Err(HashlineError::InvalidAnchor {
-            anchor: cmd.anchor,
-        });
+        return Err(HashlineError::InvalidAnchor { anchor: cmd.anchor });
     }
 
     let anchor = parse_anchor(&cmd.anchor)?;
     let (line_no, short) = match anchor {
         crate::anchor::Anchor::LineHash { line, short } => (line, short),
-        _ => {
-            return Err(HashlineError::InvalidAnchor {
-                anchor: cmd.anchor,
-            })
-        }
+        _ => return Err(HashlineError::InvalidAnchor { anchor: cmd.anchor }),
     };
     // line_no is 1-indexed; convert to 0-indexed.
-    let target_line = line_no.checked_sub(1).ok_or_else(|| {
-        HashlineError::InvalidAnchor {
+    let target_line = line_no
+        .checked_sub(1)
+        .ok_or_else(|| HashlineError::InvalidAnchor {
             anchor: cmd.anchor.clone(),
-        }
-    })?;
+        })?;
 
     let content = if cmd.interpret_escapes {
         interpret_escapes(&cmd.content)
@@ -253,10 +245,8 @@ fn run_streaming<W: Write, E: Write>(
 
     match ctx.output_mode() {
         OutputMode::Json | OutputMode::Ndjson => Ok(()),
-        OutputMode::Pretty => {
-            output::write_success_line(ctx, &format!("Edited line {line_no}."))
-                .map_err(HashlineError::from)
-        }
+        OutputMode::Pretty => output::write_success_line(ctx, &format!("Edited line {line_no}."))
+            .map_err(HashlineError::from),
     }
 }
 

@@ -92,9 +92,7 @@ fn edit_seeds_cache_for_subsequent_read() {
 fn ten_sequential_edits_share_single_load() {
     // The original pain point: 10 edits on the same file = 10 re-loads.
     // After fix: 1 load + 9 cache hits.
-    let content: String = (1..=20)
-        .map(|i| format!("line {i:02}\n"))
-        .collect();
+    let content: String = (1..=20).map(|i| format!("line {i:02}\n")).collect();
     let file = tmpfile(&content);
     let path = file.to_string_lossy().into_owned();
     let mut session = new_session();
@@ -197,7 +195,8 @@ fn insert_and_delete_also_seed_cache() {
     let _ = mcp_read(&mut session, &path);
 
     assert_eq!(
-        session.stats().misses, baseline_misses,
+        session.stats().misses,
+        baseline_misses,
         "insert should seed the cache, not invalidate"
     );
     assert_eq!(
@@ -224,7 +223,8 @@ fn insert_and_delete_also_seed_cache() {
 
     let _ = mcp_read(&mut session, &path);
     assert_eq!(
-        session.stats().misses, baseline_misses,
+        session.stats().misses,
+        baseline_misses,
         "delete should seed the cache, not invalidate"
     );
     assert_eq!(
@@ -233,4 +233,3 @@ fn insert_and_delete_also_seed_cache() {
         "read after delete should be a cache hit"
     );
 }
-

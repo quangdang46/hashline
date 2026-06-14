@@ -1,7 +1,8 @@
 use std::io::Write;
 
 use crate::anchor::{
-    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region,
+    resolve_range,
 };
 use crate::cli::DeleteCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
@@ -24,12 +25,9 @@ pub fn run<W: Write, E: Write>(
     let before_bytes = needs_receipt.then(|| doc.render());
 
     let summary = if cmd.start_query.is_some() {
-        let region = resolve_query_region(
-            &doc,
-            cmd.start_query.as_deref(),
-            cmd.end_query.as_deref(),
-        )?
-        .expect("start_query is set so region is Some");
+        let region =
+            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
+                .expect("start_query is set so region is Some");
         let start_idx = region.start_line - 1;
         let end_idx = region.end_line - 1;
         let deleted = doc.lines[start_idx..=end_idx]
@@ -40,25 +38,25 @@ pub fn run<W: Write, E: Write>(
         DeleteSummary::range(region.start_line, region.end_line, deleted)
     } else {
         match looks_like_range_anchor(&cmd.anchor) {
-        true => {
-            let range = parse_range(&cmd.anchor)?;
-            let index = doc.build_index();
-            let (start, end) = resolve_range(&range, &doc, &index)?;
-            let deleted = doc.lines[start.index..=end.index]
-                .iter()
-                .map(|line| line.content.to_string())
-                .collect::<Vec<_>>();
-            delete_range(&mut doc, start.index, end.index)?;
-            DeleteSummary::range(start.line_no, end.line_no, deleted)
-        }
-        false => {
-            let index = doc.build_index();
-            let anchor = parse_anchor(&cmd.anchor)?;
-            let resolved = resolve(&anchor, &doc, &index)?;
-            let deleted = doc.lines[resolved.index].content.to_string();
-            delete_line(&mut doc, resolved.index)?;
-            DeleteSummary::single(resolved.line_no, deleted)
-        }
+            true => {
+                let range = parse_range(&cmd.anchor)?;
+                let index = doc.build_index();
+                let (start, end) = resolve_range(&range, &doc, &index)?;
+                let deleted = doc.lines[start.index..=end.index]
+                    .iter()
+                    .map(|line| line.content.to_string())
+                    .collect::<Vec<_>>();
+                delete_range(&mut doc, start.index, end.index)?;
+                DeleteSummary::range(start.line_no, end.line_no, deleted)
+            }
+            false => {
+                let index = doc.build_index();
+                let anchor = parse_anchor(&cmd.anchor)?;
+                let resolved = resolve(&anchor, &doc, &index)?;
+                let deleted = doc.lines[resolved.index].content.to_string();
+                delete_line(&mut doc, resolved.index)?;
+                DeleteSummary::single(resolved.line_no, deleted)
+            }
         }
     };
 

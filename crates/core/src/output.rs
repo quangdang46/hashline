@@ -215,10 +215,9 @@ pub fn print_compact_read(
             writer.write_all(b"\n")?;
         }
     } else {
-        let resolved = resolve_read_anchors(doc, anchors)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        let anchor_indexes: BTreeSet<usize> =
-            resolved.iter().map(|anchor| anchor.index).collect();
+        let resolved =
+            resolve_read_anchors(doc, anchors).map_err(|e| io::Error::other(e.to_string()))?;
+        let anchor_indexes: BTreeSet<usize> = resolved.iter().map(|anchor| anchor.index).collect();
         let included = collect_context_indexes(doc, &resolved, context);
         let mut previous: Option<usize> = None;
         for index in included {

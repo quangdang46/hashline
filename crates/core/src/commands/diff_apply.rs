@@ -316,19 +316,21 @@ pub fn apply_diff(path: &Path, diff_content: &str) -> Result<DiffReceipt, Hashli
     }
 
     // Write the result
-    let output = result_lines.join(
-        match doc.newline {
-            crate::document::NewlineStyle::Lf => "\n",
-            crate::document::NewlineStyle::Crlf => "\r\n",
-        },
-    );
+    let output = result_lines.join(match doc.newline {
+        crate::document::NewlineStyle::Lf => "\n",
+        crate::document::NewlineStyle::Crlf => "\r\n",
+    });
 
     // Preserve trailing newline behavior
     let output = if doc.trailing_newline {
-        format!("{}{}", output, match doc.newline {
-            crate::document::NewlineStyle::Lf => "\n",
-            crate::document::NewlineStyle::Crlf => "\r\n",
-        })
+        format!(
+            "{}{}",
+            output,
+            match doc.newline {
+                crate::document::NewlineStyle::Lf => "\n",
+                crate::document::NewlineStyle::Crlf => "\r\n",
+            }
+        )
     } else {
         output
     };
@@ -420,19 +422,13 @@ pub fn run<W: Write, E: Write>(
             } else {
                 output::write_success_line(
                     ctx,
-                    &format!(
-                        "Diff failed: {} conflict(s).",
-                        receipt.conflicts.len()
-                    ),
+                    &format!("Diff failed: {} conflict(s).", receipt.conflicts.len()),
                 )
                 .map_err(HashlineError::from)?;
                 for conflict in &receipt.conflicts {
                     output::write_success_line(
                         ctx,
-                        &format!(
-                            "  hunk {}: {}",
-                            conflict.hunk_line, conflict.reason
-                        ),
+                        &format!("  hunk {}: {}", conflict.hunk_line, conflict.reason),
                     )
                     .map_err(HashlineError::from)?;
                 }

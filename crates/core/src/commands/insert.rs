@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::anchor::{parse_anchor, resolve, resolve_query_region, ResolvedLine};
+use crate::anchor::{ResolvedLine, parse_anchor, resolve, resolve_query_region};
 use crate::cli::InsertCmd;
 use crate::commands::common::{
     atomic_write, atomic_write_document, check_guard, interpret_escapes,
@@ -30,12 +30,9 @@ pub fn run<W: Write, E: Write>(
 
     // Resolve the target position: either from start_query or from anchor.
     let (resolved, insert_at) = if cmd.start_query.is_some() {
-        let region = resolve_query_region(
-            &doc,
-            cmd.start_query.as_deref(),
-            cmd.end_query.as_deref(),
-        )?
-        .expect("start_query is set so region is Some");
+        let region =
+            resolve_query_region(&doc, cmd.start_query.as_deref(), cmd.end_query.as_deref())?
+                .expect("start_query is set so region is Some");
         // For insertion, anchor at the start_query line
         let idx = region.start_line - 1;
         let anchor_line = region.start_line;

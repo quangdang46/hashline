@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
+use crate::commands::batch::EditOp;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use crate::commands::batch::EditOp;
 
 fn default_context() -> usize {
     5
@@ -214,7 +214,7 @@ pub struct DeleteCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
-        /// Content query to find the start line of the target range (mutually exclusive with anchor).
+    /// Content query to find the start line of the target range (mutually exclusive with anchor).
     #[serde(default)]
     #[arg(long)]
     pub start_query: Option<String>,
@@ -567,9 +567,7 @@ where
     let edits = Edits::deserialize(deserializer)?;
     match edits {
         Edits::Array(ops) => Ok(ops),
-        Edits::String(s) => {
-            serde_json::from_str(&s).map_err(de::Error::custom)
-        }
+        Edits::String(s) => serde_json::from_str(&s).map_err(de::Error::custom),
     }
 }
 

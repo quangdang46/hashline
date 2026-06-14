@@ -284,54 +284,40 @@ pub fn dispatch_tool(
     match tool {
         "hashline_read" => tool_read(arguments, session),
         "hashline_index" => tool_index(arguments, session),
-        "hashline_edit" => {
-            dispatch_mutation(arguments, "hashline_edit", session, &|a| {
-                let mut cmd: EditCmd = parse_args(a)?;
-                cmd.json = true;
-                Ok((cmd.file.clone(), Commands::Edit(cmd)))
-            })
-        }
-        "hashline_insert" => {
-            dispatch_mutation(arguments, "hashline_insert", session, &|a| {
-                let mut cmd: InsertCmd = parse_args(a)?;
-                cmd.json = true;
-                Ok((cmd.file.clone(), Commands::Insert(cmd)))
-            })
-        }
-        "hashline_delete" => {
-            dispatch_mutation(arguments, "hashline_delete", session, &|a| {
-                let mut cmd: DeleteCmd = parse_args(a)?;
-                cmd.json = true;
-                Ok((cmd.file.clone(), Commands::Delete(cmd)))
-            })
-        }
+        "hashline_edit" => dispatch_mutation(arguments, "hashline_edit", session, &|a| {
+            let mut cmd: EditCmd = parse_args(a)?;
+            cmd.json = true;
+            Ok((cmd.file.clone(), Commands::Edit(cmd)))
+        }),
+        "hashline_insert" => dispatch_mutation(arguments, "hashline_insert", session, &|a| {
+            let mut cmd: InsertCmd = parse_args(a)?;
+            cmd.json = true;
+            Ok((cmd.file.clone(), Commands::Insert(cmd)))
+        }),
+        "hashline_delete" => dispatch_mutation(arguments, "hashline_delete", session, &|a| {
+            let mut cmd: DeleteCmd = parse_args(a)?;
+            cmd.json = true;
+            Ok((cmd.file.clone(), Commands::Delete(cmd)))
+        }),
         "hashline_verify" => tool_verify(arguments, session),
-        "hashline_patch" => {
-            dispatch_mutation(arguments, "hashline_patch", session, &|a| {
-                let mut cmd: PatchCmd = parse_args(a)?;
-                cmd.json = true;
-                Ok((cmd.file.clone(), Commands::Patch(cmd)))
-            })
-        }
-        "hashline_swap" => {
-            dispatch_mutation(arguments, "hashline_swap", session, &|a| {
-                let cmd: SwapCmd = parse_args(a)?;
-                Ok((cmd.file.clone(), Commands::Swap(cmd)))
-            })
-        }
-        "hashline_move" => {
-            dispatch_mutation(arguments, "hashline_move", session, &|a| {
-                let cmd: MoveCmd = parse_args(a)?;
-                Ok((cmd.file.clone(), Commands::Move(cmd)))
-            })
-        }
-        "hashline_indent" => {
-            dispatch_mutation(arguments, "hashline_indent", session, &|a| {
-                let mut cmd: IndentCmd = parse_args(a)?;
-                cmd.json = true;
-                Ok((cmd.file.clone(), Commands::Indent(cmd)))
-            })
-        }
+        "hashline_patch" => dispatch_mutation(arguments, "hashline_patch", session, &|a| {
+            let mut cmd: PatchCmd = parse_args(a)?;
+            cmd.json = true;
+            Ok((cmd.file.clone(), Commands::Patch(cmd)))
+        }),
+        "hashline_swap" => dispatch_mutation(arguments, "hashline_swap", session, &|a| {
+            let cmd: SwapCmd = parse_args(a)?;
+            Ok((cmd.file.clone(), Commands::Swap(cmd)))
+        }),
+        "hashline_move" => dispatch_mutation(arguments, "hashline_move", session, &|a| {
+            let cmd: MoveCmd = parse_args(a)?;
+            Ok((cmd.file.clone(), Commands::Move(cmd)))
+        }),
+        "hashline_indent" => dispatch_mutation(arguments, "hashline_indent", session, &|a| {
+            let mut cmd: IndentCmd = parse_args(a)?;
+            cmd.json = true;
+            Ok((cmd.file.clone(), Commands::Indent(cmd)))
+        }),
         "hashline_stats" => tool_stats(arguments, session),
         "hashline_doctor" => tool_doctor(arguments, session),
         "hashline_grep" => tool_grep(arguments, session),
@@ -383,8 +369,8 @@ where
         Err(err) => {
             // Stale-anchor retry: if the anchor changed since last read,
             // invalidate cache and retry once with a fresh file read.
-            let is_stale = err.code == -32001
-                && err.message.contains("content changed since last read");
+            let is_stale =
+                err.code == -32001 && err.message.contains("content changed since last read");
 
             if is_stale {
                 session.invalidate(&path);
@@ -1924,10 +1910,7 @@ fn tool_find_block(arguments: &Value, session: &mut SessionCache) -> Result<Valu
     ))
 }
 
-fn tool_batch_edit(
-    arguments: &Value,
-    session: &mut SessionCache,
-) -> Result<Value, JsonRpcError> {
+fn tool_batch_edit(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: BatchCmd = parse_args(arguments)?;
     let path = cmd.file.clone();
 
@@ -2004,16 +1987,12 @@ fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Valu
     }))
 }
 
-fn tool_apply_diff(
-    arguments: &Value,
-    session: &mut SessionCache,
-) -> Result<Value, JsonRpcError> {
+fn tool_apply_diff(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
     let diff: String = parse_arg(arguments, "diff")?;
 
     let path = std::path::Path::new(&file);
-    let receipt =
-        crate::commands::diff_apply::apply_diff(path, &diff).map_err(command_error)?;
+    let receipt = crate::commands::diff_apply::apply_diff(path, &diff).map_err(command_error)?;
 
     let exit_code = if receipt.applied { 0 } else { 1 };
 
@@ -2543,11 +2522,15 @@ fn mutation_properties(anchor_key: &str, include_before: bool) -> serde_json::Ma
     );
     properties.insert(
         "start_query".to_string(),
-        string_schema("Content query to find the start line of the target range (alternative to anchor)."),
+        string_schema(
+            "Content query to find the start line of the target range (alternative to anchor).",
+        ),
     );
     properties.insert(
         "end_query".to_string(),
-        string_schema("Content query to find the end line of the target range (only with start_query)."),
+        string_schema(
+            "Content query to find the end line of the target range (only with start_query).",
+        ),
     );
     if include_before {
         properties.insert(

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use xxhash_rust::xxh32::xxh32;
 use xxhash_rust::xxh3;
+use xxhash_rust::xxh32::xxh32;
 
 pub type ShortHash = u8;
 
