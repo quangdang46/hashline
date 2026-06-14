@@ -1,7 +1,13 @@
-#![allow(clippy::redundant_pattern_matching, clippy::manual_filter, clippy::match_like_matches_macro, clippy::all, dead_code)]
+#![allow(
+    clippy::redundant_pattern_matching,
+    clippy::manual_filter,
+    clippy::match_like_matches_macro,
+    clippy::all,
+    dead_code
+)]
 use std::io::Write;
 
-use crate::anchor::{parse_range, resolve_range, try_parse_line_anchor, };
+use crate::anchor::{parse_range, resolve_range, try_parse_line_anchor};
 use crate::cli::IndentCmd;
 use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
@@ -17,24 +23,39 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     let root = discover_sidecar_root(&cmd.file);
 
-    if !cmd.range.is_empty() && !cmd.range.contains("..") && !cmd.receipt && cmd.audit_log.is_none()
-        && cmd.expect_mtime.is_none() && cmd.expect_inode.is_none() && !cmd.dry_run && !cmd.receipt
+    if !cmd.range.is_empty()
+        && !cmd.range.contains("..")
+        && !cmd.receipt
+        && cmd.audit_log.is_none()
+        && cmd.expect_mtime.is_none()
+        && cmd.expect_inode.is_none()
+        && !cmd.dry_run
+        && !cmd.receipt
     {
         use crate::anchor::try_parse_line_anchor;
         let parts: Vec<&str> = cmd.range.split("..").collect();
         if let Some(first_anchor) = parts.first().and_then(|a| try_parse_line_anchor(a)) {
             let (l1, h1) = first_anchor;
-            let (l2, _h2) = if let Some(end) = parts.get(1).and_then(|a| try_parse_line_anchor(a)) { end } else { (l1, h1) };
+            let (l2, _h2) = if let Some(end) = parts.get(1).and_then(|a| try_parse_line_anchor(a)) {
+                end
+            } else {
+                (l1, h1)
+            };
             let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
             let content = crate::fast::read_file(&cmd.file)?;
             let nc = crate::fast::fast_indent_lines(&content, l1, l2, h1, amt)?;
             crate::fast::atomic_write(&cmd.file, &nc)?;
-            if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &nc) { ctx.modified_doc = Some(doc); }
+            if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &nc) {
+                ctx.modified_doc = Some(doc);
+            }
             match ctx.output_mode() {
                 crate::context::OutputMode::Pretty => {
                     let by = cmd.amount.trim_start_matches('+');
-                    let msg = if l1 == l2 { format!("Indented line {} by {} spaces.", l1 + 1, by) }
-                                    else { format!("Indented lines {}-{} by {} spaces.", l1 + 1, l2 + 1, by) };
+                    let msg = if l1 == l2 {
+                        format!("Indented line {} by {} spaces.", l1 + 1, by)
+                    } else {
+                        format!("Indented lines {}-{} by {} spaces.", l1 + 1, l2 + 1, by)
+                    };
                     crate::output::write_success_line(ctx, &msg).map_err(HashlineError::from)?;
                 }
                 _ => {}
@@ -43,46 +64,55 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
-        if !cmd.range.is_empty() && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none() {
-            let parts: Vec<&str> = cmd.range.split("..").collect();
-            if let Some(first) = parts.first().and_then(|a| try_parse_line_anchor(a)) {
-                let (l1, h1) = first;
-                let (l2, _) = parts.get(1).and_then(|a| try_parse_line_anchor(a)).unwrap_or((l1, h1));
-                let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
-                let raw = std::fs::read_to_string(&cmd.file)?;
-                let ht = raw.lines().any(|l| l.starts_with('\t'));
-                let hs = raw.lines().any(|l| l.starts_with(' '));
-                if ht && hs { /* fall through */ }
-                else {
-                    if amt < 0 {
-                        let fl: Vec<&str> = raw.lines().collect();
-                        for li in l1..=l2.min(fl.len().saturating_sub(1)) {
-                            let lead = fl[li].chars().take_while(|c| *c == ' ').count();
-                            if (lead as isize) < -amt {
-                                return Err(HashlineError::IndentUnderflow {
-                            line_no: li + 1, amount: (-amt) as usize, available: lead, kind: "spaces",
-                                });
-                            }
+    if !cmd.range.is_empty() && !cmd.dry_run && !cmd.receipt && cmd.audit_log.is_none() {
+        let parts: Vec<&str> = cmd.range.split("..").collect();
+        if let Some(first) = parts.first().and_then(|a| try_parse_line_anchor(a)) {
+            let (l1, h1) = first;
+            let (l2, _) = parts
+                .get(1)
+                .and_then(|a| try_parse_line_anchor(a))
+                .unwrap_or((l1, h1));
+            let amt: isize = cmd.amount.trim_start_matches('+').parse().unwrap_or(0);
+            let raw = std::fs::read_to_string(&cmd.file)?;
+            let ht = raw.lines().any(|l| l.starts_with('\t'));
+            let hs = raw.lines().any(|l| l.starts_with(' '));
+            if ht && hs { /* fall through */
+            } else {
+                if amt < 0 {
+                    let fl: Vec<&str> = raw.lines().collect();
+                    for li in l1..=l2.min(fl.len().saturating_sub(1)) {
+                        let lead = fl[li].chars().take_while(|c| *c == ' ').count();
+                        if (lead as isize) < -amt {
+                            return Err(HashlineError::IndentUnderflow {
+                                line_no: li + 1,
+                                amount: (-amt) as usize,
+                                available: lead,
+                                kind: "spaces",
+                            });
                         }
                     }
-                    let nc = crate::fast::fast_indent_lines(&raw, l1, l2, h1, amt)?;
-                    crate::fast::atomic_write(&cmd.file, &nc)?;
-                    if let Ok(doc) = crate::document::Document::from_str(&cmd.file, &std::fs::read_to_string(&cmd.file)?) {
-                        ctx.modified_doc = Some(doc);
-                    }
-                    let by = cmd.amount.trim_start_matches('+');
-                    let msg = if l1 == l2 {
-                        format!("Indented line {} by {} spaces.", l1 + 1, by)
-                    } else {
-                        format!("Indented lines {}-{} by {} spaces.", l1 + 1, l2 + 1, by)
-                    };
-                    if ctx.output_mode() == OutputMode::Pretty {
-                        crate::output::write_success_line(ctx, &msg).map_err(HashlineError::from)?;
-                    }
-                    return Ok(());
                 }
+                let nc = crate::fast::fast_indent_lines(&raw, l1, l2, h1, amt)?;
+                crate::fast::atomic_write(&cmd.file, &nc)?;
+                if let Ok(doc) = crate::document::Document::from_str(
+                    &cmd.file,
+                    &std::fs::read_to_string(&cmd.file)?,
+                ) {
+                    ctx.modified_doc = Some(doc);
+                }
+                let by = cmd.amount.trim_start_matches('+');
+                let msg = if l1 == l2 {
+                    format!("Indented line {} by {} spaces.", l1 + 1, by)
+                } else {
+                    format!("Indented lines {}-{} by {} spaces.", l1 + 1, l2 + 1, by)
+                };
+                if ctx.output_mode() == OutputMode::Pretty {
+                    crate::output::write_success_line(ctx, &msg).map_err(HashlineError::from)?;
+                }
+                return Ok(());
             }
         }
+    }
     let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
