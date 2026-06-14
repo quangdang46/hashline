@@ -18,10 +18,6 @@ use crate::orchestration::{
     command_name, doctor_payload, index_payload, read_payload, verify_report,
 };
 use crate::session_cache::{CacheStats, SessionCache};
-use std::sync::mpsc;
-use std::time::Duration;
-
-use notify::{Config, EventKind, PollWatcher, RecursiveMode, Watcher};
 
 use crate::hash::full_hash_bytes;
 use crate::risk::{assess_command, blocked_assessment};
@@ -35,7 +31,6 @@ Preferred workflow:\n\
 3. Use hashline_find_block when one tight snippet is not enough structural context.\n\
 4. Call hashline_verify before risky grouped edits or when anchors may be stale.\n\
 5. Use hashline_edit, hashline_insert, hashline_delete, or hashline_patch for mutations once anchors are known.\n\
-6. Use hashline_watch_capabilities before assuming MCP supports a streaming watch loop.\n\
 \n\
 Treat stale anchors as safety signals. Re-read and retry with fresh anchors instead of guessing. Prefer mutation tools over repeated exploratory reads once you have the right anchors.";
 
@@ -324,8 +319,6 @@ pub fn dispatch_tool(
         "hashline_annotate" => tool_annotate(arguments, session),
         "hashline_explode" => tool_explode(arguments),
         "hashline_implode" => tool_implode(arguments),
-        "hashline_watch_capabilities" => tool_watch_capabilities(),
-        "hashline_watch" => tool_watch(arguments),
         "hashline_map" => tool_map(arguments),
         "hashline_symbol" => tool_symbol(arguments),
         "hashline_callees" => tool_callees(arguments),
@@ -334,7 +327,6 @@ pub fn dispatch_tool(
         "hashline_from_diff" => tool_from_diff(arguments, session),
         "hashline_replace" => tool_replace(arguments, session),
         "hashline_apply_diff" => tool_apply_diff(arguments, session),
-        "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
     }
 }
@@ -862,130 +854,6 @@ fn tool_implode(arguments: &Value) -> Result<Value, JsonRpcError> {
         result,
         &CacheStats::default(),
     ))
-}
-
-fn tool_watch_capabilities() -> Result<Value, JsonRpcError> {
-    let text = "hashline_watch on the CLI supports continuous (streaming) watch. Over MCP, only single-event watch is supported: hashline_watch waits for the next modification event and returns immediately. For continuous watching, use the CLI command `hashline watch <file>`.";
-
-    Ok(json!({
-        "command": "watch_capabilities",
-        "exit_code": 0,
-        "stdout": "",
-        "stderr": "",
-        "data": null,
-        "watch_capabilities": text,
-        "cache": { "used": false },
-    }))
-}
-
-fn tool_watch(arguments: &Value) -> Result<Value, JsonRpcError> {
-    let file: String = parse_arg(arguments, "file")?;
-    let continuous: bool = arguments
-        .get("continuous")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    if continuous {
-        return Err(tool_error(
-            -32602,
-            "continuous mode is not supported over MCP. Set continuous to false or omit it.",
-            None,
-        ));
-    }
-
-    let file_path = Path::new(&file);
-
-    // Verify file exists
-    if !file_path.exists() {
-        return Err(tool_error(
-            -32001,
-            &format!("file does not exist: {file}"),
-            None,
-        ));
-    }
-
-    let (tx, rx) = mpsc::channel();
-
-    let mut watcher = PollWatcher::new(
-        tx,
-        Config::default().with_poll_interval(Duration::from_millis(500)),
-    )
-    .map_err(|e| tool_error(-32603, &format!("failed to create PollWatcher: {e}"), None))?;
-
-    watcher
-        .watch(file_path, RecursiveMode::NonRecursive)
-        .map_err(|e| tool_error(-32603, &format!("failed to watch file: {e}"), None))?;
-
-    // Wait for one Modify event, timeout after 60 seconds
-    let timeout = Duration::from_secs(60);
-    let deadline = std::time::Instant::now() + timeout;
-
-    let event_opt = loop {
-        let remaining = deadline
-            .checked_duration_since(std::time::Instant::now())
-            .unwrap_or_default();
-
-        if remaining.is_zero() {
-            break None;
-        }
-
-        match rx.recv_timeout(remaining) {
-            Ok(Ok(event)) => {
-                if matches!(event.kind, EventKind::Modify(_)) {
-                    break Some(event);
-                }
-                // Ignore non-modify events and continue waiting
-            }
-            Ok(Err(e)) => {
-                return Err(tool_error(-32603, &format!("watch error: {e}"), None));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                break None;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                break None;
-            }
-        }
-    };
-
-    // Drop watcher to stop watching
-    drop(watcher);
-
-    match event_opt {
-        Some(event) => {
-            let paths: Vec<String> = event
-                .paths
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-            let kind = format!("{:?}", event.kind);
-            Ok(json!({
-                "command": "watch",
-                "exit_code": 0,
-                "stdout": "",
-                "stderr": "",
-                "data": {
-                    "kind": kind,
-                    "paths": paths,
-                    "file": file,
-                },
-                "cache": { "used": false },
-            }))
-        }
-        None => Ok(json!({
-            "command": "watch",
-            "exit_code": 0,
-            "stdout": "",
-            "stderr": "",
-            "data": {
-                "kind": null,
-                "paths": [],
-                "file": file,
-                "message": "no change detected within 60 seconds",
-            },
-            "cache": { "used": false },
-        })),
-    }
 }
 
 fn tool_map(arguments: &Value) -> Result<Value, JsonRpcError> {
@@ -2044,74 +1912,6 @@ fn tool_apply_diff(arguments: &Value, session: &mut SessionCache) -> Result<Valu
     ))
 }
 
-fn tool_merge_patches(
-    arguments: &Value,
-    _session: &mut SessionCache,
-) -> Result<Value, JsonRpcError> {
-    let patch_a: String = parse_arg(arguments, "patch_a")?;
-    let patch_b: String = parse_arg(arguments, "patch_b")?;
-    let base: String = parse_arg(arguments, "base")?;
-
-    let ops_a: Vec<Value> = std::fs::read_to_string(&patch_a)
-        .map_err(|e| tool_error(-32603, &format!("cannot read patch_a: {e}"), None))
-        .and_then(|text| {
-            serde_json::from_str(&text)
-                .map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_a: {e}"), None))
-        })
-        .unwrap_or_default();
-    let ops_b: Vec<Value> = std::fs::read_to_string(&patch_b)
-        .map_err(|e| tool_error(-32603, &format!("cannot read patch_b: {e}"), None))
-        .and_then(|text| {
-            serde_json::from_str(&text)
-                .map_err(|e| tool_error(-32603, &format!("invalid JSON in patch_b: {e}"), None))
-        })
-        .unwrap_or_default();
-
-    // Simple merge: detect conflicting anchors
-    let mut conflicts: Vec<Value> = Vec::new();
-    let anchors_a: std::collections::HashSet<String> = ops_a
-        .iter()
-        .filter_map(|op| {
-            op.get("anchor")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-    let mut merged: Vec<Value> = ops_a.clone();
-
-    for op in &ops_b {
-        let anchor = op
-            .get("anchor")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        match anchor {
-            Some(ref a) if anchors_a.contains(a) => {
-                conflicts.push(json!({
-                    "anchor": a,
-                    "op_a": null,
-                    "op_b": op,
-                }));
-            }
-            _ => {
-                merged.push(op.clone());
-            }
-        }
-    }
-
-    Ok(json!({
-        "command": "merge_patches",
-        "exit_code": if conflicts.is_empty() { 0 } else { 1 },
-        "stdout": "",
-        "stderr": "",
-        "data": {
-            "base": base,
-            "merged_ops": merged,
-            "conflicts": conflicts,
-        },
-        "cache": { "used": false },
-    }))
-}
-
 pub fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
@@ -2282,14 +2082,6 @@ pub fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
-            "hashline_watch_capabilities",
-            "Explain the current watch capability split: the CLI supports continuous watch, while MCP supports only single-event watch calls today.",
-            json!({
-                "type": "object",
-                "properties": {}
-            }),
-        ),
-        tool(
             "hashline_find_block",
             "Find a likely structural block around an anchor.",
             json!({
@@ -2393,32 +2185,6 @@ pub fn tool_definitions() -> Vec<Value> {
                     "diff": string_schema("Unified diff content string to apply.")
                 },
                 "required": ["file", "diff"]
-            }),
-        ),
-        tool(
-            "hashline_merge_patches",
-            "Merge two patch files against the same base file.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "patch_a": string_schema("First patch file."),
-                    "patch_b": string_schema("Second patch file."),
-                    "base": string_schema("Base file path.")
-                },
-                "required": ["patch_a", "patch_b", "base"]
-            }),
-        ),
-        tool(
-            "hashline_watch",
-            "Watch once for the next hash diff event on a file. Continuous mode is intentionally disabled over MCP.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "file": string_schema("Target file path."),
-                    "once": bool_schema("Ignored; MCP always performs a single event wait."),
-                    "continuous": bool_schema("Must be false or omitted.")
-                },
-                "required": ["file"]
             }),
         ),
         tool(
@@ -3389,43 +3155,6 @@ mod tests {
         ))?;
 
         assert_eq!(error.code, -32001);
-        Ok(())
-    }
-
-    #[test]
-    fn watch_capabilities_tool_returns_text() -> Result<()> {
-        let result = must(dispatch_tool(
-            "hashline_watch_capabilities",
-            &json!({}),
-            &mut SessionCache::new(128),
-        ))?;
-
-        assert_eq!(result["exit_code"], 0);
-        let text = result["watch_capabilities"]
-            .as_str()
-            .ok_or_else(|| anyhow!("expected string"))?;
-        assert!(text.contains("CLI"));
-        assert!(text.contains("MCP"));
-        Ok(())
-    }
-
-    #[test]
-    fn watch_tool_rejects_continuous() -> Result<()> {
-        let dir = must(TempDir::new())?;
-        let path = dir.path().join("demo.txt");
-        write_text(&path, "content\n")?;
-
-        let error = must_err(dispatch_tool(
-            "hashline_watch",
-            &json!({
-                "file": path,
-                "continuous": true,
-            }),
-            &mut SessionCache::new(128),
-        ))?;
-
-        assert_eq!(error.code, -32602);
-        assert!(error.message.contains("continuous mode"));
         Ok(())
     }
 
