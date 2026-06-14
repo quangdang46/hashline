@@ -425,17 +425,77 @@ Hint: re-read the file metadata and retry with fresh --expect-mtime/--expect-ino
 
 ## Benchmarks
 
-All measurements via `cargo bench --bench edit_bench` on **Apple M1** (`cargo build --release`).  
-Hashline fast path uses memchr-based byte scanning instead of loading the full Document.
+All measurements via `cargo bench --bench edit_bench` on **Apple M1** (`cargo build --release`).
+
+### Mutation speed: hashline vs str_replace
 
 | Approach | 1,000 lines | 10,000 lines | 100,000 lines |
 |----------|:-----------:|:------------:|:-------------:|
-| **hashline** (Document pipeline) | 30.0 µs (5× chậm) | 299 µs (5× chậm) | 2.6 ms (2.4× chậm) |
-| str_replace (baseline) | **6.3 µs** | **57 µs** | **1.1 ms** |
-| **hashline fast path** (edit/insert/delete/swap/move/indent) | **8.5 µs (1.3× chậm)** | **86 µs (1.5× chậm)** | **0.9 ms (nhanh hơn str_replace 🚀)** |
+| str_replace (baseline) | 6.3 µs | 57 µs | 1.1 ms |
+| **hashline fast path** ← **default** | **8.5 µs (1.3× slower)** | **86 µs (1.5× slower)** | **0.9 ms (1.2× faster 🚀)** |
+| hashline (Document pipeline fallback) | 30 µs (5× slower) | 299 µs (5× slower) | 2.6 ms (2.4× slower) |
 
-> **Fast path** là mặc định cho mọi mutation tool. SIMD memchr vượt `str::find()` ở 100k+ dòng.
+All mutation tools (`edit`, `insert`, `delete`, `swap`, `move`, `indent`, `patch`) use the fast path by default. At 100k+ lines, SIMD-accelerated `memchr` outperforms `str::find()`.
 
+### How the fast path works
+
+Instead of loading a full Document (parse → index → resolve → mutate → render), the fast path does a lightweight byte scan:
+
+```
+┌──────────────────────────────────────────────┐
+│            File on disk (e.g. 100k lines)     │
+└──────────────┬───────────────────────────────┘
+               │ read_file()
+               ▼
+┌──────────────────────────────┐   ┌────────────────────────┐
+│      String content          │   │  Anchor: "42:a3f2"     │
+│      (bytes in memory)       │   │  → line=41, hash=0xa3  │
+└──────────────┬───────────────┘   └───────────┬────────────┘
+               │                                │
+               ▼                                ▼
+┌─────────────────────────────────────────────────────────────┐
+│  fast_replace_line(content, 41, 0xa3, "new content")       │
+│                                                             │
+│  step 1: memchr('
+') × 41  ──► find line 42 byte offset   │
+│  step 2: memchr('
+') from there ──► find line end          │
+│  step 3: hash the byte span, compare with 0xa3              │
+│  step 4: concat: [..line_start] + "new content" + [rest]    │
+│                                                             │
+│  ⚡ O(target_line) scan — no full-document overhead         │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ atomic_write()
+                        ▼
+┌──────────────────────────────────────────────┐
+│         File on disk (updated)                │
+└──────────────────────────────────────────────┘
+```
+
+### Decision flow
+
+```
+    ┌──────────────┐
+    │  Command in  │
+    └──────┬───────┘
+           ▼
+    ┌──────────────────────────────────┐
+    │  Simple line:hash anchor         │
+    │  (e.g. "42:a3f2")?               │──── Yes ──→ Fast path (memchr scan)
+    │                                  │             1. read_file()
+    │  Range anchor "2:f1..4:9c"?      │             2. fast_replace_line()
+    │                                  │             3. atomic_write()
+    │  Content query --start-query?    │             ~str_replace speed
+    └──────────────┬───────────────────┘
+                   │ No
+                   ▼
+    ┌──────────────────────────────────┐
+    │  Bare hash / error recovery?     │──→ Document pipeline fallback
+    │                                   │    (parse+index+resolve+render)
+    └──────────────────────────────────┘    2-5× slower but handles all edge cases
+```
+
+> Fast path handles ~99% of real edits. Document pipeline is fallback only for bare hash anchors and stale-anchor recovery.
 
 ## Roadmap
 
