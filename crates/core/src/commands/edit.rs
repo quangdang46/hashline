@@ -1,6 +1,8 @@
 use std::io::Write;
 
-use crate::anchor::{looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_range};
+use crate::anchor::{
+    looks_like_range_anchor, parse_anchor, parse_range, resolve, resolve_query_region, resolve_range,
+};
 use crate::cli::EditCmd;
 use memmap2::Mmap;
 
@@ -10,7 +12,8 @@ use crate::commands::common::{
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::HashlineError;
-use crate::mutation::{replace_line, replace_range, split_content_lines};
+use crate::hash_cache::discover_sidecar_root;
+use crate::mutation::{replace_line, replace_range, split_content_lines, stream_replace_line};
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -18,7 +21,12 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: EditCmd,
 ) -> Result<(), HashlineError> {
-    let mut doc = Document::load(&cmd.file)?;
+    if cmd.streaming {
+        return run_streaming(ctx, cmd);
+    }
+
+    let root = discover_sidecar_root(&cmd.file);
+    let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
@@ -30,45 +38,68 @@ pub fn run<W: Write, E: Write>(
     };
 
     let index = doc.build_index();
-    let summary = match looks_like_range_anchor(&cmd.anchor) {
-        true => {
-            let range = parse_range(&cmd.anchor)?;
-            let (start, end) = resolve_range(&range, &doc, &index)?;
-            let before = doc.lines[start.index..=end.index]
-                .iter()
-                .map(|line| line.content.to_string())
-                .collect::<Vec<_>>();
-            let after = split_content_lines(&content);
-            replace_range(&mut doc, start.index, end.index, &content)?;
-            EditSummary::Range {
-                start_line: start.line_no,
-                end_line: end.line_no,
-                before,
-                after: after.iter().map(|s| s.to_string()).collect(),
-            }
+    let summary = if let Some(_) = cmd.start_query {
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
+        let start_idx = region.start_line - 1;
+        let end_idx = region.end_line - 1;
+        let before = doc.lines[start_idx..=end_idx]
+            .iter()
+            .map(|line| line.content.to_string())
+            .collect::<Vec<_>>();
+        let after = split_content_lines(&content);
+        replace_range(&mut doc, start_idx, end_idx, &content)?;
+        EditSummary::Range {
+            start_line: region.start_line,
+            end_line: region.end_line,
+            before,
+            after: after.iter().map(|s| s.to_string()).collect(),
         }
-        false => {
-            let anchor = parse_anchor(&cmd.anchor)?;
-            let resolved = resolve(&anchor, &doc, &index)?;
-            let before = doc.lines[resolved.index].content.to_string();
-            if content.contains(['\n', '\r']) {
-                // Replacement content spans multiple lines; treat the single
-                // anchor as a one-line range so callers can expand a single
-                // line into many without explicitly writing `H..H`.
-                let after_lines = split_content_lines(&content);
-                replace_range(&mut doc, resolved.index, resolved.index, &content)?;
+    } else {
+        match looks_like_range_anchor(&cmd.anchor) {
+            true => {
+                let range = parse_range(&cmd.anchor)?;
+                let (start, end) = resolve_range(&range, &doc, &index)?;
+                let before = doc.lines[start.index..=end.index]
+                    .iter()
+                    .map(|line| line.content.to_string())
+                    .collect::<Vec<_>>();
+                let after = split_content_lines(&content);
+                replace_range(&mut doc, start.index, end.index, &content)?;
                 EditSummary::Range {
-                    start_line: resolved.line_no,
-                    end_line: resolved.line_no,
-                    before: vec![before],
-                    after: after_lines.iter().map(|s| s.to_string()).collect(),
-                }
-            } else {
-                replace_line(&mut doc, resolved.index, &content)?;
-                EditSummary::Single {
-                    line_no: resolved.line_no,
+                    start_line: start.line_no,
+                    end_line: end.line_no,
                     before,
-                    after: content,
+                    after: after.iter().map(|s| s.to_string()).collect(),
+                }
+            }
+            false => {
+                let anchor = parse_anchor(&cmd.anchor)?;
+                let resolved = resolve(&anchor, &doc, &index)?;
+                let before = doc.lines[resolved.index].content.to_string();
+                if content.contains(['\n', '\r']) {
+                    // Replacement content spans multiple lines; treat the single
+                    // anchor as a one-line range so callers can expand a single
+                    // line into many without explicitly writing `H..H`.
+                    let after_lines = split_content_lines(&content);
+                    replace_range(&mut doc, resolved.index, resolved.index, &content)?;
+                    EditSummary::Range {
+                        start_line: resolved.line_no,
+                        end_line: resolved.line_no,
+                        before: vec![before],
+                        after: after_lines.iter().map(|s| s.to_string()).collect(),
+                    }
+                } else {
+                    replace_line(&mut doc, resolved.index, &content)?;
+                    EditSummary::Single {
+                        line_no: resolved.line_no,
+                        before,
+                        after: content,
+                    }
                 }
             }
         }
@@ -146,6 +177,85 @@ pub fn run<W: Write, E: Write>(
             };
             output::write_post_edit_snippet(ctx, &doc, first, last).map_err(HashlineError::from)?;
             Ok(())
+        }
+    }
+}
+
+/// Streaming edit path: reads the file line-by-line with BufReader instead
+/// of loading the full Document into memory. Requires a qualified anchor
+/// (line:hash) and single-line content.
+///
+/// No post-mutation cache is populated since the full document was never
+/// loaded. This saves significant memory on files over 100k lines.
+fn run_streaming<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    cmd: EditCmd,
+) -> Result<(), HashlineError> {
+    // Streaming mode only supports qualified line:hash anchors (not raw hashes or ranges).
+    if looks_like_range_anchor(&cmd.anchor) {
+        return Err(HashlineError::InvalidAnchor {
+            anchor: cmd.anchor,
+        });
+    }
+
+    let anchor = parse_anchor(&cmd.anchor)?;
+    let (line_no, short) = match anchor {
+        crate::anchor::Anchor::LineHash { line, short } => (line, short),
+        _ => {
+            return Err(HashlineError::InvalidAnchor {
+                anchor: cmd.anchor,
+            })
+        }
+    };
+    // line_no is 1-indexed; convert to 0-indexed.
+    let target_line = line_no.checked_sub(1).ok_or_else(|| {
+        HashlineError::InvalidAnchor {
+            anchor: cmd.anchor.clone(),
+        }
+    })?;
+
+    let content = if cmd.interpret_escapes {
+        interpret_escapes(&cmd.content)
+    } else {
+        cmd.content
+    };
+
+    // Streaming mode requires single-line content.
+    if content.contains(['\n', '\r']) {
+        return Err(HashlineError::MultiLineContentUnsupported);
+    }
+
+    // Determine newline style and trailing-newline flag via a lightweight
+    // streaming scan that avoids loading the full file.
+    let streaming_doc = crate::document::StreamingDocument::scan(&cmd.file)?;
+
+    if cmd.dry_run {
+        let summary = EditSummary::Single {
+            line_no,
+            before: "(streaming)".to_owned(),
+            after: content.clone(),
+        };
+        return write_dry_run(ctx, &cmd.file, &summary);
+    }
+
+    stream_replace_line(
+        &cmd.file,
+        target_line,
+        &content,
+        short,
+        streaming_doc.newline,
+        streaming_doc.trailing_newline,
+    )?;
+
+    // No post-mutation cache since the Document was never loaded.
+    // ctx.modified_doc remains None, matching the trade-off of memory
+    // over convenience.
+
+    match ctx.output_mode() {
+        OutputMode::Json | OutputMode::Ndjson => Ok(()),
+        OutputMode::Pretty => {
+            output::write_success_line(ctx, &format!("Edited line {line_no}."))
+                .map_err(HashlineError::from)
         }
     }
 }

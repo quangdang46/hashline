@@ -84,6 +84,8 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Stats(cmd) => flag_mode(cmd.json),
         Commands::Doctor(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
+        Commands::ApplyDiff(cmd) => flag_mode(cmd.json),
+        Commands::Batch(cmd) => flag_mode(cmd.json),
         Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => {
             OutputMode::Pretty
         }
@@ -107,6 +109,8 @@ pub fn json_pretty_for(command: &Commands) -> bool {
         Commands::Stats(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Doctor(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::FindBlock(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::ApplyDiff(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Batch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
         Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => false,
     }
 }
@@ -151,6 +155,7 @@ mod tests {
             pretty: false,
             ndjson: false,
             no_cache: false,
+            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -169,6 +174,9 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             interpret_escapes: false,
+            streaming: false,
+            start_query: None,
+            end_query: None,
             json: false,
             pretty: false,
         });
@@ -189,6 +197,8 @@ mod tests {
             expect_mtime: None,
             expect_inode: None,
             interpret_escapes: false,
+            start_query: None,
+            end_query: None,
             json: true,
             pretty: false,
         });
@@ -224,6 +234,8 @@ mod tests {
             audit_log: None,
             expect_mtime: None,
             expect_inode: None,
+            start_query: None,
+            end_query: None,
             json: true,
             pretty: false,
         });
@@ -253,6 +265,7 @@ mod tests {
             pretty: true,
             ndjson: false,
             no_cache: false,
+            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
@@ -269,6 +282,7 @@ mod tests {
             pretty: true,
             ndjson: false,
             no_cache: false,
+            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
@@ -285,6 +299,7 @@ mod tests {
             pretty: true,
             ndjson: true,
             no_cache: false,
+            compact: false,
         });
 
         // ndjson wins over json/pretty

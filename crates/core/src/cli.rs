@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use crate::commands::batch::EditOp;
 
 fn default_context() -> usize {
     5
@@ -36,6 +37,8 @@ pub enum Commands {
     Stats(StatsCmd),
     Doctor(DoctorCmd),
     FindBlock(FindBlockCmd),
+    ApplyDiff(DiffApplyCmd),
+    Batch(BatchCmd),
     Serve(ServeCmd),
     Mcp(McpCmd),
 }
@@ -68,11 +71,21 @@ pub struct ReadCmd {
     #[serde(default)]
     #[arg(long)]
     pub no_cache: bool,
+    /// Omit the hash column from output. Hash is still computed internally for
+    /// anchor safety; just not displayed.
+    #[serde(default)]
+    #[arg(long)]
+    pub compact: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 pub struct IndexCmd {
     pub file: PathBuf,
+    /// Omit the hash column from output. Hash is still computed internally for
+    /// anchor safety; just not displayed.
+    #[serde(default)]
+    #[arg(long)]
+    pub compact: bool,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
@@ -112,6 +125,21 @@ pub struct EditCmd {
     #[serde(default)]
     #[arg(short = 'e', long)]
     pub interpret_escapes: bool,
+    /// Stream the file line-by-line with BufReader instead of loading the
+    /// entire Document into memory. Requires a qualified anchor (line:hash)
+    /// and single-line content. No post-mutation cache is populated.
+    /// Saves significant memory on files over 100k lines.
+    #[serde(default)]
+    #[arg(long)]
+    pub streaming: bool,
+    /// Content query to find the anchor line (mutually exclusive with anchor).
+    #[serde(default)]
+    #[arg(long)]
+    pub start_query: Option<String>,
+    /// Content query to find the end line (only with --start-query; for insert this determines placement).
+    #[serde(default)]
+    #[arg(long)]
+    pub end_query: Option<String>,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
@@ -146,6 +174,14 @@ pub struct InsertCmd {
     #[serde(default)]
     #[arg(short = 'e', long)]
     pub interpret_escapes: bool,
+    /// Content query to find the anchor line (mutually exclusive with anchor).
+    #[serde(default)]
+    #[arg(long)]
+    pub start_query: Option<String>,
+    /// Content query to find the end line (only with --start-query; for insert this determines placement).
+    #[serde(default)]
+    #[arg(long)]
+    pub end_query: Option<String>,
     #[serde(default)]
     #[arg(long)]
     pub json: bool,
@@ -178,6 +214,14 @@ pub struct DeleteCmd {
     #[serde(default)]
     #[arg(long)]
     pub pretty: bool,
+        /// Content query to find the start line of the target range (mutually exclusive with anchor).
+    #[serde(default)]
+    #[arg(long)]
+    pub start_query: Option<String>,
+    /// Content query to find the end line of the target range (only with --start-query).
+    #[serde(default)]
+    #[arg(long)]
+    pub end_query: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
@@ -420,6 +464,59 @@ pub struct FindBlockCmd {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
+    about = "Apply a unified diff to a file",
+    long_about = "Accept a unified diff content string (or read from stdin) and apply it to the target file. Each hunk is matched against current file content; unmatched hunks are reported as conflicts. Atomic: all hunks or none."
+)]
+pub struct DiffApplyCmd {
+    pub file: PathBuf,
+    /// Diff content as a string. If not provided, reads from stdin.
+    #[serde(default)]
+    #[arg(long)]
+    pub diff: Option<String>,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(
+    about = "Apply multiple edits in a single atomic batch",
+    long_about = "Apply multiple edits (replace, insert-after, delete, range) to the same file in a single read+hash+write pass. All anchors are validated before any mutation. Edits are applied bottom-up so line numbers remain stable. If any anchor is stale, the entire batch fails with no side effects."
+)]
+pub struct BatchCmd {
+    pub file: PathBuf,
+    /// JSON array of edit operations. Each op has `{type, anchor, content?}`.
+    /// Types: "replace", "insertAfter", "delete", "range".
+    #[serde(default, deserialize_with = "deserialize_edits")]
+    #[arg(long, value_parser = parse_edits_json)]
+    pub edits: Vec<EditOp>,
+    #[serde(default)]
+    #[arg(long)]
+    pub dry_run: bool,
+    #[serde(default)]
+    #[arg(long)]
+    pub receipt: bool,
+    #[arg(long)]
+    pub audit_log: Option<PathBuf>,
+    #[arg(long)]
+    pub expect_mtime: Option<i64>,
+    #[arg(long)]
+    pub expect_inode: Option<u64>,
+    #[serde(default)]
+    #[arg(long)]
+    pub json: bool,
+    /// Pretty-print JSON output (only takes effect with --json).
+    #[serde(default)]
+    #[arg(long)]
+    pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(
     about = "Run as an MCP server over stdio",
     long_about = "Run hashline as a JSON-RPC MCP server over stdio so agents can call the existing hashline feature set without shelling out."
 )]
@@ -450,4 +547,33 @@ pub struct ServeCmd {
     /// PID file path (default: ~/.hashline/daemon.pid).
     #[arg(long)]
     pub pid_file: Option<PathBuf>,
+}
+
+/// Deserialize `edits` from either a JSON array or a JSON string (which
+/// itself contains a JSON array).  This lets the MCP server pass the edits
+/// as a structured array while the CLI can accept them as `--edits '[...]'`.
+pub fn deserialize_edits<'de, D>(deserializer: D) -> Result<Vec<EditOp>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    // First try to deserialize as a json array
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Edits {
+        Array(Vec<EditOp>),
+        String(String),
+    }
+    let edits = Edits::deserialize(deserializer)?;
+    match edits {
+        Edits::Array(ops) => Ok(ops),
+        Edits::String(s) => {
+            serde_json::from_str(&s).map_err(de::Error::custom)
+        }
+    }
+}
+
+/// clap value parser: parse a JSON array string into `Vec<EditOp>`.
+pub fn parse_edits_json(s: &str) -> Result<Vec<EditOp>, String> {
+    serde_json::from_str(s).map_err(|e| e.to_string())
 }

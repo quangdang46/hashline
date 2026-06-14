@@ -140,6 +140,24 @@ pub enum HashlineError {
         unit: &'static str,
     },
 
+    #[error("query '{query}' not found in {path}")]
+    QueryNotFound { query: String, path: String },
+
+    #[error(
+        "query '{query}' matches {count} lines in {path} (lines {lines})"
+    )]
+    AmbiguousQuery {
+        query: String,
+        count: usize,
+        lines: String,
+        path: String,
+    },
+
+    #[error(
+        "query range covers {count} lines, exceeds maximum of {max}"
+    )]
+    QueryRangeTooLarge { count: usize, max: usize },
+
     /// Free-form error for the SHA-256 backward-compat module
     /// (`sha256_window`). Not used by the native xxh32 path.
     #[cfg(feature = "sha256-anchors")]
@@ -237,6 +255,15 @@ impl HashlineError {
             HashlineError::ServerError { .. } => {
                 Some("ensure the daemon is running with `hashline daemon`")
             }
+            HashlineError::QueryNotFound { .. } => {
+                Some("check the query text against the file content and retry")
+            }
+            HashlineError::AmbiguousQuery { .. } => {
+                Some("use a more specific query that matches exactly one line, or use an explicit anchor instead")
+            }
+            HashlineError::QueryRangeTooLarge { .. } => {
+                Some("narrow the query range by using a more specific start-query or end-query")
+            }
             HashlineError::Io(_) => {
                 Some("check the file path and permissions, then retry the command")
             }
@@ -284,7 +311,10 @@ impl HashlineError {
             | HashlineError::MultiLineContentUnsupported
             | HashlineError::MutationIndexOutOfBounds { .. }
             | HashlineError::InvalidMutationRange { .. }
-            | HashlineError::ServerError { .. } => None,
+            | HashlineError::ServerError { .. }
+            | HashlineError::QueryNotFound { .. }
+            | HashlineError::AmbiguousQuery { .. }
+            | HashlineError::QueryRangeTooLarge { .. } => None,
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => None,
         }
@@ -297,6 +327,13 @@ impl HashlineError {
                 | HashlineError::MutationIndexOutOfBounds { .. }
                 | HashlineError::InvalidMutationRange { .. }
         )
+    }
+
+    /// Returns `true` if this is a [`StaleAnchor`] error, meaning the
+    /// file content changed since the anchor was fetched. Retrying after
+    /// a forced re-read may resolve it.
+    pub fn is_stale_anchor(&self) -> bool {
+        matches!(self, HashlineError::StaleAnchor { .. })
     }
 }
 
@@ -400,6 +437,20 @@ mod tests {
             HashlineError::ServerError {
                 message: "connection refused".into(),
                 kind: "not_running".into(),
+            },
+            HashlineError::QueryNotFound {
+                query: "fn main".into(),
+                path: "demo.txt".into(),
+            },
+            HashlineError::AmbiguousQuery {
+                query: "println".into(),
+                count: 3,
+                lines: "5, 10, 15".into(),
+                path: "demo.txt".into(),
+            },
+            HashlineError::QueryRangeTooLarge {
+                count: 15000,
+                max: 10000,
             },
         ];
 

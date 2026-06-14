@@ -78,7 +78,8 @@ pub fn assess_command(command: &Commands) -> Option<RiskAssessment> {
                 },
             ],
         }),
-        Commands::Patch(_) => Some(RiskAssessment {
+        Commands::Patch(_)
+        | Commands::ApplyDiff(_) => Some(RiskAssessment {
             operation: "patch",
             level: RiskLevel::High,
             summary: "Patch can batch multiple edits, inserts, and deletes in one transaction.".into(),
@@ -160,6 +161,8 @@ mod tests {
             expect_inode: None,
             json: false,
             pretty: false,
+            start_query: None,
+            end_query: None,
         }))
         .unwrap();
 

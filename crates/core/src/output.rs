@@ -194,6 +194,57 @@ pub fn print_read(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
     Ok(())
 }
 
+/// Pretty text output without hash column. Each line is formatted as:
+///   N|content
+pub fn print_compact_read(
+    writer: &mut impl Write,
+    doc: &Document,
+    anchors: &[String],
+    context: usize,
+) -> io::Result<()> {
+    use crate::orchestration::resolve_read_anchors;
+    use std::collections::BTreeSet;
+
+    let mut number_buf = itoa::Buffer::new();
+    if anchors.is_empty() {
+        for (index, line) in doc.lines.iter().enumerate() {
+            let number = number_buf.format(index + 1);
+            writer.write_all(number.as_bytes())?;
+            writer.write_all(b"|")?;
+            writer.write_all(line.content.as_bytes())?;
+            writer.write_all(b"\n")?;
+        }
+    } else {
+        let resolved = resolve_read_anchors(doc, anchors)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let anchor_indexes: BTreeSet<usize> =
+            resolved.iter().map(|anchor| anchor.index).collect();
+        let included = collect_context_indexes(doc, &resolved, context);
+        let mut previous: Option<usize> = None;
+        for index in included {
+            if let Some(prev) = previous {
+                if index > prev + 1 {
+                    writer.write_all(b"...\n")?;
+                }
+            }
+            let marker: &[u8] = if anchor_indexes.contains(&index) {
+                "→".as_bytes()
+            } else {
+                b" "
+            };
+            let line = &doc.lines[index];
+            let number = number_buf.format(index + 1);
+            writer.write_all(marker)?;
+            writer.write_all(number.as_bytes())?;
+            writer.write_all(b"|")?;
+            writer.write_all(line.content.as_bytes())?;
+            writer.write_all(b"\n")?;
+            previous = Some(index);
+        }
+    }
+    Ok(())
+}
+
 pub fn print_read_json(
     writer: &mut impl Write,
     payload: &ReadPayload,
@@ -228,11 +279,16 @@ pub fn print_read_json_streaming(
     writer: &mut impl Write,
     doc: &Document,
     style: JsonStyle,
+    compact: bool,
 ) -> io::Result<()> {
     if style == JsonStyle::Pretty {
         // Pretty output is requested only for human inspection. Build a
         // full payload and let serde_json::to_writer_pretty do the work.
-        let payload = crate::orchestration::read_payload(doc, &[], 0)
+        if compact {
+            // Compact pretty path: use serde_json serialization of payload
+            // which skips hash via skip_serializing_if.
+        }
+        let payload = crate::orchestration::read_payload(doc, &[], 0, compact)
             .map_err(|err| io::Error::other(err.to_string()))?;
         return serialize_json(writer, &payload, style);
     }
@@ -271,11 +327,17 @@ pub fn print_read_json_streaming(
             writer.write_all(b",")?;
         }
         write_short_hash(&mut hash_buf, line.short_hash);
-        writer.write_all(b"{\"n\":")?;
-        writer.write_all(number_buf.format(index + 1).as_bytes())?;
-        writer.write_all(b",\"hash\":\"")?;
-        writer.write_all(&hash_buf)?;
-        writer.write_all(b"\",\"content\":")?;
+        if compact {
+            writer.write_all(b"{\"n\":")?;
+            writer.write_all(number_buf.format(index + 1).as_bytes())?;
+            writer.write_all(b",\"content\":")?;
+        } else {
+            writer.write_all(b"{\"n\":")?;
+            writer.write_all(number_buf.format(index + 1).as_bytes())?;
+            writer.write_all(b",\"hash\":\"")?;
+            writer.write_all(&hash_buf)?;
+            writer.write_all(b"\",\"content\":")?;
+        }
         write_json_string_fast(&mut *writer, line.content.as_ref())?;
         writer.write_all(b"}")?;
     }
@@ -286,7 +348,11 @@ pub fn print_read_json_streaming(
 
 /// Streaming variant of [`print_read_ndjson`] used when emitting the entire
 /// document. Same zero-clone strategy as `print_read_json_streaming`.
-pub fn print_read_ndjson_streaming(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
+pub fn print_read_ndjson_streaming(
+    writer: &mut impl Write,
+    doc: &Document,
+    compact: bool,
+) -> io::Result<()> {
     #[derive(Serialize)]
     struct ReadHeader<'a> {
         event: &'static str,
@@ -326,11 +392,17 @@ pub fn print_read_ndjson_streaming(writer: &mut impl Write, doc: &Document) -> i
         // content can take the fast escape path. The previous code went
         // via `serde_json::to_writer(&LineViewRef { ... })` which routes
         // through the byte-by-byte ESCAPE table for `content`.
-        writer.write_all(b"{\"n\":")?;
-        writer.write_all(number_buf.format(index + 1).as_bytes())?;
-        writer.write_all(b",\"hash\":\"")?;
-        writer.write_all(&hash_buf)?;
-        writer.write_all(b"\",\"content\":")?;
+        if compact {
+            writer.write_all(b"{\"n\":")?;
+            writer.write_all(number_buf.format(index + 1).as_bytes())?;
+            writer.write_all(b",\"content\":")?;
+        } else {
+            writer.write_all(b"{\"n\":")?;
+            writer.write_all(number_buf.format(index + 1).as_bytes())?;
+            writer.write_all(b",\"hash\":\"")?;
+            writer.write_all(&hash_buf)?;
+            writer.write_all(b"\",\"content\":")?;
+        }
         write_json_string_fast(&mut *writer, &line.content)?;
         writer.write_all(b"}")?;
         writeln!(writer)?;
@@ -389,16 +461,24 @@ pub fn print_read_context(
     Ok(())
 }
 
-pub fn print_index(writer: &mut impl Write, doc: &Document) -> io::Result<()> {
+pub fn print_index(writer: &mut impl Write, doc: &Document, compact: bool) -> io::Result<()> {
     let mut number_buf = itoa::Buffer::new();
-    let mut hash_buf = [0u8; 2];
-    for (index, line) in doc.lines.iter().enumerate() {
-        let number = number_buf.format(index + 1);
-        writer.write_all(number.as_bytes())?;
-        writer.write_all(b":")?;
-        write_short_hash_bytes(&mut hash_buf, line.short_hash);
-        writer.write_all(&hash_buf)?;
-        writer.write_all(b"\n")?;
+    if compact {
+        for (index, _) in doc.lines.iter().enumerate() {
+            let number = number_buf.format(index + 1);
+            writer.write_all(number.as_bytes())?;
+            writer.write_all(b":\n")?;
+        }
+    } else {
+        let mut hash_buf = [0u8; 2];
+        for (index, line) in doc.lines.iter().enumerate() {
+            let number = number_buf.format(index + 1);
+            writer.write_all(number.as_bytes())?;
+            writer.write_all(b":")?;
+            write_short_hash_bytes(&mut hash_buf, line.short_hash);
+            writer.write_all(&hash_buf)?;
+            writer.write_all(b"\n")?;
+        }
     }
     Ok(())
 }
@@ -786,8 +866,9 @@ fn collect_context_indexes(doc: &Document, anchors: &[ResolvedLine], context: us
 #[cfg(test)]
 mod tests {
     use super::{
-        JsonStyle, print_index, print_index_json, print_read, print_read_context, print_read_json,
-        print_read_json_streaming, print_stats, print_stats_json,
+        JsonStyle, print_compact_read, print_index, print_index_json, print_read,
+        print_read_context, print_read_json, print_read_json_streaming,
+        print_read_ndjson_streaming, print_stats, print_stats_json,
     };
     use crate::anchor::ResolvedLine;
     use crate::document::{Document, FileStats, format_short_hash};
@@ -943,7 +1024,7 @@ mod tests {
     fn test_index_format_no_content() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
         let mut out = Vec::new();
-        print_index(&mut out, &doc).unwrap();
+        print_index(&mut out, &doc, false).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             format!(
@@ -985,7 +1066,7 @@ mod tests {
     fn test_read_json_valid() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
         let mut out = Vec::new();
-        let payload = read_payload(&doc, &[], 0).unwrap();
+        let payload = read_payload(&doc, &[], 0, false).unwrap();
         print_read_json(&mut out, &payload, JsonStyle::Compact).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed["file"], "demo.txt");
@@ -1008,7 +1089,7 @@ mod tests {
     fn test_read_json_pretty_emits_multiline() {
         let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
         let mut out = Vec::new();
-        let payload = read_payload(&doc, &[], 0).unwrap();
+        let payload = read_payload(&doc, &[], 0, false).unwrap();
         print_read_json(&mut out, &payload, JsonStyle::Pretty).unwrap();
         let rendered = String::from_utf8(out).unwrap();
         // Pretty-printed JSON spans multiple lines with two-space indentation.
@@ -1073,10 +1154,10 @@ mod tests {
         let doc = numbered_doc(7);
 
         let mut streamed = Vec::new();
-        print_read_json_streaming(&mut streamed, &doc, JsonStyle::Compact).unwrap();
+        print_read_json_streaming(&mut streamed, &doc, JsonStyle::Compact, false).unwrap();
         let streamed_val: serde_json::Value = serde_json::from_slice(&streamed).unwrap();
 
-        let payload = read_payload(&doc, &[], 0).unwrap();
+        let payload = read_payload(&doc, &[], 0, false).unwrap();
         let mut payload_bytes = Vec::new();
         print_read_json(&mut payload_bytes, &payload, JsonStyle::Compact).unwrap();
         let payload_val: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
@@ -1093,7 +1174,7 @@ mod tests {
         let doc = Document::from_str(Path::new("special.txt"), content).unwrap();
 
         let mut streamed = Vec::new();
-        print_read_json_streaming(&mut streamed, &doc, JsonStyle::Compact).unwrap();
+        print_read_json_streaming(&mut streamed, &doc, JsonStyle::Compact, false).unwrap();
         let val: serde_json::Value = serde_json::from_slice(&streamed).unwrap();
         let lines = val["lines"].as_array().unwrap();
         assert_eq!(lines.len(), 3);
@@ -1109,13 +1190,68 @@ mod tests {
         let doc = numbered_doc(5);
 
         let mut streamed = Vec::new();
-        print_read_ndjson_streaming(&mut streamed, &doc).unwrap();
+        print_read_ndjson_streaming(&mut streamed, &doc, false).unwrap();
 
-        let payload = read_payload(&doc, &[], 0).unwrap();
+        let payload = read_payload(&doc, &[], 0, false).unwrap();
         let mut payload_bytes = Vec::new();
         print_read_ndjson(&mut payload_bytes, &payload).unwrap();
 
         assert_eq!(streamed, payload_bytes);
+    }
+
+    #[test]
+    fn test_compact_read_pretty_omits_hash() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let mut out = Vec::new();
+        print_compact_read(&mut out, &doc, &[], 0).unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // First line should be "1|alpha" not "1:xx|alpha"
+        assert_eq!(lines[0], "1|alpha");
+        assert_eq!(lines[1], "2|beta");
+        assert_eq!(lines[2], "3|gamma");
+    }
+
+    #[test]
+    fn test_compact_read_payload_omits_hash() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
+        let payload = read_payload(&doc, &[], 0, true).unwrap();
+        assert!(payload.lines[0].hash.is_empty());
+        assert!(payload.lines[1].hash.is_empty());
+        assert_eq!(payload.lines[0].content, "alpha");
+        assert_eq!(payload.lines[1].content, "beta");
+    }
+
+    #[test]
+    fn test_compact_read_json_streaming_omits_hash_field() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
+        let mut out = Vec::new();
+        print_read_json_streaming(&mut out, &doc, JsonStyle::Compact, true).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let lines = val["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 2);
+        // hash field should be absent
+        assert!(lines[0].get("hash").is_none());
+        assert!(lines[1].get("hash").is_none());
+        assert_eq!(lines[0]["content"], "alpha");
+        assert_eq!(lines[1]["content"], "beta");
+    }
+
+    #[test]
+    fn test_compact_read_ndjson_streaming_omits_hash_field() {
+        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
+        let mut out = Vec::new();
+        print_read_ndjson_streaming(&mut out, &doc, true).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        // Header line should contain "event":"header"
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(lines[0].contains("\"event\":\"header\""));
+        // Data lines should NOT contain "hash"
+        assert!(!lines[1].contains("\"hash\""));
+        assert!(!lines[2].contains("\"hash\""));
+        assert!(lines[1].contains("\"content\":\"alpha\""));
+        assert!(lines[2].contains("\"content\":\"beta\""));
     }
 }
 

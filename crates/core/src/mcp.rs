@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    AnnotateCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd, InsertCmd,
-    McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
+    AnnotateCmd, BatchCmd, Commands, DeleteCmd, DoctorCmd, EditCmd, GrepCmd, IndentCmd, IndexCmd,
+    InsertCmd, McpCmd, MoveCmd, PatchCmd, ReadCmd, StatsCmd, SwapCmd, VerifyCmd,
 };
 use crate::document::Document;
 use crate::error::HashlineError;
@@ -285,87 +285,52 @@ pub fn dispatch_tool(
         "hashline_read" => tool_read(arguments, session),
         "hashline_index" => tool_index(arguments, session),
         "hashline_edit" => {
-            let mut cmd: EditCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Edit(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_edit", session, &|a| {
+                let mut cmd: EditCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Edit(cmd)))
+            })
         }
         "hashline_insert" => {
-            let mut cmd: InsertCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Insert(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_insert", session, &|a| {
+                let mut cmd: InsertCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Insert(cmd)))
+            })
         }
         "hashline_delete" => {
-            let mut cmd: DeleteCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Delete(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_delete", session, &|a| {
+                let mut cmd: DeleteCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Delete(cmd)))
+            })
         }
         "hashline_verify" => tool_verify(arguments, session),
         "hashline_patch" => {
-            let mut cmd: PatchCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Patch(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_patch", session, &|a| {
+                let mut cmd: PatchCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Patch(cmd)))
+            })
         }
         "hashline_swap" => {
-            let cmd: SwapCmd = parse_args(arguments)?;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Swap(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_swap", session, &|a| {
+                let cmd: SwapCmd = parse_args(a)?;
+                Ok((cmd.file.clone(), Commands::Swap(cmd)))
+            })
         }
         "hashline_move" => {
-            let cmd: MoveCmd = parse_args(arguments)?;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Move(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_move", session, &|a| {
+                let cmd: MoveCmd = parse_args(a)?;
+                Ok((cmd.file.clone(), Commands::Move(cmd)))
+            })
         }
         "hashline_indent" => {
-            let mut cmd: IndentCmd = parse_args(arguments)?;
-            cmd.json = true;
-            let path = cmd.file.clone();
-            let (payload, modified_doc) = invoke_command(Commands::Indent(cmd))?;
-            if let Some(doc) = modified_doc {
-                session.after_mutation(&path, doc);
-            } else {
-                session.invalidate(&path);
-            }
-            Ok(payload)
+            dispatch_mutation(arguments, "hashline_indent", session, &|a| {
+                let mut cmd: IndentCmd = parse_args(a)?;
+                cmd.json = true;
+                Ok((cmd.file.clone(), Commands::Indent(cmd)))
+            })
         }
         "hashline_stats" => tool_stats(arguments, session),
         "hashline_doctor" => tool_doctor(arguments, session),
@@ -379,17 +344,83 @@ pub fn dispatch_tool(
         "hashline_symbol" => tool_symbol(arguments),
         "hashline_callees" => tool_callees(arguments),
         "hashline_find_block" => tool_find_block(arguments, session),
+        "hashline_batch_edit" => tool_batch_edit(arguments, session),
         "hashline_from_diff" => tool_from_diff(arguments, session),
+        "hashline_apply_diff" => tool_apply_diff(arguments, session),
         "hashline_merge_patches" => tool_merge_patches(arguments, session),
         _ => Err(tool_error(-32601, &format!("unknown tool: {tool}"), None)),
+    }
+}
+
+/// Helper for mutation tool dispatch with stale-anchor retry.
+///
+/// Calls `invoke_command` with the given command. If the command fails
+/// with a stale-anchor error (file content changed since anchor fetch),
+/// the session cache is invalidated and the command is retried once with
+/// a fresh file read. This avoids the agent having to manually re-read
+/// and retry.
+fn dispatch_mutation<F>(
+    arguments: &Value,
+    _tool_name: &str,
+    session: &mut SessionCache,
+    mk_cmd: &F,
+) -> Result<Value, JsonRpcError>
+where
+    F: Fn(&Value) -> Result<(PathBuf, Commands), JsonRpcError>,
+{
+    let (path, command) = mk_cmd(arguments)?;
+
+    // First attempt
+    match invoke_command(command) {
+        Ok((payload, Some(doc))) => {
+            session.after_mutation(&path, doc);
+            Ok(payload)
+        }
+        Ok((payload, None)) => {
+            session.invalidate(&path);
+            Ok(payload)
+        }
+        Err(err) => {
+            // Stale-anchor retry: if the anchor changed since last read,
+            // invalidate cache and retry once with a fresh file read.
+            let is_stale = err.code == -32001
+                && err.message.contains("content changed since last read");
+
+            if is_stale {
+                session.invalidate(&path);
+                let retry_path = path.clone();
+                let cmd2 = mk_cmd(arguments)?;
+                match invoke_command(cmd2.1) {
+                    Ok((payload, Some(doc))) => {
+                        session.after_mutation(&retry_path, doc);
+                        Ok(payload)
+                    }
+                    Ok((payload, _)) => {
+                        session.invalidate(&retry_path);
+                        Ok(payload)
+                    }
+                    Err(err2) => {
+                        session.invalidate(&retry_path);
+                        Err(err2)
+                    }
+                }
+            } else {
+                Err(err)
+            }
+        }
     }
 }
 
 fn tool_read(arguments: &Value, session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let cmd: ReadCmd = parse_args(arguments)?;
     session.set_no_cache(cmd.no_cache);
+
+    // get_or_load handles both sticky entries (just mutated, skip stat) and
+    // mtime-based cache hit/miss detection for external file changes.
     let entry = session.get_or_load(&cmd.file).map_err(command_error)?;
-    let data = read_payload(entry.doc(), &cmd.anchor, cmd.context).map_err(command_error)?;
+    let data =
+        read_payload(entry.doc(), &cmd.anchor, cmd.context, cmd.compact).map_err(command_error)?;
+
     Ok(success_payload(
         "read",
         0,
@@ -1893,6 +1924,37 @@ fn tool_find_block(arguments: &Value, session: &mut SessionCache) -> Result<Valu
     ))
 }
 
+fn tool_batch_edit(
+    arguments: &Value,
+    session: &mut SessionCache,
+) -> Result<Value, JsonRpcError> {
+    let cmd: BatchCmd = parse_args(arguments)?;
+    let path = cmd.file.clone();
+
+    // Use batch::batch_edit directly for the core logic.
+    let (modified_doc, receipt) =
+        crate::commands::batch::batch_edit(&path, cmd.edits).map_err(command_error)?;
+
+    session.after_mutation(&path, modified_doc);
+
+    let result = serde_json::to_value(&receipt).map_err(|error| {
+        tool_error(
+            -32603,
+            &format!("failed to serialize batch receipt: {error}"),
+            None,
+        )
+    })?;
+
+    Ok(json!({
+        "command": "batch_edit",
+        "exit_code": 0,
+        "stdout": "",
+        "stderr": "",
+        "data": result,
+        "cache": { "used": false },
+    }))
+}
+
 fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Value, JsonRpcError> {
     let file: String = parse_arg(arguments, "file")?;
     let diff: String = parse_arg(arguments, "diff")?;
@@ -1940,6 +2002,36 @@ fn tool_from_diff(arguments: &Value, _session: &mut SessionCache) -> Result<Valu
         },
         "cache": { "used": false },
     }))
+}
+
+fn tool_apply_diff(
+    arguments: &Value,
+    session: &mut SessionCache,
+) -> Result<Value, JsonRpcError> {
+    let file: String = parse_arg(arguments, "file")?;
+    let diff: String = parse_arg(arguments, "diff")?;
+
+    let path = std::path::Path::new(&file);
+    let receipt =
+        crate::commands::diff_apply::apply_diff(path, &diff).map_err(command_error)?;
+
+    let exit_code = if receipt.applied { 0 } else { 1 };
+
+    // Invalidate the session cache since the file changed
+    session.invalidate(path);
+
+    Ok(success_payload(
+        "apply_diff",
+        exit_code,
+        serde_json::to_value(&receipt).map_err(|error| {
+            tool_error(
+                -32603,
+                &format!("failed to serialize apply_diff receipt: {error}"),
+                None,
+            )
+        })?,
+        session.stats(),
+    ))
 }
 
 fn tool_merge_patches(
@@ -2096,7 +2188,9 @@ pub fn tool_definitions() -> Vec<Value> {
             json!({
                 "type": "object",
                 "properties": base_mutation_properties().into_iter().chain([
-                    ("anchor".to_string(), string_schema("Anchor or range to delete."))
+                    ("anchor".to_string(), string_schema("Anchor or range to delete.")),
+                    ("start_query".to_string(), string_schema("Content query to find the start line of the target range (alternative to anchor).")),
+                    ("end_query".to_string(), string_schema("Content query to find the end line of the target range (only with start_query).")),
                 ]).collect::<serde_json::Map<String, Value>>(),
                 "required": ["file", "anchor"]
             }),
@@ -2198,6 +2292,40 @@ pub fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
+            "hashline_batch_edit",
+            "Apply multiple edits to the same file in a single atomic pass. All anchors are validated before any mutation. If any anchor is stale, the entire batch fails with no side effects. Edits are applied bottom-up so line numbers remain stable. Use this instead of calling hashline_edit repeatedly when you need several changes on one file.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "edits": {
+                        "type": "array",
+                        "description": "Array of edit operations.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["replace", "insertAfter", "delete", "range"],
+                                    "description": "Edit operation type."
+                                },
+                                "anchor": {
+                                    "type": "string",
+                                    "description": "Line:hash anchor (e.g. '2:f1') or range anchor (e.g. '2:f1..4:9c' for range type)."
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Replacement or inserted content. Required for replace, insertAfter, and range types."
+                                }
+                            },
+                            "required": ["type", "anchor"]
+                        }
+                    }
+                },
+                "required": ["file", "edits"]
+            }),
+        ),
+        tool(
             "hashline_stats",
             "Compute collision and workflow guidance for a file.",
             json!({
@@ -2241,6 +2369,18 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "file": string_schema("Target file path."),
                     "diff": string_schema("Path to unified diff file.")
+                },
+                "required": ["file", "diff"]
+            }),
+        ),
+        tool(
+            "hashline_apply_diff",
+            "Apply a unified diff to a file with conflict reporting. Accepts diff content as a string (not a file path). Each hunk is matched against current file content; unmatched hunks are reported as conflicts. The operation is atomic: all hunks succeed or none are written.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": string_schema("Target file path."),
+                    "diff": string_schema("Unified diff content string to apply.")
                 },
                 "required": ["file", "diff"]
             }),
@@ -2400,6 +2540,14 @@ fn mutation_properties(anchor_key: &str, include_before: bool) -> serde_json::Ma
     properties.insert(
         "content".to_string(),
         string_schema("Replacement or inserted line content."),
+    );
+    properties.insert(
+        "start_query".to_string(),
+        string_schema("Content query to find the start line of the target range (alternative to anchor)."),
+    );
+    properties.insert(
+        "end_query".to_string(),
+        string_schema("Content query to find the end line of the target range (only with start_query)."),
     );
     if include_before {
         properties.insert(

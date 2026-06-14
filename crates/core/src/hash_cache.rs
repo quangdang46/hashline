@@ -8,12 +8,16 @@ const HASH_DIR: &str = ".hashline/hashes";
 // LHH2: hash function now strips trailing whitespace before hashing
 // (formerly LHH1 hashed raw line content, breaking anchors after
 // formatter runs).
-const MAGIC: &[u8] = b"LHH2";
+// LHH3: content_hash widened to u64 (xxh3) for collision resistance
+// at no extra CPU cost.
+const MAGIC: &[u8] = b"LHH3";
+const HDR_MAGIC: usize = 4;
+const HDR_FIXED: usize = 1 + 8 + 8 + 8 + 4; // version + mtime + size + content_hash + line_count
 
 pub struct HashSidecar {
     pub mtime_secs: u64,
     pub size: u64,
-    pub content_hash: u32,
+    pub content_hash: u64,
     pub short_hashes: Vec<u8>,
 }
 
@@ -39,7 +43,8 @@ impl HashSidecar {
 
         let mut temp = NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
 
-        let mut buf = Vec::with_capacity(29 + self.short_hashes.len());
+        let hdr = HDR_MAGIC + HDR_FIXED;
+        let mut buf = Vec::with_capacity(hdr + self.short_hashes.len());
         buf.extend_from_slice(MAGIC);
         buf.push(1);
         buf.extend_from_slice(&self.mtime_secs.to_le_bytes());
@@ -64,21 +69,24 @@ impl HashSidecar {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
 
-        if buf.len() < 29 || &buf[0..4] != MAGIC {
+        if buf.len() < HDR_MAGIC + HDR_FIXED || &buf[0..4] != b"LHH3" {
             return Err(io::Error::other("invalid hash sidecar"));
         }
 
         let _version = buf[4];
-        let mtime_secs = u64::from_le_bytes(buf[5..13].try_into().unwrap());
-        let size = u64::from_le_bytes(buf[13..21].try_into().unwrap());
-        let content_hash = u32::from_le_bytes(buf[21..25].try_into().unwrap());
-        let line_count = u32::from_le_bytes(buf[25..29].try_into().unwrap()) as usize;
+        let off = HDR_MAGIC + 1;
+        let mtime_secs = u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
+        let size = u64::from_le_bytes(buf[off + 8..off + 16].try_into().unwrap());
+        let content_hash = u64::from_le_bytes(buf[off + 16..off + 24].try_into().unwrap());
+        let line_count =
+            u32::from_le_bytes(buf[off + 24..off + 28].try_into().unwrap()) as usize;
+        let hdr_end = off + 28;
 
-        if buf.len() < 29 + line_count {
+        if buf.len() < hdr_end + line_count {
             return Err(io::Error::other("truncated hash sidecar"));
         }
 
-        let short_hashes = buf[29..29 + line_count].to_vec();
+        let short_hashes = buf[hdr_end..hdr_end + line_count].to_vec();
         Ok(Self {
             mtime_secs,
             size,

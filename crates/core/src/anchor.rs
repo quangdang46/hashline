@@ -343,6 +343,92 @@ fn parse_line_number(raw: &str, original: &str) -> Result<usize, HashlineError> 
     Ok(line)
 }
 
+/// A region identified by content queries rather than hashed anchors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionPattern {
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// Resolve a content query to a unique line number in the document.
+///
+/// The query is a plain substring match (not regex). Returns an error if
+/// the query matches zero lines or more than one line.
+pub fn find_line_by_query(
+    doc: &Document,
+    query: &str,
+) -> Result<usize, HashlineError> {
+    let path = doc.path.display().to_string();
+    let matches: Vec<usize> = doc
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.content.contains(query))
+        .map(|(idx, _)| idx + 1) // 1-indexed line numbers
+        .collect();
+
+    match matches.len() {
+        0 => Err(HashlineError::QueryNotFound {
+            query: query.to_string(),
+            path,
+        }),
+        1 => Ok(matches[0]),
+        n => {
+            let lines_str = matches
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(HashlineError::AmbiguousQuery {
+                query: query.to_string(),
+                count: n,
+                lines: lines_str,
+                path,
+            })
+        }
+    }
+}
+
+/// Convert a pair of (optional) content queries into a `RegionPattern`.
+///
+/// * If neither query is set, returns `None`.
+/// * If `start_query` is set, it is resolved to a unique line number.
+/// * If `end_query` is set, it is resolved to a unique line number;
+///   otherwise `end = start`.
+/// * Validates that the range is within the sane limit (10,000 lines).
+pub fn resolve_query_region(
+    doc: &Document,
+    start_query: Option<&str>,
+    end_query: Option<&str>,
+) -> Result<Option<RegionPattern>, HashlineError> {
+    let Some(start_query) = start_query else {
+        return Ok(None);
+    };
+
+    let start_line = find_line_by_query(doc, start_query)?;
+    let end_line = match end_query {
+        Some(q) => find_line_by_query(doc, q)?,
+        None => start_line,
+    };
+
+    if start_line > end_line {
+        return Err(HashlineError::InvalidRange {
+            range: format!("query start (line {start_line}) after query end (line {end_line})"),
+        });
+    }
+
+    let count = end_line - start_line + 1;
+    const MAX_QUERY_RANGE: usize = 10_000;
+    if count > MAX_QUERY_RANGE {
+        return Err(HashlineError::QueryRangeTooLarge {
+            count,
+            max: MAX_QUERY_RANGE,
+        });
+    }
+
+    Ok(Some(RegionPattern { start_line, end_line }))
+}
+
 fn display_anchor(anchor: &Anchor) -> String {
     match anchor {
         Anchor::Hash { short } => format_short_hash(*short),

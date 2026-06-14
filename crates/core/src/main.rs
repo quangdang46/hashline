@@ -261,6 +261,8 @@ fn command_to_tool_name(command: &Commands) -> &'static str {
         Commands::Stats(_) => "hashline_stats",
         Commands::Doctor(_) => "hashline_doctor",
         Commands::FindBlock(_) => "hashline_find_block",
+        Commands::ApplyDiff(_) => "hashline_apply_diff",
+        Commands::Batch(_) => "hashline_batch",
         Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
@@ -504,6 +506,8 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
         Commands::Stats(cmd) => serde_json::to_value(cmd),
         Commands::Doctor(cmd) => serde_json::to_value(cmd),
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
+        Commands::ApplyDiff(cmd) => serde_json::to_value(cmd),
+        Commands::Batch(cmd) => serde_json::to_value(cmd),
         Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
@@ -525,6 +529,7 @@ mod tests {
                 pretty: false,
                 ndjson: false,
                 no_cache: false,
+                compact: false,
             }),
         };
         let mut stdout = Vec::new();

@@ -25,9 +25,9 @@ pub fn run<W: Write, E: Write>(
             // Document to skip the Vec<LineView> allocation that would
             // otherwise clone every line's content + hash into owned strings.
             if cmd.anchor.is_empty() && cmd.context == 0 {
-                output::print_read_ndjson_streaming(ctx.stdout(), &doc)?;
+                output::print_read_ndjson_streaming(ctx.stdout(), &doc, cmd.compact)?;
             } else {
-                let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+                let payload = read_payload(&doc, &cmd.anchor, cmd.context, cmd.compact)?;
                 output::print_read_ndjson(ctx.stdout(), &payload)?;
             }
             return Ok(());
@@ -35,22 +35,24 @@ pub fn run<W: Write, E: Write>(
         OutputMode::Json => {
             let style = output::JsonStyle::from_pretty(ctx.json_pretty());
             if cmd.anchor.is_empty() && cmd.context == 0 {
-                output::print_read_json_streaming(ctx.stdout(), &doc, style)?;
+                output::print_read_json_streaming(ctx.stdout(), &doc, style, cmd.compact)?;
             } else {
-                let payload = read_payload(&doc, &cmd.anchor, cmd.context)?;
+                let payload = read_payload(&doc, &cmd.anchor, cmd.context, cmd.compact)?;
                 output::print_read_json(ctx.stdout(), &payload, style)?;
             }
             return Ok(());
         }
-        OutputMode::Pretty => {}
+        OutputMode::Pretty => {
+            if cmd.compact {
+                output::print_compact_read(ctx.stdout(), &doc, &cmd.anchor, cmd.context)?;
+            } else if cmd.anchor.is_empty() {
+                output::print_read(ctx.stdout(), &doc)?;
+            } else {
+                let resolved = resolve_read_anchors(&doc, &cmd.anchor)?;
+                output::print_read_context(ctx.stdout(), &doc, &resolved, cmd.context)?;
+            }
+        }
     }
 
-    if cmd.anchor.is_empty() {
-        output::print_read(ctx.stdout(), &doc)?;
-        return Ok(());
-    }
-
-    let resolved = resolve_read_anchors(&doc, &cmd.anchor)?;
-    output::print_read_context(ctx.stdout(), &doc, &resolved, cmd.context)?;
     Ok(())
 }

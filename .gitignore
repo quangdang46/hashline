@@ -8,6 +8,9 @@ __pycache__/
 references/
 *.md
 bench-results/.linehash/
+*.lhhash
+*.lhidx
+.tmp*
 
 # Claude Code workspaces
 .claude/

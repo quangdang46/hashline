@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use crate::anchor::{parse_anchor, resolve};
+use crate::anchor::{parse_anchor, resolve, resolve_query_region, ResolvedLine};
 use crate::cli::InsertCmd;
 use crate::commands::common::{
     atomic_write, atomic_write_document, check_guard, interpret_escapes,
@@ -8,6 +8,7 @@ use crate::commands::common::{
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::HashlineError;
+use crate::hash_cache::discover_sidecar_root;
 use crate::mutation::insert_line;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
@@ -16,7 +17,8 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: InsertCmd,
 ) -> Result<(), HashlineError> {
-    let mut doc = Document::load(&cmd.file)?;
+    let root = discover_sidecar_root(&cmd.file);
+    let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());
@@ -25,13 +27,37 @@ pub fn run<W: Write, E: Write>(
     } else {
         cmd.content
     };
-    let index = doc.build_index();
-    let anchor = parse_anchor(&cmd.anchor)?;
-    let resolved = resolve(&anchor, &doc, &index)?;
-    let insert_at = if cmd.before {
-        resolved.index
+
+    // Resolve the target position: either from start_query or from anchor.
+    let (resolved, insert_at) = if cmd.start_query.is_some() {
+        let region = resolve_query_region(
+            &doc,
+            cmd.start_query.as_deref(),
+            cmd.end_query.as_deref(),
+        )?
+        .expect("start_query is set so region is Some");
+        // For insertion, anchor at the start_query line
+        let idx = region.start_line - 1;
+        let anchor_line = region.start_line;
+        let at = if cmd.before { idx } else { idx + 1 };
+        // Build a synthetic resolved line so downstream use of resolved is consistent
+        // We store the result for summary generation
+        let resolved = ResolvedLine {
+            index: idx,
+            line_no: anchor_line,
+            short_hash: String::new(), // not meaningful for query-based
+        };
+        (resolved, at)
     } else {
-        resolved.index + 1
+        let index = doc.build_index();
+        let anchor = parse_anchor(&cmd.anchor)?;
+        let resolved = resolve(&anchor, &doc, &index)?;
+        let at = if cmd.before {
+            resolved.index
+        } else {
+            resolved.index + 1
+        };
+        (resolved, at)
     };
     insert_line(&mut doc, insert_at, &content)?;
 

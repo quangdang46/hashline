@@ -6,6 +6,7 @@ use crate::commands::common::{atomic_write, atomic_write_document, check_guard};
 use crate::context::{CommandContext, OutputMode};
 use crate::document::Document;
 use crate::error::HashlineError;
+use crate::hash_cache::discover_sidecar_root;
 use crate::output;
 use crate::receipt::{self, ChangeKind, LineChange};
 
@@ -13,7 +14,8 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: IndentCmd,
 ) -> Result<(), HashlineError> {
-    let mut doc = Document::load(&cmd.file)?;
+    let root = discover_sidecar_root(&cmd.file);
+    let mut doc = Document::load_with_hash_cache(&cmd.file, &root)?;
     check_guard(&doc, cmd.expect_mtime, cmd.expect_inode)?;
     let needs_receipt = cmd.receipt || cmd.audit_log.is_some();
     let before_bytes = needs_receipt.then(|| doc.render());

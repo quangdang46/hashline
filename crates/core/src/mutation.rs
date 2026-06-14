@@ -1,8 +1,13 @@
 #![allow(dead_code)]
 
-use crate::document::{Document, LineRecord};
+use std::io::{BufRead, Write};
+use std::path::Path;
+
+use tempfile::NamedTempFile;
+
+use crate::document::{Document, LineRecord, NewlineStyle};
 use crate::error::HashlineError;
-use crate::hash;
+use crate::hash::{self, ShortHash};
 
 pub fn validate_single_line_content(content: &str) -> Result<(), HashlineError> {
     if content.contains(['\n', '\r']) {
@@ -193,6 +198,133 @@ fn ensure_range(doc: &Document, start: usize, end: usize) -> Result<(), Hashline
             len: doc.lines.len(),
         })
     }
+}
+
+/// Stream `path` line-by-line, replacing the line at `target_line` (0-indexed)
+/// with `new_content`, writing the result to a temp file and then atomically
+/// replacing the original.
+///
+/// Before replacing, this function reads the target line, computes its
+/// short hash, and compares it against `expected_hash`. If the hashes
+/// differ, the file has been modified since the anchor was obtained, and
+/// a [`HashlineError::StaleAnchor`] is returned.
+///
+/// # Constraints
+///
+/// - `new_content` must be a single line (no `\n` or `\r`).
+/// - `expected_hash` must be the 1-byte short hash to verify the target line.
+///
+/// # Memory
+///
+/// This function uses a BufReader and BufWriter, streaming one line at a
+/// time. The full file is never held in memory. The only notable allocation
+/// is `new_content` and the per-line read buffer (which is reused across
+/// iterations).
+pub fn stream_replace_line(
+    path: &Path,
+    target_line: usize,
+    new_content: &str,
+    expected_hash: ShortHash,
+    newline: NewlineStyle,
+    trailing_newline: bool,
+) -> Result<(), HashlineError> {
+    validate_single_line_content(new_content)?;
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let separator = newline.separator().as_bytes();
+
+    // Write to a temp file in the same directory so that we can atomically
+    // rename it over the original.
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let mut temp = NamedTempFile::new_in(parent)?;
+    let existing_permissions = std::fs::metadata(path).ok().map(|meta| meta.permissions());
+    if let Some(permissions) = existing_permissions {
+        temp.as_file().set_permissions(permissions)?;
+    }
+
+    let mut lines_seen = 0usize;
+    let mut anchor_verified = false;
+    // Reusable read buffer across all lines.
+    let mut buf = Vec::<u8>::new();
+
+    loop {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 {
+            break;
+        }
+
+        let line_content = if buf.ends_with(b"\r\n") {
+            // CRLF: strip \r\n before hashing
+            std::str::from_utf8(&buf[..buf.len() - 2])
+        } else if buf.ends_with(b"\n") {
+            // LF: strip \n
+            std::str::from_utf8(&buf[..buf.len() - 1])
+        } else {
+            // No newline (trailing line, no trailing newline in file)
+            std::str::from_utf8(&buf)
+        }
+        .map_err(|_| HashlineError::InvalidUtf8 {
+            path: path.display().to_string(),
+        })?;
+
+        if lines_seen == target_line {
+            // Verify the hash before replacing.
+            let actual_hash = hash::short_hash_value(line_content);
+            if actual_hash != expected_hash {
+                return Err(HashlineError::StaleAnchor {
+                    anchor: format!(
+                        "{}:{}",
+                        target_line + 1,
+                        hash::format_short_hash(expected_hash)
+                    )
+                    .into(),
+                    line: target_line + 1,
+                    expected: hash::format_short_hash(expected_hash).into(),
+                    actual: hash::format_short_hash(actual_hash).into(),
+                    path: path.display().to_string().into(),
+                    relocated_suffix: "".into(),
+                });
+            }
+            anchor_verified = true;
+
+            // Write the replacement line (without the separator since
+            // the separator between lines is handled by the inter-line logic).
+            if lines_seen > 0 {
+                temp.write_all(separator)?;
+            }
+            temp.write_all(new_content.as_bytes())?;
+        } else {
+            // Echo back the original line.
+            if lines_seen > 0 {
+                temp.write_all(separator)?;
+            }
+            temp.write_all(line_content.as_bytes())?;
+        }
+        lines_seen += 1;
+    }
+
+    if !anchor_verified {
+        return Err(HashlineError::MutationIndexOutOfBounds {
+            index: target_line,
+            len: lines_seen,
+        });
+    }
+
+    // Preserve the trailing newline.
+    if trailing_newline {
+        temp.write_all(separator)?;
+    }
+
+    temp.flush()?;
+    temp.as_file().sync_all()?;
+
+    // Atomically replace the original file.
+    temp.persist(path)
+        .map_err(|e| HashlineError::Io(e.error))?;
+
+    Ok(())
 }
 
 #[cfg(test)]
