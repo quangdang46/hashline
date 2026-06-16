@@ -295,45 +295,23 @@ Pure Rust. No tree-sitter. No LLM. No external dependencies.
 
 All measurements via `cargo bench` on **Apple M1** (`cargo build --release`).
 
-### Hash: `lines_with_hashes()` (short lines)
-
-| Lines | Time |
-|-------|:----:|
-| 100 | 2.9 µs |
-| 1,000 | 28.7 µs |
-| 10,000 | 278 µs |
-| 100,000 | 2.71 ms |
-
-### Hash: long lines
-
-| Lines | Time |
-|-------|:----:|
-| 1,000 | 38.2 µs |
-| 10,000 | 385 µs |
-
-### Real-world files
-
-| File | Time |
-|------|:----:|
-| `support.rs` | 3.07 µs |
-| `document.rs` | 6.34 µs |
-
-### Resolve anchor
-
-| Lines | Time |
-|-------|:----:|
-| 1,000 | 28.5 µs |
-| 10,000 | 278 µs |
-| 100,000 | 2.68 ms |
-
-### Verify (10k-line file, pre-hashed)
-
-| Anchors | Time |
-|---------|:----:|
-| 1 | 69 ns |
-| 10 | 710 ns |
-| 100 | 7.4 µs |
-| 1,000 | 82 µs |
+| Feature | hashline | str_replace |
+|---------|:-------:|:-----------:|
+| Hash 100 lines (short) | 2.9 µs | — |
+| Hash 1,000 lines (short) | 28.7 µs | — |
+| Hash 10,000 lines (short) | 278 µs | — |
+| Hash 100,000 lines (short) | 2.71 ms | — |
+| Hash 1,000 lines (long) | 38.2 µs | — |
+| Hash 10,000 lines (long) | 385 µs | — |
+| Real-world `support.rs` | 3.07 µs | — |
+| Real-world `document.rs` | 6.34 µs | — |
+| Resolve anchor 1,000 lines | 28.5 µs | — |
+| Resolve anchor 10,000 lines | 278 µs | — |
+| Resolve anchor 100,000 lines | 2.68 ms | — |
+| Verify 1 anchor (10k file) | 69 ns | — |
+| Verify 10 anchors (10k file) | 710 ns | — |
+| Verify 100 anchors (10k file) | 7.4 µs | — |
+| Verify 1,000 anchors (10k file) | 82 µs | — |
 
 ### Memory footprint
 
