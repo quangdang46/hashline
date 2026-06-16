@@ -178,6 +178,64 @@ fn handle_read(file: &str, json: bool) -> String {
     }
 }
 
+fn handle_index(file: &str) -> String {
+    let path = Path::new(file);
+    let fc = match FileContent::load(path) {
+        Ok(fc) => fc,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let entries = fc.lines_with_hashes();
+    let mut out = format!("[{}#{}]\n", fc.path.display(), fc.hash);
+    for (i, entry) in entries.iter().enumerate() {
+        let hash = hash::format_short_hash(entry.short_hash);
+        // Skip trailing empty line
+        if entry.content.is_empty() && i == entries.len() - 1 && fc.trailing_newline {
+            continue;
+        }
+        out.push_str(&format!("{}:{}\n", i + 1, hash));
+    }
+    out
+}
+
+fn handle_annotate(file: &str, query: &str, use_regex: bool) -> String {
+    let path = Path::new(file);
+    let fc = match FileContent::load(path) {
+        Ok(fc) => fc,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let entries = fc.lines_with_hashes();
+    let mut results = Vec::new();
+
+    for (i, entry) in entries.iter().enumerate() {
+        if entry.content.is_empty() && i == entries.len() - 1 && fc.trailing_newline {
+            continue;
+        }
+        let matched = if use_regex {
+            regex::Regex::new(query)
+                .map(|re| re.is_match(&entry.content))
+                .unwrap_or(false)
+        } else {
+            entry.content.contains(query)
+        };
+        if matched {
+            let hash = hash::format_short_hash(entry.short_hash);
+            results.push(format!("{}:{}|{}", i + 1, hash, entry.content));
+        }
+    }
+
+    if results.is_empty() {
+        format!("query '{}' not found in {}", query, file)
+    } else if results.len() == 1 {
+        results.into_iter().next().unwrap()
+    } else {
+        results.join("\n")
+    }
+}
+
+fn handle_grep(file: &str, pattern: &str, _invert: bool) -> String {
+    handle_annotate(file, pattern, false) // Simple grep = literal substring match
+}
+
 fn handle_find_block(file: &str, anchor_str: &str) -> String {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
