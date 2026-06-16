@@ -3,13 +3,11 @@
 
 use std::collections::HashMap;
 
-use crate::messages::{
-    BARE_BODY_AUTO_PIPED_WARNING,
-};
+use crate::messages::BARE_BODY_AUTO_PIPED_WARNING;
 use crate::patch_format::HL_RANGE_SEP;
 use crate::prefixes::strip_one_hashline_prefix;
-use crate::tokenizer::{clone_cursor, BlockTarget, Token};
-use crate::types::{Anchor, Cursor, Edit, InsertMode, BlockMode, ParsedRange};
+use crate::tokenizer::{BlockTarget, Token, clone_cursor};
+use crate::types::{Anchor, BlockMode, Cursor, Edit, InsertMode, ParsedRange};
 
 fn validate_range_order(range: &ParsedRange, line_num: usize) -> Result<(), String> {
     if range.end.line < range.start.line {
@@ -29,13 +27,6 @@ fn expand_range(range: &ParsedRange) -> Vec<Anchor> {
     anchors
 }
 
-fn is_skippable_comment_line(line: &str) -> bool {
-    line.trim_start().starts_with('#')
-}
-
-/// Stripped remainder of a bare `N: <value>` row that is a lone quoted or
-/// numeric literal (optionally comma-terminated) — the shape of a numeric-keyed
-/// dict/YAML body rather than read-output paste.
 fn is_bare_literal_value(s: &str) -> bool {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -84,6 +75,7 @@ fn detect_apply_patch_contamination(text: &str, _has_pending: bool) -> Option<St
 
 struct PayloadRow {
     text: String,
+    #[allow(dead_code)]
     line_num: usize,
     bare: bool,
 }
@@ -102,6 +94,12 @@ pub struct Executor {
     edit_index: usize,
     pending: Option<Pending>,
     terminated: bool,
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Executor {
@@ -176,7 +174,10 @@ impl Executor {
                 return;
             }
         };
-        if matches!(pending.target, BlockTarget::Delete(_) | BlockTarget::DeleteBlock(_)) {
+        if matches!(
+            pending.target,
+            BlockTarget::Delete(_) | BlockTarget::DeleteBlock(_)
+        ) {
             return;
         }
         let pending_mut = self.pending.as_mut().unwrap();
@@ -208,7 +209,10 @@ impl Executor {
             if text.trim_start().starts_with('-') {
                 return;
             }
-            if !self.warnings.contains(&BARE_BODY_AUTO_PIPED_WARNING.to_string()) {
+            if !self
+                .warnings
+                .contains(&BARE_BODY_AUTO_PIPED_WARNING.to_string())
+            {
                 self.warnings.push(BARE_BODY_AUTO_PIPED_WARNING.to_owned());
             }
             let pending_mut = self.pending.as_mut().unwrap();
@@ -222,7 +226,6 @@ impl Executor {
         }
 
         if text.trim().is_empty() {
-            return;
         }
     }
 
@@ -231,7 +234,10 @@ impl Executor {
             Some(p) => p,
             None => return,
         };
-        if matches!(pending.target, BlockTarget::Delete(_) | BlockTarget::DeleteBlock(_)) {
+        if matches!(
+            pending.target,
+            BlockTarget::Delete(_) | BlockTarget::DeleteBlock(_)
+        ) {
             return;
         }
         if pending.payloads.is_empty() {
@@ -443,14 +449,17 @@ impl Executor {
     fn validate_no_overlapping_deletes(&self) {
         let mut source_lines_by_anchor: HashMap<usize, Vec<usize>> = HashMap::new();
         for edit in &self.edits {
-            if let Edit::Delete { anchor, line_num, .. } = edit {
+            if let Edit::Delete {
+                anchor, line_num, ..
+            } = edit
+            {
                 source_lines_by_anchor
                     .entry(anchor.line)
                     .or_default()
                     .push(*line_num);
             }
         }
-        for (_anchor_line, source_lines) in &source_lines_by_anchor {
+        for source_lines in source_lines_by_anchor.values() {
             if source_lines.len() < 2 {
                 continue;
             }

@@ -20,9 +20,7 @@ fn bench_edit_comparison_scaling(c: &mut Criterion) {
             &(fc, scenario),
             |b, (fc, scenario)| {
                 let anchor = hashline::anchor::parse_anchor(&scenario.target_anchor).unwrap();
-                b.iter(|| {
-                    black_box(resolve(&anchor, fc).unwrap())
-                })
+                b.iter(|| black_box(resolve(&anchor, fc).unwrap()))
             },
         );
     }
@@ -48,5 +46,9 @@ fn bench_edit_pipeline_breakdown(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_edit_comparison_scaling, bench_edit_pipeline_breakdown);
+criterion_group!(
+    benches,
+    bench_edit_comparison_scaling,
+    bench_edit_pipeline_breakdown
+);
 criterion_main!(benches);

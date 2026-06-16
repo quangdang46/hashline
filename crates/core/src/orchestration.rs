@@ -57,7 +57,7 @@ pub fn run_command<W: Write, E: Write>(
 #[cfg(test)]
 mod tests {
     use super::command_name;
-    use crate::cli::{Commands, ReadCmd, PatchCmd};
+    use crate::cli::{Commands, PatchCmd, ReadCmd};
     use std::path::PathBuf;
 
     #[test]

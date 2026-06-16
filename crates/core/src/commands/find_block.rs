@@ -90,10 +90,7 @@ pub fn find_block_boundaries(
     anchor_index: usize,
     path: &std::path::Path,
 ) -> Result<(Option<String>, usize, usize), HashlineError> {
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("");
+    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
 
     let (language, block_start, block_end) = match extension {
         "py" => find_python_block(entries, anchor_index)?,
@@ -167,10 +164,7 @@ fn find_brace_block(
     Ok(enclosing)
 }
 
-fn find_brace_pairs(
-    entries: &[crate::document::LineEntry],
-    ext: &str,
-) -> Vec<(usize, usize)> {
+fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(usize, usize)> {
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
 
@@ -284,10 +278,9 @@ fn find_indent_block(
             break;
         }
     }
-    let start =
-        start.ok_or_else(|| HashlineError::UnbalancedBlock {
-            line_no: anchor_index + 1,
-        })?;
+    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
+        line_no: anchor_index + 1,
+    })?;
     let start_indent = leading_whitespace(&entries[start].content);
     let mut end = entries.len() - 1;
     for i in (start + 1)..entries.len() {
@@ -321,10 +314,9 @@ fn find_python_block(
             break;
         }
     }
-    let start =
-        start.ok_or_else(|| HashlineError::UnbalancedBlock {
-            line_no: anchor_index + 1,
-        })?;
+    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
+        line_no: anchor_index + 1,
+    })?;
 
     let start_indent = leading_whitespace(&entries[start].content);
     let mut end = entries.len() - 1;
@@ -368,10 +360,9 @@ fn find_ruby_block(
             break;
         }
     }
-    let start =
-        start.ok_or_else(|| HashlineError::UnbalancedBlock {
-            line_no: anchor_index + 1,
-        })?;
+    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
+        line_no: anchor_index + 1,
+    })?;
 
     depth = 0;
     let mut end: Option<usize> = None;
@@ -390,10 +381,9 @@ fn find_ruby_block(
             break;
         }
     }
-    let end =
-        end.ok_or_else(|| HashlineError::UnbalancedBlock {
-            line_no: anchor_index + 1,
-        })?;
+    let end = end.ok_or_else(|| HashlineError::UnbalancedBlock {
+        line_no: anchor_index + 1,
+    })?;
     Ok((Some("Ruby".into()), start, end))
 }
 

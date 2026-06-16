@@ -16,7 +16,8 @@ pub const MINUS_ROW_REJECTED: &str =
 pub const EMPTY_BLOCK: &str =
     "block replacement has no body; provide replacement lines after the header";
 pub const EMPTY_INSERT: &str = "insert has no body; provide content after the header";
-pub const DELETE_TAKES_NO_BODY: &str = "delete takes no body; remove payload lines after a delete header";
+pub const DELETE_TAKES_NO_BODY: &str =
+    "delete takes no body; remove payload lines after a delete header";
 pub const DELETE_BLOCK_TAKES_NO_BODY: &str =
     "delete block takes no body; remove payload lines after a delete block header";
 
@@ -40,8 +41,7 @@ pub const RECOVERY_SESSION_CHAIN_WARNING: &str =
 /// Replayed edits directly onto current content because line counts matched
 /// and anchor-line content was unchanged. This is the less-certain recovery
 /// mode and the result should be manually verified.
-pub const RECOVERY_SESSION_REPLAY_WARNING: &str =
-    "edit replayed onto current content (anchor lines unchanged, line counts matched) — verify the result";
+pub const RECOVERY_SESSION_REPLAY_WARNING: &str = "edit replayed onto current content (anchor lines unchanged, line counts matched) — verify the result";
 
 /// Only head/tail inserts are safe to apply when the snapshot tag is stale.
 pub const HEADTAIL_DRIFT_WARNING: &str =
@@ -85,7 +85,11 @@ pub fn after_insert_landing_shift_warning(anchor_line: usize, landing_line: usiz
 }
 
 /// Landing shift warning for block inserts (inward).
-pub fn block_insert_landing_shift_warning(block_start: usize, _closer_line: usize, landing_line: usize) -> String {
+pub fn block_insert_landing_shift_warning(
+    block_start: usize,
+    _closer_line: usize,
+    landing_line: usize,
+) -> String {
     format!(
         "block insert body indentation suggests it belongs inside the block (line {landing_line}), \
          not after the closing line; shifted landing inward from block start at line {block_start}"

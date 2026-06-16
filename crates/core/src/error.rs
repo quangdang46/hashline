@@ -78,9 +78,7 @@ pub enum HashlineError {
     )]
     UnbalancedBlock { line_no: usize },
 
-    #[error(
-        "block language is ambiguous at line {line_no} — use an explicit range anchor instead"
-    )]
+    #[error("block language is ambiguous at line {line_no} — use an explicit range anchor instead")]
     AmbiguousBlockLanguage { line_no: usize },
 
     #[error("invalid pattern '{pattern}': {message}")]
@@ -578,36 +576,46 @@ mod tests {
 
     #[test]
     fn invariant_failures_log_as_error() {
-        assert!(HashlineError::InvalidMutationRange {
-            start: 3,
-            end: 1,
-            len: 2,
-        }
-        .log_as_error());
+        assert!(
+            HashlineError::InvalidMutationRange {
+                start: 3,
+                end: 1,
+                len: 2,
+            }
+            .log_as_error()
+        );
     }
 
     #[test]
     fn implode_errors_have_recovery_hints() {
-        assert!(HashlineError::ImplodeMissingMeta { path: "out".into() }
+        assert!(
+            HashlineError::ImplodeMissingMeta { path: "out".into() }
+                .hint()
+                .is_some()
+        );
+        assert!(
+            HashlineError::ImplodeInvalidMeta {
+                path: "out/.meta.json".into(),
+                reason: "bad".into()
+            }
             .hint()
-            .is_some());
-        assert!(HashlineError::ImplodeInvalidMeta {
-            path: "out/.meta.json".into(),
-            reason: "bad".into()
-        }
-        .hint()
-        .is_some());
-        assert!(HashlineError::ImplodeDirtyDirectory {
-            path: "out".into(),
-            entry: "notes.txt".into()
-        }
-        .hint()
-        .is_some());
-        assert!(HashlineError::ImplodeMissingLineFile {
-            path: "out".into(),
-            line_no: 2
-        }
-        .hint()
-        .is_some());
+            .is_some()
+        );
+        assert!(
+            HashlineError::ImplodeDirtyDirectory {
+                path: "out".into(),
+                entry: "notes.txt".into()
+            }
+            .hint()
+            .is_some()
+        );
+        assert!(
+            HashlineError::ImplodeMissingLineFile {
+                path: "out".into(),
+                line_no: 2
+            }
+            .hint()
+            .is_some()
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::document::FileContent;
 use crate::error::HashlineError;
-use crate::hash::{ShortHash, format_short_hash, short_hash_value};
+use crate::hash::{ShortHash, format_short_hash};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Anchor {
@@ -33,9 +33,11 @@ pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
         .strip_prefix("block ")
         .and_then(|rest| rest.strip_suffix(':'))
     {
-        let line = line_str.parse::<usize>().map_err(|_| HashlineError::InvalidAnchor {
-            anchor: trimmed.to_owned(),
-        })?;
+        let line = line_str
+            .parse::<usize>()
+            .map_err(|_| HashlineError::InvalidAnchor {
+                anchor: trimmed.to_owned(),
+            })?;
         if line == 0 {
             return Err(HashlineError::InvalidAnchor {
                 anchor: trimmed.to_owned(),
@@ -64,11 +66,11 @@ pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
 
 pub fn parse_range(s: &str) -> Result<RangeAnchor, HashlineError> {
     let normalized = normalize_anchor_input(s);
-    let (left, right) = normalized.split_once("..").ok_or_else(|| {
-        HashlineError::InvalidRange {
+    let (left, right) = normalized
+        .split_once("..")
+        .ok_or_else(|| HashlineError::InvalidRange {
             range: s.trim().to_owned(),
-        }
-    })?;
+        })?;
 
     if right.contains("..") {
         return Err(HashlineError::InvalidRange {
@@ -138,7 +140,11 @@ fn resolve_unqualified(
             short_hash: rendered_short,
         }),
         many => {
-            let lines = many.iter().map(|idx| (idx + 1).to_string()).collect::<Vec<_>>().join(", ");
+            let lines = many
+                .iter()
+                .map(|idx| (idx + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             Err(HashlineError::AmbiguousHash {
                 hash: rendered_short,
                 count: many.len(),
@@ -157,13 +163,17 @@ fn resolve_qualified(
 ) -> Result<ResolvedLine, HashlineError> {
     let path = fc.path.display().to_string();
     let rendered_short = format_short_hash(short);
-    let idx = line.checked_sub(1).ok_or_else(|| HashlineError::InvalidAnchor {
-        anchor: format!("{line}:{rendered_short}"),
-    })?;
+    let idx = line
+        .checked_sub(1)
+        .ok_or_else(|| HashlineError::InvalidAnchor {
+            anchor: format!("{line}:{rendered_short}"),
+        })?;
 
-    let actual = entries.get(idx).ok_or_else(|| HashlineError::InvalidAnchor {
-        anchor: format!("{line}:{rendered_short}"),
-    })?;
+    let actual = entries
+        .get(idx)
+        .ok_or_else(|| HashlineError::InvalidAnchor {
+            anchor: format!("{line}:{rendered_short}"),
+        })?;
 
     // Fast path: exact line+hash match.
     if actual.short_hash == short {
@@ -229,8 +239,14 @@ fn resolve_qualified(
     }
 
     if !matching.is_empty() {
-        let lines = matching.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(", ");
-        context.push_str(&format!("(hash {rendered_short} also at line(s) {lines})\n"));
+        let lines = matching
+            .iter()
+            .map(|i| (i + 1).to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        context.push_str(&format!(
+            "(hash {rendered_short} also at line(s) {lines})\n"
+        ));
     }
 
     Err(HashlineError::StaleAnchor {
@@ -249,9 +265,11 @@ fn resolve_block_anchor(
     fc: &FileContent,
 ) -> Result<ResolvedLine, HashlineError> {
     let _ = fc;
-    let idx = line.checked_sub(1).ok_or_else(|| HashlineError::InvalidAnchor {
-        anchor: format!("block {line}:"),
-    })?;
+    let idx = line
+        .checked_sub(1)
+        .ok_or_else(|| HashlineError::InvalidAnchor {
+            anchor: format!("block {line}:"),
+        })?;
     if idx >= entries.len() {
         return Err(HashlineError::InvalidAnchor {
             anchor: format!("block {line}:"),
@@ -281,9 +299,11 @@ fn parse_short_hash(short: &str, original: &str) -> Result<ShortHash, HashlineEr
 }
 
 fn parse_line_number(raw: &str, original: &str) -> Result<usize, HashlineError> {
-    let line = raw.parse::<usize>().map_err(|_| HashlineError::InvalidAnchor {
-        anchor: original.trim().to_owned(),
-    })?;
+    let line = raw
+        .parse::<usize>()
+        .map_err(|_| HashlineError::InvalidAnchor {
+            anchor: original.trim().to_owned(),
+        })?;
     if line == 0 {
         return Err(HashlineError::InvalidAnchor {
             anchor: original.trim().to_owned(),
@@ -322,7 +342,11 @@ pub fn find_line_by_query(fc: &FileContent, query: &str) -> Result<usize, Hashli
         }),
         1 => Ok(matches[0]),
         n => {
-            let lines_str = matches.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+            let lines_str = matches
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             Err(HashlineError::AmbiguousQuery {
                 query: query.to_string(),
                 count: n,
@@ -339,7 +363,9 @@ pub fn resolve_query_region(
     start_query: Option<&str>,
     end_query: Option<&str>,
 ) -> Result<Option<(usize, usize)>, HashlineError> {
-    let Some(start_query) = start_query else { return Ok(None) };
+    let Some(start_query) = start_query else {
+        return Ok(None);
+    };
     let start_line = find_line_by_query(fc, start_query)?;
     let end_line = match end_query {
         Some(q) => find_line_by_query(fc, q)?,
@@ -378,15 +404,30 @@ mod tests {
     fn test_parse_qualified() {
         assert_eq!(
             parse_anchor("2:f1").unwrap(),
-            Anchor::LineHash { line: 2, short: 0xf1 }
+            Anchor::LineHash {
+                line: 2,
+                short: 0xf1
+            }
         );
     }
 
     #[test]
     fn test_parse_range() {
         let range = parse_range("2:f1..4:9c").unwrap();
-        assert_eq!(range.start, Anchor::LineHash { line: 2, short: 0xf1 });
-        assert_eq!(range.end, Anchor::LineHash { line: 4, short: 0x9c });
+        assert_eq!(
+            range.start,
+            Anchor::LineHash {
+                line: 2,
+                short: 0xf1
+            }
+        );
+        assert_eq!(
+            range.end,
+            Anchor::LineHash {
+                line: 4,
+                short: 0x9c
+            }
+        );
     }
 
     #[test]
@@ -407,14 +448,28 @@ mod tests {
         let entries = fc.lines_with_hashes();
         let hash = entries[1].short_hash;
 
-        let resolved = resolve(&Anchor::LineHash { line: 2, short: hash }, &fc).unwrap();
+        let resolved = resolve(
+            &Anchor::LineHash {
+                line: 2,
+                short: hash,
+            },
+            &fc,
+        )
+        .unwrap();
         assert_eq!(resolved.line_no, 2);
     }
 
     #[test]
     fn test_resolve_qualified_stale() {
         let fc = make_fc("alpha\nbeta\ngamma\n");
-        let error = resolve(&Anchor::LineHash { line: 2, short: 0xff }, &fc).unwrap_err();
+        let error = resolve(
+            &Anchor::LineHash {
+                line: 2,
+                short: 0xff,
+            },
+            &fc,
+        )
+        .unwrap_err();
         assert!(matches!(error, HashlineError::StaleAnchor { .. }));
     }
 

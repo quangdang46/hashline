@@ -3,18 +3,19 @@
 //! Library entrypoint for embedding hashline in another tool.
 
 #![doc(html_root_url = "https://docs.rs/hashline/0.6.0")]
+#![allow(clippy::needless_range_loop, clippy::ptr_arg, clippy::needless_return)]
 
-pub mod types;
-pub mod patch_format;
-pub mod messages;
-pub mod tokenizer;
-pub mod parser;
-pub mod prefixes;
-pub mod normalize;
-pub mod hash;
-pub mod error;
-pub mod document;
 pub mod anchor;
+pub mod document;
+pub mod error;
+pub mod hash;
+pub mod messages;
+pub mod normalize;
+pub mod parser;
+pub mod patch_format;
+pub mod prefixes;
+pub mod tokenizer;
+pub mod types;
 
 #[cfg(feature = "sha256-anchors")]
 pub mod sha256_window;
@@ -31,4 +32,3 @@ pub mod mcp;
 pub mod orchestration;
 #[doc(hidden)]
 pub mod output;
-

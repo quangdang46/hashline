@@ -9,10 +9,11 @@
 
 use crate::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER};
 use crate::patch_format::{
-    describe_anchor_examples, HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH,
-    HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_HEADER_COLON, HL_INSERT_AFTER,
+    HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP,
+    HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER,
     HL_INSERT_AFTER_BLOCK_KEYWORD, HL_INSERT_BEFORE, HL_INSERT_HEAD, HL_INSERT_KEYWORD,
-    HL_INSERT_TAIL, HL_PAYLOAD_REPLACE, HL_REPLACE_BLOCK_KEYWORD, HL_REPLACE_KEYWORD,
+    HL_INSERT_TAIL, HL_REPLACE_BLOCK_KEYWORD, HL_REPLACE_KEYWORD,
+    describe_anchor_examples,
 };
 use crate::types::{Anchor, ParsedRange};
 
@@ -25,6 +26,7 @@ const CHAR_TAB: u8 = b'\t';
 const CHAR_SPACE: u8 = b' ';
 const CHAR_DOT: u8 = b'.';
 const CHAR_HYPHEN: u8 = b'-';
+#[allow(dead_code)]
 const CHAR_EQUALS: u8 = b'=';
 const CHAR_UPPER_A: u8 = b'A';
 const CHAR_UPPER_F: u8 = b'F';
@@ -38,7 +40,7 @@ const FILE_SUFFIX_LEN: usize = HL_FILE_SUFFIX.len();
 
 #[inline]
 fn is_digit_code(c: u8) -> bool {
-    c >= CHAR_ZERO && c <= CHAR_NINE
+    (CHAR_ZERO..=CHAR_NINE).contains(&c)
 }
 
 #[inline]
@@ -49,13 +51,13 @@ fn is_non_zero_digit_code(c: u8) -> bool {
 #[inline]
 fn is_hex_digit_code(c: u8) -> bool {
     is_digit_code(c)
-        || (c >= CHAR_UPPER_A && c <= CHAR_UPPER_F)
-        || (c >= CHAR_LOWER_A && c <= CHAR_LOWER_F)
+        || (CHAR_UPPER_A..=CHAR_UPPER_F).contains(&c)
+        || (CHAR_LOWER_A..=CHAR_LOWER_F).contains(&c)
 }
 
 #[inline]
 fn is_whitespace_code(c: u8) -> bool {
-    c == CHAR_SPACE || (c >= CHAR_TAB && c <= CHAR_CARRIAGE_RETURN)
+    c == CHAR_SPACE || (CHAR_TAB..=CHAR_CARRIAGE_RETURN).contains(&c)
 }
 
 fn skip_whitespace(line: &[u8], mut index: usize, end: usize) -> usize {
@@ -473,14 +475,35 @@ struct HeaderResult {
 /// A single classified line from the tokenizer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Token {
-    Blank { line_num: usize },
-    EnvelopeBegin { line_num: usize },
-    EnvelopeEnd { line_num: usize },
-    Abort { line_num: usize },
-    Header { line_num: usize, path: String, file_hash: Option<String> },
-    OpBlock { line_num: usize, target: BlockTarget },
-    PayloadLiteral { line_num: usize, text: String },
-    Raw { line_num: usize, text: String },
+    Blank {
+        line_num: usize,
+    },
+    EnvelopeBegin {
+        line_num: usize,
+    },
+    EnvelopeEnd {
+        line_num: usize,
+    },
+    Abort {
+        line_num: usize,
+    },
+    Header {
+        line_num: usize,
+        path: String,
+        file_hash: Option<String>,
+    },
+    OpBlock {
+        line_num: usize,
+        target: BlockTarget,
+    },
+    PayloadLiteral {
+        line_num: usize,
+        text: String,
+    },
+    Raw {
+        line_num: usize,
+        text: String,
+    },
 }
 
 fn classify_line(line: &str, line_num: usize) -> Token {

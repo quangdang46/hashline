@@ -487,7 +487,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
 #[cfg(test)]
 mod tests {
     use super::{default_log_path, run, tracing_filter};
-    use hashline::cli::{Cli, Commands, ReadCmd, PatchCmd};
+    use hashline::cli::{Cli, Commands, ReadCmd};
     use std::path::PathBuf;
 
     #[test]

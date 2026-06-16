@@ -90,7 +90,9 @@ fn collect_line_prefix_stats(lines: &[String]) -> LinePrefixStats {
             // Check for `+N:` form
             let bytes = line.as_bytes();
             let mut i = 0;
-            while i < bytes.len() && bytes[i] == b' ' { i += 1; }
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
             if i < bytes.len() && bytes[i] == b'+' {
                 stats.diff_plus_hash_prefix_count += 1;
             }
@@ -139,10 +141,7 @@ pub fn strip_new_line_prefixes(lines: &[String]) -> Vec<String> {
 
     lines
         .iter()
-        .filter(|line| {
-            !is_truncation_notice(line)
-                && !(strip_hash && is_header_line(line))
-        })
+        .filter(|line| !is_truncation_notice(line) && !(strip_hash && is_header_line(line)))
         .map(|line| {
             if strip_hash {
                 strip_one_leading_hashline_prefix(line)
@@ -170,6 +169,10 @@ pub fn strip_one_hashline_prefix(line: &str) -> String {
 /// Normalize line payloads by stripping read/search line prefixes.
 pub fn hashline_parse_text(edit: &str) -> Vec<String> {
     let trimmed = edit.strip_suffix('\n').unwrap_or(edit);
-    let lines: Vec<String> = trimmed.replace("\r", "").split('\n').map(String::from).collect();
+    let lines: Vec<String> = trimmed
+        .replace("\r", "")
+        .split('\n')
+        .map(String::from)
+        .collect();
     strip_new_line_prefixes(&lines)
 }

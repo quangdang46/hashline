@@ -66,10 +66,16 @@ pub fn format_delete_header(start: usize, end: usize) -> String {
 pub fn format_insert_header(cursor: &Cursor) -> String {
     match cursor {
         Cursor::BeforeAnchor(anchor) => {
-            format!("{HL_INSERT_KEYWORD}.{HL_INSERT_BEFORE} {}{HL_HEADER_COLON}", anchor.line)
+            format!(
+                "{HL_INSERT_KEYWORD}.{HL_INSERT_BEFORE} {}{HL_HEADER_COLON}",
+                anchor.line
+            )
         }
         Cursor::AfterAnchor(anchor) => {
-            format!("{HL_INSERT_KEYWORD}.{HL_INSERT_AFTER} {}{HL_HEADER_COLON}", anchor.line)
+            format!(
+                "{HL_INSERT_KEYWORD}.{HL_INSERT_AFTER} {}{HL_HEADER_COLON}",
+                anchor.line
+            )
         }
         Cursor::Bof => format!("{HL_INSERT_KEYWORD}.{HL_INSERT_HEAD}{HL_HEADER_COLON}"),
         Cursor::Eof => format!("{HL_INSERT_KEYWORD}.{HL_INSERT_TAIL}{HL_HEADER_COLON}"),

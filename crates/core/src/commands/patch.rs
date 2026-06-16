@@ -5,9 +5,9 @@ use crate::cli::PatchCmd;
 use crate::context::CommandContext;
 use crate::document::FileContent;
 use crate::error::HashlineError;
-use crate::normalize::{detect_line_ending, restore_line_endings, LineEnding};
+use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
-use crate::types::{Anchor, BlockMode, Cursor, Edit, InsertMode};
+use crate::types::{BlockMode, Cursor, Edit, InsertMode};
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
@@ -71,7 +71,8 @@ pub fn apply_edits(
                         Edit::Insert {
                             mode: Some(InsertMode::Replacement),
                             cursor: Cursor::BeforeAnchor(a),
-                            text, ..
+                            text,
+                            ..
                         } if a.line == anchor_line => {
                             replacement_texts.push(text.clone());
                             j += 1;
@@ -132,9 +133,7 @@ pub fn apply_edits(
             }
 
             // ---- INS.PRE / INS.POST / INS.HEAD / INS.TAIL --------------------
-            Edit::Insert {
-                cursor, text, ..
-            } => {
+            Edit::Insert { cursor, text, .. } => {
                 let base_line = match cursor {
                     Cursor::BeforeAnchor(a) => a.line.wrapping_sub(1),
                     Cursor::AfterAnchor(a) => a.line,
@@ -213,22 +212,17 @@ fn resolve_block_span(
     anchor_index: usize,
     path: &Path,
 ) -> Result<(usize, usize), HashlineError> {
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("");
+    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
 
     match extension {
-        "rs" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp"
-        | "cs" | "kt" | "kts" | "swift" | "scala" | "dart" | "zig" | "m" | "mm" => {
+        "rs" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" | "cs"
+        | "kt" | "kts" | "swift" | "scala" | "dart" | "zig" | "m" | "mm" => {
             find_brace_block(entries, anchor_index, extension)
         }
         "py" | "verse" => find_python_block(entries, anchor_index),
         "rb" => find_ruby_block(entries, anchor_index),
-        _ => {
-            find_indent_block(entries, anchor_index)
-                .or_else(|_| find_brace_block(entries, anchor_index, extension))
-        }
+        _ => find_indent_block(entries, anchor_index)
+            .or_else(|_| find_brace_block(entries, anchor_index, extension)),
     }
     .map_err(|_| HashlineError::UnbalancedBlock {
         line_no: anchor_index + 1,
@@ -253,7 +247,7 @@ fn find_brace_block(
         .ok_or(())
 }
 
-fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(usize, usize)> {
+fn find_brace_pairs(entries: &[crate::document::LineEntry], _ext: &str) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     let line_comment: &[u8] = b"//";
@@ -267,25 +261,61 @@ fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(u
         let mut esc = false;
 
         while i < bytes.len() {
-            if esc { esc = false; i += 1; continue; }
-            if (in_sq || in_dq) && bytes[i] == b'\\' { esc = true; i += 1; continue; }
+            if esc {
+                esc = false;
+                i += 1;
+                continue;
+            }
+            if (in_sq || in_dq) && bytes[i] == b'\\' {
+                esc = true;
+                i += 1;
+                continue;
+            }
             if in_block_comment {
                 if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false; i += 2; continue;
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
                 }
-                i += 1; continue;
+                i += 1;
+                continue;
             }
-            if !in_sq && !in_dq && bytes[i..].starts_with(line_comment) { break; }
+            if !in_sq && !in_dq && bytes[i..].starts_with(line_comment) {
+                break;
+            }
             if !in_sq && !in_dq && i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true; i += 2; continue;
+                in_block_comment = true;
+                i += 2;
+                continue;
             }
-            if in_sq && bytes[i] == b'\'' { in_sq = false; i += 1; continue; }
-            if in_dq && bytes[i] == b'"' { in_dq = false; i += 1; continue; }
-            if !in_sq && !in_dq && bytes[i] == b'\'' { in_sq = true; i += 1; continue; }
-            if !in_sq && !in_dq && bytes[i] == b'"' { in_dq = true; i += 1; continue; }
+            if in_sq && bytes[i] == b'\'' {
+                in_sq = false;
+                i += 1;
+                continue;
+            }
+            if in_dq && bytes[i] == b'"' {
+                in_dq = false;
+                i += 1;
+                continue;
+            }
+            if !in_sq && !in_dq && bytes[i] == b'\'' {
+                in_sq = true;
+                i += 1;
+                continue;
+            }
+            if !in_sq && !in_dq && bytes[i] == b'"' {
+                in_dq = true;
+                i += 1;
+                continue;
+            }
             if !in_sq && !in_dq && !in_block_comment {
-                if bytes[i] == b'{' { stack.push(line_idx); }
-                else if bytes[i] == b'}' { if let Some(s) = stack.pop() { pairs.push((s, line_idx)); } }
+                if bytes[i] == b'{' {
+                    stack.push(line_idx);
+                } else if bytes[i] == b'}' {
+                    if let Some(s) = stack.pop() {
+                        pairs.push((s, line_idx));
+                    }
+                }
             }
             i += 1;
         }
@@ -348,16 +378,26 @@ fn find_block_from_body(
     let anchor_indent = leading_ws(&entries[anchor_index].content);
     let mut start = None;
     for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() { continue; }
-        if leading_ws(&entries[i].content) < anchor_indent { start = Some(i); break; }
+        if entries[i].content.trim().is_empty() {
+            continue;
+        }
+        if leading_ws(&entries[i].content) < anchor_indent {
+            start = Some(i);
+            break;
+        }
     }
     let start = start.ok_or(())?;
     let si = leading_ws(&entries[start].content);
     let mut end = entries.len() - 1;
     for i in (start + 1)..entries.len() {
         let t = entries[i].content.trim();
-        if t.is_empty() { continue; }
-        if leading_ws(&entries[i].content) <= si { end = i.saturating_sub(1); break; }
+        if t.is_empty() {
+            continue;
+        }
+        if leading_ws(&entries[i].content) <= si {
+            end = i.saturating_sub(1);
+            break;
+        }
     }
     Ok((start, end))
 }
@@ -383,7 +423,10 @@ fn find_ruby_block(
         let oc = ruby_opener_count(trimmed);
         depth += ec as isize;
         depth -= oc as isize;
-        if oc > 0 && depth <= 0 { start = Some(i); break; }
+        if oc > 0 && depth <= 0 {
+            start = Some(i);
+            break;
+        }
     }
     let start = start.ok_or(())?;
     depth = 0;
@@ -393,15 +436,21 @@ fn find_ruby_block(
         let ec = if trimmed == "end" { 1 } else { 0 };
         depth += oc as isize;
         depth -= ec as isize;
-        if i > start && depth <= 0 && trimmed == "end" { return Ok((start, i)); }
-        if i == start && depth <= 0 { return Ok((start, i)); }
+        if i > start && depth <= 0 && trimmed == "end" {
+            return Ok((start, i));
+        }
+        if i == start && depth <= 0 {
+            return Ok((start, i));
+        }
     }
     Err(())
 }
 
 fn ruby_opener_count(trimmed: &str) -> usize {
     for opener in RUBY_OPENERS {
-        if trimmed.starts_with(opener) { return 1; }
+        if trimmed.starts_with(opener) {
+            return 1;
+        }
     }
     0
 }
@@ -515,19 +564,13 @@ mod tests {
 
     #[test]
     fn test_patch_with_header() {
-        let result = apply_text(
-            "line1\nline2\nline3",
-            "[file.txt#abcd]\nDEL 2",
-        );
+        let result = apply_text("line1\nline2\nline3", "[file.txt#abcd]\nDEL 2");
         assert_eq!(result, "line1\nline3");
     }
 
     #[test]
     fn test_swap_then_insert() {
-        let result = apply_text(
-            "a\nb\nc",
-            "SWAP 2:\n+x\nINS.TAIL:\n+y",
-        );
+        let result = apply_text("a\nb\nc", "SWAP 2:\n+x\nINS.TAIL:\n+y");
         assert_eq!(result, "a\nx\nc\ny");
     }
 
@@ -536,7 +579,8 @@ mod tests {
     #[test]
     fn test_swap_block_rust_function() {
         // Block: fn hello() { ... } spans lines 1..6 (0-indexed 0..5)
-        let original = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let original =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let patch = "SWAP.BLK 1:\n+fn replaced() {\n+    // new body\n+}\n";
         let result = apply_text(original, patch);
         // The old block (6 lines) is replaced with 3 replacement lines
@@ -546,10 +590,14 @@ mod tests {
     #[test]
     fn test_swap_block_inner() {
         // Anchor at line 3 (if true { ... }) should replace the if-block, not the outer fn
-        let original = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let original =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let patch = "SWAP.BLK 3:\n+if false {\n+        // nothing\n+    }\n";
         let result = apply_text(original, patch);
-        assert_eq!(result, "fn hello() {\n    let x = 1;\nif false {\n        // nothing\n    }\n}\n");
+        assert_eq!(
+            result,
+            "fn hello() {\n    let x = 1;\nif false {\n        // nothing\n    }\n}\n"
+        );
     }
 
     #[test]

@@ -16,7 +16,9 @@ pub fn run<W: Write, E: Write>(
         let lines: Vec<serde_json::Value> = raw_lines
             .iter()
             .enumerate()
-            .filter(|(i, line)| !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline))
+            .filter(|(i, line)| {
+                !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
+            })
             .map(|(i, line)| {
                 serde_json::json!({
                     "n": i + 1,
@@ -31,12 +33,7 @@ pub fn run<W: Write, E: Write>(
         });
         writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
     } else {
-        writeln!(
-            ctx.stdout(),
-            "[{}#{}]",
-            fc.path.display(),
-            fc.hash
-        )?;
+        writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
         let lines = fc.lines();
         let count = lines.len();
         for (i, line) in lines.iter().enumerate() {

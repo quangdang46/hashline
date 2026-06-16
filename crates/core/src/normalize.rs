@@ -128,7 +128,10 @@ mod tests {
 
     #[test]
     fn test_restore_line_endings() {
-        assert_eq!(restore_line_endings("a\nb\n", LineEnding::Crlf), "a\r\nb\r\n");
+        assert_eq!(
+            restore_line_endings("a\nb\n", LineEnding::Crlf),
+            "a\r\nb\r\n"
+        );
         assert_eq!(restore_line_endings("a\nb\n", LineEnding::Lf), "a\nb\n");
     }
 }

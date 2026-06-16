@@ -3,7 +3,6 @@
 //! Runs over stdio and exposes hashline operations as MCP tools.
 //! Supports: initialize, tools/list, tools/call for all hashline operations.
 
-use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
@@ -55,20 +54,6 @@ pub struct JsonRpcError {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct McpResult {
-    content: Vec<McpContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_error: Option<bool>,
-}
-
-#[derive(Serialize)]
-struct McpContent {
-    #[serde(rename = "type")]
-    content_type: String,
-    text: String,
-}
-
-#[derive(Serialize)]
 struct ToolList {
     tools: Vec<ToolDefinition>,
 }
@@ -77,8 +62,8 @@ struct ToolList {
 struct ToolDefinition {
     name: String,
     description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    inputSchema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "inputSchema")]
+    input_schema: Option<Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,8 +75,9 @@ fn tool_list() -> ToolList {
         tools: vec![
             ToolDefinition {
                 name: "hashline_read".into(),
-                description: "Read a file with oh-my-pi style [path#HASH] header and numbered lines".into(),
-                inputSchema: Some(serde_json::json!({
+                description:
+                    "Read a file with oh-my-pi style [path#HASH] header and numbered lines".into(),
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string", "description": "Path to the file"},
@@ -103,7 +89,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_index".into(),
                 description: "Show line numbers with their current hashes (no content)".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string", "description": "Path to the file"}
@@ -114,7 +100,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_annotate".into(),
                 description: "Map text or regex matches back to current anchors".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -127,7 +113,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_grep".into(),
                 description: "Search file content with a pattern".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -140,7 +126,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_find_block".into(),
                 description: "Find a likely structural block around an anchor".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -152,7 +138,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_verify".into(),
                 description: "Check whether anchors still resolve in the file".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -164,7 +150,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_edit".into(),
                 description: "Replace a single line or range by anchor".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -177,7 +163,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_insert".into(),
                 description: "Insert content before or after an anchor".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -191,7 +177,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_delete".into(),
                 description: "Delete a single line or range by anchor".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -203,7 +189,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_patch".into(),
                 description: "Apply a hashline patch (SWAP, DEL, INS.* operations)".into(),
-                inputSchema: Some(serde_json::json!({
+                input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
@@ -229,10 +215,10 @@ fn handle_read(file: &str, json: bool) -> String {
         let lines: Vec<Value> = raw_lines
             .iter()
             .enumerate()
-            .filter(|(i, line)| !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline))
-            .map(|(i, line)| {
-                serde_json::json!({"n": i + 1, "content": line})
+            .filter(|(i, line)| {
+                !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
             })
+            .map(|(i, line)| serde_json::json!({"n": i + 1, "content": line}))
             .collect();
         let output = serde_json::json!({
             "path": fc.path.display().to_string(),
@@ -287,7 +273,9 @@ fn handle_annotate(file: &str, query: &str, use_regex: bool) -> String {
             continue;
         }
         let matched = if use_regex {
-            regex::Regex::new(query).map(|re| re.is_match(&entry.content)).unwrap_or(false)
+            regex::Regex::new(query)
+                .map(|re| re.is_match(&entry.content))
+                .unwrap_or(false)
         } else {
             entry.content.contains(query)
         };
@@ -306,7 +294,7 @@ fn handle_annotate(file: &str, query: &str, use_regex: bool) -> String {
     }
 }
 
-fn handle_grep(file: &str, pattern: &str, invert: bool) -> String {
+fn handle_grep(file: &str, pattern: &str, _invert: bool) -> String {
     handle_annotate(file, pattern, false) // Simple grep = literal substring match
 }
 
@@ -346,13 +334,18 @@ fn handle_find_block(file: &str, anchor_str: &str) -> String {
         }
         "py" => find_indent_block(&entries, anchor_index).ok(),
         "rb" => find_ruby_block(&entries, anchor_index).ok(),
-        _ => find_indent_block(&entries, anchor_index).ok()
+        _ => find_indent_block(&entries, anchor_index)
+            .ok()
             .or_else(|| find_brace_block(&entries, anchor_index, extension).ok()),
     };
 
     let (start, end) = block_result.unwrap_or((anchor_index, anchor_index));
 
-    let mut out = format!("File: {}  ({} lines)\nLanguage: {language}\n", fc.path.display(), entries.len());
+    let mut out = format!(
+        "File: {}  ({} lines)\nLanguage: {language}\n",
+        fc.path.display(),
+        entries.len()
+    );
     for i in start..=end {
         let entry = &entries[i];
         let hash = hash::format_short_hash(entry.short_hash);
@@ -361,7 +354,11 @@ fn handle_find_block(file: &str, anchor_str: &str) -> String {
     out
 }
 
-fn find_brace_block(entries: &[crate::document::LineEntry], anchor_index: usize, ext: &str) -> Result<(usize, usize), ()> {
+fn find_brace_block(
+    entries: &[crate::document::LineEntry],
+    anchor_index: usize,
+    ext: &str,
+) -> Result<(usize, usize), ()> {
     let pairs = find_brace_pairs(entries, ext);
     for (s, e) in pairs.iter().rev() {
         if *s <= anchor_index && *e >= anchor_index {
@@ -371,7 +368,7 @@ fn find_brace_block(entries: &[crate::document::LineEntry], anchor_index: usize,
     Err(())
 }
 
-fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(usize, usize)> {
+fn find_brace_pairs(entries: &[crate::document::LineEntry], _ext: &str) -> Vec<(usize, usize)> {
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     let line_comment: &[u8] = b"//";
@@ -385,26 +382,61 @@ fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(u
         let mut esc = false;
 
         while i < bytes.len() {
-            if esc { esc = false; i += 1; continue; }
-            if (in_sq || in_dq) && bytes[i] == b'\\' { esc = true; i += 1; continue; }
+            if esc {
+                esc = false;
+                i += 1;
+                continue;
+            }
+            if (in_sq || in_dq) && bytes[i] == b'\\' {
+                esc = true;
+                i += 1;
+                continue;
+            }
             if in_block_comment {
                 if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
                     in_block_comment = false;
-                    i += 2; continue;
+                    i += 2;
+                    continue;
                 }
-                i += 1; continue;
+                i += 1;
+                continue;
             }
-            if !in_sq && !in_dq && bytes[i..].starts_with(line_comment) { break; }
+            if !in_sq && !in_dq && bytes[i..].starts_with(line_comment) {
+                break;
+            }
             if !in_sq && !in_dq && i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true; i += 2; continue;
+                in_block_comment = true;
+                i += 2;
+                continue;
             }
-            if in_sq && bytes[i] == b'\'' { in_sq = false; i += 1; continue; }
-            if in_dq && bytes[i] == b'"' { in_dq = false; i += 1; continue; }
-            if !in_sq && !in_dq && bytes[i] == b'\'' { in_sq = true; i += 1; continue; }
-            if !in_sq && !in_dq && bytes[i] == b'"' { in_dq = true; i += 1; continue; }
+            if in_sq && bytes[i] == b'\'' {
+                in_sq = false;
+                i += 1;
+                continue;
+            }
+            if in_dq && bytes[i] == b'"' {
+                in_dq = false;
+                i += 1;
+                continue;
+            }
+            if !in_sq && !in_dq && bytes[i] == b'\'' {
+                in_sq = true;
+                i += 1;
+                continue;
+            }
+            if !in_sq && !in_dq && bytes[i] == b'"' {
+                in_dq = true;
+                i += 1;
+                continue;
+            }
             if !in_sq && !in_dq && !in_block_comment {
-                if bytes[i] == b'{' { stack.push(line_idx); }
-                else if bytes[i] == b'}' { if let Some(s) = stack.pop() { pairs.push((s, line_idx)); } }
+                if bytes[i] == b'{' {
+                    stack.push(line_idx);
+                } else if bytes[i] == b'}' {
+                    if let Some(s) = stack.pop() {
+                        pairs.push((s, line_idx));
+                    }
+                }
             }
             i += 1;
         }
@@ -412,44 +444,91 @@ fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(u
     pairs
 }
 
-fn find_indent_block(entries: &[crate::document::LineEntry], anchor_index: usize) -> Result<(usize, usize), ()> {
+fn find_indent_block(
+    entries: &[crate::document::LineEntry],
+    anchor_index: usize,
+) -> Result<(usize, usize), ()> {
     let anchor_indent = leading_ws(&entries[anchor_index].content);
     let mut start = None;
     for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() { continue; }
-        if leading_ws(&entries[i].content) < anchor_indent { start = Some(i); break; }
+        if entries[i].content.trim().is_empty() {
+            continue;
+        }
+        if leading_ws(&entries[i].content) < anchor_indent {
+            start = Some(i);
+            break;
+        }
     }
-    let start = match start { Some(s) => s, None => return Err(()) };
+    let start = match start {
+        Some(s) => s,
+        None => return Err(()),
+    };
     let si = leading_ws(&entries[start].content);
     let mut end = entries.len() - 1;
     for i in (start + 1)..entries.len() {
         let t = entries[i].content.trim();
-        if t.is_empty() || t.starts_with('#') { continue; }
-        if leading_ws(&entries[i].content) <= si { end = i.saturating_sub(1); break; }
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if leading_ws(&entries[i].content) <= si {
+            end = i.saturating_sub(1);
+            break;
+        }
     }
     Ok((start, end))
 }
 
-fn find_ruby_block(entries: &[crate::document::LineEntry], anchor_index: usize) -> Result<(usize, usize), ()> {
+fn find_ruby_block(
+    entries: &[crate::document::LineEntry],
+    anchor_index: usize,
+) -> Result<(usize, usize), ()> {
     let mut depth: isize = 0;
     let mut start = None;
     for i in (0..=anchor_index).rev() {
         let t = entries[i].content.trim();
         let ec = if t == "end" { 1 } else { 0 };
-        let oc = if t.starts_with("def ") || t.starts_with("class ") || t.starts_with("module ") || t.starts_with("do ") || t.starts_with("if ") || t.starts_with("unless ") { 1 } else { 0 };
+        let oc = if t.starts_with("def ")
+            || t.starts_with("class ")
+            || t.starts_with("module ")
+            || t.starts_with("do ")
+            || t.starts_with("if ")
+            || t.starts_with("unless ")
+        {
+            1
+        } else {
+            0
+        };
         depth += ec as isize;
         depth -= oc as isize;
-        if oc > 0 && depth <= 0 { start = Some(i); break; }
+        if oc > 0 && depth <= 0 {
+            start = Some(i);
+            break;
+        }
     }
-    let start = match start { Some(s) => s, None => return Err(()) };
+    let start = match start {
+        Some(s) => s,
+        None => return Err(()),
+    };
     depth = 0;
     for i in start..entries.len() {
         let t = entries[i].content.trim();
-        let oc = if t.starts_with("def ") || t.starts_with("class ") || t.starts_with("module ") || t.starts_with("do ") || t.starts_with("if ") || t.starts_with("unless ") { 1 } else { 0 };
+        let oc = if t.starts_with("def ")
+            || t.starts_with("class ")
+            || t.starts_with("module ")
+            || t.starts_with("do ")
+            || t.starts_with("if ")
+            || t.starts_with("unless ")
+        {
+            1
+        } else {
+            0
+        };
         let ec = if t == "end" { 1 } else { 0 };
         depth += oc as isize;
         depth -= ec as isize;
-        if i > start && depth <= 0 && t == "end" { return Ok((start, i)); }
+        if i > start && depth <= 0 && t == "end" {
+            return Ok((start, i));
+        }
     }
     Err(())
 }
@@ -480,7 +559,10 @@ fn handle_verify(file: &str, anchors: &[String]) -> String {
         match crate::anchor::resolve_with_entries(&parsed, &entries, &fc) {
             Ok(r) => {
                 let h = hash::format_short_hash(entries[r.index].short_hash);
-                results.push(format!("{} -> line {}:{} | {}", anchor_str, r.line_no, h, entries[r.index].content));
+                results.push(format!(
+                    "{} -> line {}:{} | {}",
+                    anchor_str, r.line_no, h, entries[r.index].content
+                ));
             }
             Err(e) => {
                 any_fail = true;
@@ -528,7 +610,11 @@ fn handle_edit(file: &str, anchor_str: &str, content: &str) -> String {
     };
 
     let normalized = fc.normalized.clone();
-    let mut lines: Vec<&str> = if normalized.is_empty() { Vec::new() } else { normalized.split('\n').collect() };
+    let mut lines: Vec<&str> = if normalized.is_empty() {
+        Vec::new()
+    } else {
+        normalized.split('\n').collect()
+    };
 
     if end_line >= lines.len() {
         return format!("Error: line {} out of range", end_line + 1);
@@ -553,7 +639,12 @@ fn handle_edit(file: &str, anchor_str: &str, content: &str) -> String {
     };
 
     match crate::commands::common::atomic_write(path, final_text.as_bytes()) {
-        Ok(_) => format!("Edited lines {}-{}.\n{}", start_line + 1, end_line + 1, handle_read(file, false)),
+        Ok(_) => format!(
+            "Edited lines {}-{}.\n{}",
+            start_line + 1,
+            end_line + 1,
+            handle_read(file, false)
+        ),
         Err(e) => format!("Error writing file: {e}"),
     }
 }
@@ -576,7 +667,11 @@ fn handle_insert(file: &str, anchor_str: &str, content: &str, before: bool) -> S
     };
 
     let normalized = fc.normalized.clone();
-    let mut lines: Vec<&str> = if normalized.is_empty() { Vec::new() } else { normalized.split('\n').collect() };
+    let mut lines: Vec<&str> = if normalized.is_empty() {
+        Vec::new()
+    } else {
+        normalized.split('\n').collect()
+    };
 
     let insert_line = if before {
         resolved.index
@@ -597,7 +692,11 @@ fn handle_insert(file: &str, anchor_str: &str, content: &str, before: bool) -> S
     };
 
     match crate::commands::common::atomic_write(path, final_text.as_bytes()) {
-        Ok(_) => format!("Inserted after line {}.\n{}", resolved.line_no, handle_read(file, false)),
+        Ok(_) => format!(
+            "Inserted after line {}.\n{}",
+            resolved.line_no,
+            handle_read(file, false)
+        ),
         Err(e) => format!("Error writing file: {e}"),
     }
 }
@@ -633,7 +732,11 @@ fn handle_delete(file: &str, anchor_str: &str) -> String {
     };
 
     let normalized = fc.normalized.clone();
-    let mut lines: Vec<&str> = if normalized.is_empty() { Vec::new() } else { normalized.split('\n').collect() };
+    let mut lines: Vec<&str> = if normalized.is_empty() {
+        Vec::new()
+    } else {
+        normalized.split('\n').collect()
+    };
 
     let num_del = end_line.saturating_sub(start_line).saturating_add(1);
     for _ in 0..num_del.min(lines.len().saturating_sub(start_line)) {
@@ -650,7 +753,12 @@ fn handle_delete(file: &str, anchor_str: &str) -> String {
     };
 
     match crate::commands::common::atomic_write(path, final_text.as_bytes()) {
-        Ok(_) => format!("Deleted lines {}-{}.\n{}", start_line + 1, end_line + 1, handle_read(file, false)),
+        Ok(_) => format!(
+            "Deleted lines {}-{}.\n{}",
+            start_line + 1,
+            end_line + 1,
+            handle_read(file, false)
+        ),
         Err(e) => format!("Error writing file: {e}"),
     }
 }
@@ -699,62 +807,149 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "hashline_read" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
             Ok(serde_json::json!({"content": [{"type": "text", "text": handle_read(file, json)}]}))
         }
         "hashline_index" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
             Ok(serde_json::json!({"content": [{"type": "text", "text": handle_index(file)}]}))
         }
         "hashline_annotate" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let query = args.get("query").and_then(|v| v.as_str()).ok_or("missing 'query'")?;
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'query'")?;
             let use_regex = args.get("regex").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_annotate(file, query, use_regex)}]}))
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_annotate(file, query, use_regex)}]}),
+            )
         }
         "hashline_grep" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or("missing 'pattern'")?;
-            let invert = args.get("invert").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_grep(file, pattern, invert)}]}))
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let pattern = args
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'pattern'")?;
+            let invert = args
+                .get("invert")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_grep(file, pattern, invert)}]}),
+            )
         }
         "hashline_find_block" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let anchor = args.get("anchor").and_then(|v| v.as_str()).ok_or("missing 'anchor'")?;
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_find_block(file, anchor)}]}))
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let anchor = args
+                .get("anchor")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'anchor'")?;
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_find_block(file, anchor)}]}),
+            )
         }
         "hashline_verify" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let anchors: Vec<String> = args.get("anchors")
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let anchors: Vec<String> = args
+                .get("anchors")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .ok_or("missing 'anchors'")?;
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_verify(file, &anchors)}]}))
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_verify(file, &anchors)}]}),
+            )
         }
         "hashline_edit" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let anchor = args.get("anchor").and_then(|v| v.as_str()).ok_or("missing 'anchor'")?;
-            let content = args.get("content").and_then(|v| v.as_str()).ok_or("missing 'content'")?;
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_edit(file, anchor, content)}]}))
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let anchor = args
+                .get("anchor")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'anchor'")?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'content'")?;
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_edit(file, anchor, content)}]}),
+            )
         }
         "hashline_insert" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let anchor = args.get("anchor").and_then(|v| v.as_str()).ok_or("missing 'anchor'")?;
-            let content = args.get("content").and_then(|v| v.as_str()).ok_or("missing 'content'")?;
-            let before = args.get("before").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_insert(file, anchor, content, before)}]}))
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let anchor = args
+                .get("anchor")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'anchor'")?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'content'")?;
+            let before = args
+                .get("before")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_insert(file, anchor, content, before)}]}),
+            )
         }
         "hashline_delete" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let anchor = args.get("anchor").and_then(|v| v.as_str()).ok_or("missing 'anchor'")?;
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_delete(file, anchor)}]}))
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let anchor = args
+                .get("anchor")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'anchor'")?;
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_delete(file, anchor)}]}),
+            )
         }
         "hashline_patch" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
-            let patch = args.get("patch").and_then(|v| v.as_str()).ok_or("missing 'patch'")?;
-            let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run)}]}))
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let patch = args
+                .get("patch")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'patch'")?;
+            let dry_run = args
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run)}]}),
+            )
         }
         _ => Err(format!("unknown tool: {name}")),
     }
@@ -768,8 +963,16 @@ pub struct Session {
     _server_info: Option<Value>,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
-    pub fn new() -> Self { Session { _server_info: None } }
+    pub fn new() -> Self {
+        Session { _server_info: None }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -786,15 +989,20 @@ pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRp
                 "capabilities": {"tools": {}}
             }))
         }
-        "tools/list" => {
-            Ok(serde_json::to_value(tool_list()).unwrap_or_default())
-        }
+        "tools/list" => Ok(serde_json::to_value(tool_list()).unwrap_or_default()),
         "tools/call" => {
-            let params = request.params.as_ref().and_then(|p| p.as_object()).cloned().unwrap_or_default();
+            let params = request
+                .params
+                .as_ref()
+                .and_then(|p| p.as_object())
+                .cloned()
+                .unwrap_or_default();
             let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
             call_tool(tool_name, &arguments)
-                .map(|_v| _v)
         }
         "ping" => Ok(serde_json::json!({})),
         _ => Err(format!("unknown method: {}", request.method)),
@@ -811,28 +1019,52 @@ pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRp
             jsonrpc: "2.0".into(),
             id,
             result: None,
-            error: Some(JsonRpcError { code: -32601, message: msg, data: None }),
+            error: Some(JsonRpcError {
+                code: -32601,
+                message: msg,
+                data: None,
+            }),
         },
     }
 }
 
-pub fn write_error<W: Write>(writer: &mut W, _id: Option<Value>, code: i32, message: &str, _data: Option<Value>) -> io::Result<()> {
+pub fn write_error<W: Write>(
+    writer: &mut W,
+    _id: Option<Value>,
+    code: i32,
+    message: &str,
+    _data: Option<Value>,
+) -> io::Result<()> {
     let response = JsonRpcResponse {
         jsonrpc: "2.0".into(),
         id: None,
         result: None,
-        error: Some(JsonRpcError { code, message: message.to_string(), data: None }),
+        error: Some(JsonRpcError {
+            code,
+            message: message.to_string(),
+            data: None,
+        }),
     };
     serde_json::to_writer(&mut *writer, &response)?;
     writeln!(&mut *writer)
 }
 
-pub fn dispatch_tool(tool_name: &str, params: &Option<Value>, _session: &mut Session) -> Result<Value, JsonRpcError> {
-    let args = params.as_ref().and_then(|p| p.as_object())
+pub fn dispatch_tool(
+    tool_name: &str,
+    params: &Option<Value>,
+    _session: &mut Session,
+) -> Result<Value, JsonRpcError> {
+    let args = params
+        .as_ref()
+        .and_then(|p| p.as_object())
         .and_then(|o| o.get("arguments"))
         .cloned()
         .unwrap_or(serde_json::json!({}));
-    call_tool(tool_name, &args).map_err(|msg| JsonRpcError { code: -32601, message: msg, data: None })
+    call_tool(tool_name, &args).map_err(|msg| JsonRpcError {
+        code: -32601,
+        message: msg,
+        data: None,
+    })
 }
 
 /// Run the MCP server (CLI entry point).
@@ -846,25 +1078,39 @@ pub fn run(_cmd: McpCmd) -> Result<(), HashlineError> {
     let mut line = String::new();
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).map_err(|e| HashlineError::Io(e))?;
-        if n == 0 { break; }
+        let n = reader
+            .read_line(&mut line)
+            .map_err(HashlineError::Io)?;
+        if n == 0 {
+            break;
+        }
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
 
         let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(req) => req,
             Err(e) => {
-                write_error(&mut writer, None, -32700, &format!("parse error: {e}"), None)
-                    .map_err(|e| HashlineError::Io(e))?;
+                write_error(
+                    &mut writer,
+                    None,
+                    -32700,
+                    &format!("parse error: {e}"),
+                    None,
+                )
+                .map_err(HashlineError::Io)?;
                 continue;
             }
         };
 
-        if request.id.is_none() { continue; }
+        if request.id.is_none() {
+            continue;
+        }
         let response = handle_request(&request, &mut session);
-        serde_json::to_writer(&mut writer, &response).map_err(|e| HashlineError::Json(e))?;
-        writer.write_all(b"\n").map_err(|e| HashlineError::Io(e))?;
-        writer.flush().map_err(|e| HashlineError::Io(e))?;
+        serde_json::to_writer(&mut writer, &response).map_err(HashlineError::Json)?;
+        writer.write_all(b"\n").map_err(HashlineError::Io)?;
+        writer.flush().map_err(HashlineError::Io)?;
     }
 
     Ok(())

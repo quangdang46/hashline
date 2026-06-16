@@ -81,26 +81,14 @@ fn flag_mode(json: bool) -> OutputMode {
     }
 }
 
-/// `--ndjson` wins over `--json`. Otherwise `--json` selects single-document JSON.
-fn format_mode(json: bool, ndjson: bool) -> OutputMode {
-    if ndjson {
-        OutputMode::Ndjson
-    } else if json {
-        OutputMode::Json
-    } else {
-        OutputMode::Pretty
-    }
-}
-
-/// Compute json_pretty: only meaningful when JSON mode is selected (not ndjson, not text).
 fn json_pretty_flag(json: bool, pretty: bool, ndjson: bool) -> bool {
     json && pretty && !ndjson
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputMode, json_pretty_for, output_mode_for};
-    use crate::cli::{Commands, ReadCmd, FindBlockCmd};
+    use super::{OutputMode, output_mode_for};
+    use crate::cli::{Commands, FindBlockCmd, ReadCmd};
     use std::path::PathBuf;
 
     #[test]
