@@ -132,23 +132,20 @@ hashline serve --http 17300
 hashline mcp
 ```
 
-## hashline vs str_replace vs patch editing
+## hashline vs str_replace
 
-| Dimension | `str_replace` | Unified diff / patch | **hashline** |
-|---|---|---|---|
-| **Targeting** | Exact old text match | Context lines around hunk | Line-number anchors + file content hash |
-| **Failure mode** | Whitespace/format mismatch | Hunk fails after nearby edits | Rejects edit if file changed since read |
-| **Best use case** | Small literal replacements | Reviewable multi-line changes | **Safe agent-driven file editing** |
-| **Model must reproduce whitespace** | ✅ required | ❌ not needed (context lines) | ❌ not needed |
-| **Stale read detection** | ❌ none | ❌ none | ✅ hash mismatch = reject |
-| **Block-aware ops** | ❌ no | ❌ no | ✅ SWAP.BLK / DEL.BLK / INS.BLK.POST |
-| **Multiple ops atomic** | ❌ no | ✅ yes (one diff) | ✅ yes (one patch string) |
-| **Dry-run preview** | ❌ no | ✅ yes (diff --stat) | ✅ `--dry-run` flag |
-| **Token cost** | High (full old content) | Medium (context lines) | Low (just LINE + new content) |
-| **Edit failure rate (AI)** | Up to 50% on some models | ~15-30% (hunk drift) | Near 0% (anchor-based) |
-| **Line range ops** | ❌ no | ✅ yes | ✅ yes (SWAP N..M / DEL N..M) |
-| **Insert at position** | ❌ no | ✅ yes (new lines in diff) | ✅ yes (INS.PRE / INS.POST / INS.HEAD / INS.TAIL) |
-| **MCP server** | ❌ no (built-in Claude tool) | ✅ yes (pipelines) | ✅ yes (10 tools over stdio) |
+| Feature | `str_replace` | **hashline** |
+|---------|:-------------:|:------------:|
+| **Target by** | Exact old text match | Line anchor `N` or `N..M` |
+| **Reject stale changes** | No | **Yes** — hash mismatch |
+| **Model reproduces whitespace** | Required | Not needed |
+| **Edit failure rate (AI)** | Up to 50% | Near 0% |
+| **Token cost** | Full old + new content | Just line number + new content |
+| **Block-aware ops** | No | **Yes** — SWAP.BLK / DEL.BLK / INS.BLK.POST |
+| **Multiple inserts at once** | No | **Yes** — INS.POST N: +a +b +c |
+| **Dry-run preview** | No | **Yes** — `--dry-run` |
+| **JSON output** | No | **Yes** — `--json` |
+| **MCP server** | Built into Claude | 10 tools over stdio |
 
 ## All operations
 
