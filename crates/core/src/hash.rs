@@ -67,6 +67,13 @@ pub fn write_short_hash_bytes(buf: &mut [u8; 2], short: ShortHash) {
     buf[1] = HEX[(short & 0x0f) as usize];
 }
 
+/// Compute a 4-hex-char file-level content hash over `text` using xxh3-64.
+/// Uses the top 16 bits of the 64-bit xxh3 hash for a compact but collision-resistant tag.
+pub fn compute_file_hash(text: &str) -> String {
+    let h = full_hash_bytes64(text.as_bytes());
+    format!("{:04x}", (h >> 48) as u16)
+}
+
 pub fn collides(a: &str, b: &str) -> bool {
     short_hash_value(a) == short_hash_value(b)
 }

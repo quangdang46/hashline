@@ -1,6 +1,22 @@
 #![allow(dead_code)]
 
-pub fn generate_short_fixture(line_count: usize) -> String {
+use std::path::PathBuf;
+
+use hashline::document::FileContent;
+use hashline::hash;
+
+pub fn make_fc(content: &str) -> FileContent {
+    FileContent {
+        path: PathBuf::from("bench.rs"),
+        raw: content.to_string(),
+        normalized: content.to_string(),
+        newline: hashline::document::NewlineStyle::Lf,
+        trailing_newline: content.ends_with('\n'),
+        hash: "0000".into(),
+    }
+}
+
+pub fn generate_short_fixture(line_count: usize) -> FileContent {
     let mut lines = Vec::with_capacity(line_count);
     for i in 0..line_count {
         lines.push(format!(
@@ -8,28 +24,23 @@ pub fn generate_short_fixture(line_count: usize) -> String {
             i.wrapping_mul(2654435761_u32 as usize)
         ));
     }
-    lines.join("\n") + "\n"
+    make_fc(&(lines.join("\n") + "\n"))
 }
 
-pub fn generate_long_fixture(line_count: usize) -> String {
+pub fn generate_long_fixture(line_count: usize) -> FileContent {
     let mut lines = Vec::with_capacity(line_count);
     for i in 0..line_count {
         lines.push(format!(
             "pub fn generated_line_{i:05}(input: &str) -> String {{ let value = format!(\"{}::{}::{}\", input, {i}, \"benchmark_payload_{:08x}\"); value.trim().to_owned() }}",
-            "segment",
-            "payload",
-            "suffix",
+            "segment", "payload", "suffix",
             i.wrapping_mul(11400714819323198485_u64 as usize)
         ));
     }
-    lines.join("\n") + "\n"
+    make_fc(&(lines.join("\n") + "\n"))
 }
 
-pub fn generate_collision_fixture(
-    line_count: usize,
-    mut short_hash: impl FnMut(&str) -> String,
-) -> String {
-    let (first, second) = find_collision_pair(&mut short_hash);
+pub fn generate_collision_fixture(line_count: usize) -> FileContent {
+    let (first, second) = find_collision_pair();
     let mut lines = Vec::with_capacity(line_count);
     for i in 0..line_count {
         if i % 16 == 0 {
@@ -43,187 +54,50 @@ pub fn generate_collision_fixture(
             ));
         }
     }
-    lines.join("\n") + "\n"
-}
-
-pub fn mutate_short_hash(short: &str) -> String {
-    let mut chars = short.chars();
-    let first = chars.next().unwrap_or('0');
-    let second = chars.next().unwrap_or('0');
-    let replacement = if first == '0' { '1' } else { '0' };
-    format!("{replacement}{second}")
+    make_fc(&(lines.join("\n") + "\n"))
 }
 
 #[derive(Clone, Debug)]
 pub struct EditScenario {
-    pub original_content: String,
-    pub drifted_content: String,
+    pub content: String,
     pub target_line_number: usize,
     pub target_anchor: String,
     pub replacement_line: String,
     pub expected_target_line: String,
-    pub naive_old_line: String,
-    pub naive_new_line: String,
-    pub naive_old_block: String,
-    pub naive_new_block: String,
 }
-
-pub type WhitespaceDriftEditScenario = EditScenario;
 
 pub fn generate_exact_match_edit_scenario(line_count: usize) -> EditScenario {
-    let mut scenario = build_base_edit_scenario(line_count, false);
-    scenario.drifted_content = scenario.original_content.clone();
-    scenario
-}
-
-pub fn generate_whitespace_drift_edit_scenario(line_count: usize) -> WhitespaceDriftEditScenario {
-    let mut scenario = build_base_edit_scenario(line_count, false);
-
-    let mut drifted_lines = split_lines(&scenario.original_content);
-    let drift_index = scenario.target_line_number - 2;
-    drifted_lines[drift_index] = "  let surrounding_context = compute_timeout_window();".to_owned();
-    scenario.drifted_content = drifted_lines.join("\n") + "\n";
-    scenario.naive_new_block = [
-        drifted_lines[drift_index].as_str(),
-        scenario.replacement_line.as_str(),
-        drifted_lines[scenario.target_line_number].as_str(),
-    ]
-    .join("\n");
-    scenario
-}
-
-pub fn generate_target_whitespace_drift_edit_scenario(line_count: usize) -> EditScenario {
-    let mut scenario = build_base_edit_scenario(line_count, false);
-
-    let mut drifted_lines = split_lines(&scenario.original_content);
-    let target_index = scenario.target_line_number - 1;
-    drifted_lines[target_index] = "  timeout: 3000,".to_owned();
-    scenario.drifted_content = drifted_lines.join("\n") + "\n";
-    scenario
-}
-
-pub fn generate_duplicate_target_edit_scenario(line_count: usize) -> EditScenario {
-    let mut scenario = build_base_edit_scenario(line_count, false);
-
-    let mut lines = split_lines(&scenario.original_content);
-    let target_index = scenario.target_line_number - 1;
-    let duplicate_index = target_index - 3;
-    lines[duplicate_index] = scenario.naive_old_line.clone();
-    scenario.original_content = lines.join("\n") + "\n";
-    scenario.drifted_content = scenario.original_content.clone();
-    scenario
-}
-
-pub fn generate_long_line_exact_match_edit_scenario(line_count: usize) -> EditScenario {
-    let mut scenario = build_base_edit_scenario(line_count, true);
-    scenario.drifted_content = scenario.original_content.clone();
-    scenario
-}
-
-pub fn generate_line_shift_edit_scenario(line_count: usize) -> EditScenario {
-    let mut scenario = build_base_edit_scenario(line_count, false);
-    let mut drifted_lines = split_lines(&scenario.original_content);
-    let target_index = scenario.target_line_number - 1;
-    // Insert 5 lines to exceed the fuzzy relocation radius (±3 lines),
-    // forcing hashline to report StaleAnchor rather than relocating.
-    for offset in (1..=5).rev() {
-        drifted_lines.insert(
-            target_index - offset,
-            format!("fn inserted_line_{offset}_before_target() {{ let marker = \"line_shift\"; }}"),
-        );
-    }
-    scenario.drifted_content = drifted_lines.join("\n") + "\n";
-    scenario
-}
-
-fn build_base_edit_scenario(line_count: usize, long_lines: bool) -> EditScenario {
-    assert!(line_count >= 5, "line_count must be at least 5");
-
-    let target_index = line_count / 2;
-    let drift_index = target_index - 1;
-    let after_index = target_index + 1;
-
     let mut lines = Vec::with_capacity(line_count);
     for i in 0..line_count {
-        let line = if long_lines {
-            format!(
-                "pub fn generated_line_{i:05}(input: &str) -> String {{ let value = format!(\"{}::{}::{}\", input, {i}, \"benchmark_payload_{:08x}\"); value.trim().to_owned() }}",
-                "segment",
-                "payload",
-                "suffix",
-                i.wrapping_mul(11400714819323198485_u64 as usize)
-            )
-        } else {
-            format!(
-                "fn generated_line_{i:05}() {{ let value = \"{:08x}\"; }}",
-                i.wrapping_mul(2654435761_u32 as usize)
-            )
-        };
-        lines.push(line);
+        lines.push(format!(
+            "fn generated_line_{i:05}() {{ let value = \"{:08x}\"; }}",
+            i.wrapping_mul(2654435761_u32 as usize)
+        ));
     }
 
-    if long_lines {
-        lines[drift_index] = "    let surrounding_context = compute_timeout_window_with_extended_payload(segment, payload, suffix, 42, \"long_line_context\");".to_owned();
-        lines[target_index] =
-            "    timeout: 3000, // benchmark_payload_long_form_with_additional_context_tokens"
-                .to_owned();
-        lines[after_index] =
-            "    retry: true, // benchmark_payload_long_form_followup_context".to_owned();
-    } else {
-        lines[drift_index] = "    let surrounding_context = compute_timeout_window();".to_owned();
-        lines[target_index] = "    timeout: 3000,".to_owned();
-        lines[after_index] = "    retry: true,".to_owned();
-    }
-
+    let target_index = line_count / 2;
     let target_line_number = target_index + 1;
-    let target_line = lines[target_index].clone();
-    let replacement_line = if long_lines {
-        "    timeout: 5000, // benchmark_payload_long_form_with_additional_context_tokens"
-            .to_owned()
-    } else {
-        "    timeout: 5000,".to_owned()
-    };
+    let content = lines.join("\n") + "\n";
+    let fc = make_fc(&content);
+    let entries = fc.lines_with_hashes();
+    let target_hash = hash::format_short_hash(entries[target_index].short_hash);
 
     EditScenario {
-        original_content: lines.join("\n") + "\n",
-        drifted_content: String::new(),
+        content,
         target_line_number,
-        target_anchor: format!(
-            "{}:{}",
-            target_line_number,
-            hashline::hash::short_hash(&target_line)
-        ),
-        replacement_line: replacement_line.clone(),
-        expected_target_line: replacement_line.clone(),
-        naive_old_line: target_line.clone(),
-        naive_new_line: replacement_line,
-        naive_old_block: [
-            lines[drift_index].as_str(),
-            lines[target_index].as_str(),
-            lines[after_index].as_str(),
-        ]
-        .join("\n"),
-        naive_new_block: [
-            lines[drift_index].as_str(),
-            "    timeout: 5000,",
-            lines[after_index].as_str(),
-        ]
-        .join("\n"),
+        target_anchor: format!("{target_line_number}:{target_hash}"),
+        replacement_line: "    timeout: 5000,".to_owned(),
+        expected_target_line: "    timeout: 5000,".to_owned(),
     }
 }
 
-fn split_lines(content: &str) -> Vec<String> {
-    content.lines().map(|line| line.to_owned()).collect()
-}
-
-fn find_collision_pair(short_hash: &mut impl FnMut(&str) -> String) -> (String, String) {
+fn find_collision_pair() -> (String, String) {
     use std::collections::HashMap;
-
-    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut seen: HashMap<u8, String> = HashMap::new();
     for i in 0..10_000 {
         let candidate = format!("line-{i}");
-        let hash = short_hash(&candidate);
-        if let Some(existing) = seen.insert(hash, candidate.clone()) {
+        let hash_val = hash::short_hash_value(&candidate);
+        if let Some(existing) = seen.insert(hash_val, candidate.clone()) {
             if existing != candidate {
                 return (existing, candidate);
             }

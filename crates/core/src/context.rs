@@ -1,7 +1,6 @@
 use std::io::Write;
 
 use crate::cli::Commands;
-use crate::document::Document;
 
 /// Coarse output mode. JSON style (compact vs pretty) is tracked separately on
 /// [`CommandContext`] via [`CommandContext::json_pretty`].
@@ -20,10 +19,6 @@ pub struct CommandContext<'a, W: Write, E: Write> {
     stderr: &'a mut E,
     output_mode: OutputMode,
     json_pretty: bool,
-    /// After a successful mutation, the command stores the post-mutation
-    /// [`Document`] here so the caller (e.g. the MCP server) can seed the
-    /// session cache without a disk re-read.
-    pub modified_doc: Option<Document>,
 }
 
 impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
@@ -33,7 +28,6 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
             stderr,
             output_mode,
             json_pretty: false,
-            modified_doc: None,
         }
     }
 
@@ -41,13 +35,6 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
     /// Has no effect on `OutputMode::Pretty` (text) or `OutputMode::Ndjson`.
     pub fn with_json_pretty(mut self, pretty: bool) -> Self {
         self.json_pretty = pretty;
-        self
-    }
-
-    /// Builder helper: set the modified_doc field (used by mutation commands
-    /// to avoid a disk re-read when seeding the session cache).
-    pub fn with_modified_doc(mut self, doc: Document) -> Self {
-        self.modified_doc = Some(doc);
         self
     }
 
@@ -71,49 +58,18 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
 
 pub fn output_mode_for(command: &Commands) -> OutputMode {
     match command {
-        Commands::Read(cmd) => format_mode(cmd.json, cmd.ndjson),
-        Commands::Index(cmd) => format_mode(cmd.json, cmd.ndjson),
-        Commands::Grep(cmd) => format_mode(cmd.json, cmd.ndjson),
-        Commands::Annotate(cmd) => format_mode(cmd.json, cmd.ndjson),
-        Commands::Edit(cmd) => flag_mode(cmd.json),
-        Commands::Verify(cmd) => flag_mode(cmd.json),
-        Commands::Insert(cmd) => flag_mode(cmd.json),
-        Commands::Delete(cmd) => flag_mode(cmd.json),
-        Commands::Patch(cmd) => flag_mode(cmd.json),
-        Commands::Indent(cmd) => flag_mode(cmd.json),
-        Commands::Stats(cmd) => flag_mode(cmd.json),
-        Commands::Doctor(cmd) => flag_mode(cmd.json),
+        Commands::Read(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
-        Commands::Replace(cmd) => flag_mode(cmd.json),
-        Commands::ApplyDiff(cmd) => flag_mode(cmd.json),
-        Commands::Batch(cmd) => flag_mode(cmd.json),
-        Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => {
-            OutputMode::Pretty
-        }
+        Commands::Patch(_) | Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
     }
 }
 
 /// Returns whether JSON output for `command` should be pretty-printed.
-/// `--ndjson` and text-mode commands always return `false`.
 pub fn json_pretty_for(command: &Commands) -> bool {
     match command {
-        Commands::Read(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
-        Commands::Index(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
-        Commands::Grep(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
-        Commands::Annotate(cmd) => json_pretty_flag(cmd.json, cmd.pretty, cmd.ndjson),
-        Commands::Edit(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Verify(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Insert(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Delete(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Patch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Indent(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Stats(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Doctor(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
+        Commands::Read(_) => false, // ReadCmd has no --pretty
         Commands::FindBlock(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Replace(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::ApplyDiff(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Batch(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Swap(_) | Commands::Move(_) | Commands::Serve(_) | Commands::Mcp(_) => false,
+        Commands::Patch(_) | Commands::Serve(_) | Commands::Mcp(_) => false,
     }
 }
 
@@ -144,168 +100,63 @@ fn json_pretty_flag(json: bool, pretty: bool, ndjson: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{OutputMode, json_pretty_for, output_mode_for};
-    use crate::cli::{Commands, DeleteCmd, DoctorCmd, EditCmd, IndentCmd, InsertCmd, ReadCmd};
+    use crate::cli::{Commands, ReadCmd, FindBlockCmd};
     use std::path::PathBuf;
 
     #[test]
-    fn uses_json_mode_when_command_requests_it() {
+    fn uses_json_mode_when_read_json_flag() {
         let command = Commands::Read(ReadCmd {
             file: PathBuf::from("demo.txt"),
-            anchor: Vec::new(),
-            context: 5,
             json: true,
-            pretty: false,
-            ndjson: false,
             no_cache: false,
-            compact: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Json);
-        assert!(!json_pretty_for(&command));
     }
 
     #[test]
     fn uses_pretty_mode_when_json_flag_is_false() {
-        let command = Commands::Edit(EditCmd {
+        let command = Commands::Read(ReadCmd {
+            file: PathBuf::from("demo.txt"),
+            json: false,
+            no_cache: false,
+        });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
+    }
+
+    #[test]
+    fn find_block_json_mode() {
+        let command = Commands::FindBlock(FindBlockCmd {
             file: PathBuf::from("demo.txt"),
             anchor: "1:aa".into(),
-            content: "new".into(),
+            json: true,
+            pretty: false,
+        });
+
+        assert_eq!(output_mode_for(&command), OutputMode::Json);
+    }
+
+    #[test]
+    fn patch_defaults_to_pretty() {
+        let command = Commands::Patch(crate::cli::PatchCmd {
+            file: PathBuf::from("demo.txt"),
+            patch: "".into(),
             dry_run: false,
-            receipt: false,
-            audit_log: None,
-            expect_mtime: None,
-            expect_inode: None,
-            interpret_escapes: false,
-            streaming: false,
-            start_query: None,
-            end_query: None,
-            json: false,
-            pretty: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
     }
 
     #[test]
-    fn supports_json_mode_for_insert() {
-        let command = Commands::Insert(InsertCmd {
-            file: PathBuf::from("demo.txt"),
-            anchor: "1:aa".into(),
-            content: "new".into(),
-            before: false,
-            dry_run: true,
-            receipt: false,
-            audit_log: None,
-            expect_mtime: None,
-            expect_inode: None,
-            interpret_escapes: false,
-            start_query: None,
-            end_query: None,
-            json: true,
-            pretty: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-    }
-
-    #[test]
-    fn supports_json_mode_for_indent() {
-        let command = Commands::Indent(IndentCmd {
-            file: PathBuf::from("demo.txt"),
-            range: "1:aa..2:bb".into(),
-            amount: "+2".into(),
-            dry_run: true,
-            receipt: false,
-            audit_log: None,
-            expect_mtime: None,
-            expect_inode: None,
-            json: true,
-            pretty: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-    }
-
-    #[test]
-    fn supports_json_mode_for_delete() {
-        let command = Commands::Delete(DeleteCmd {
-            file: PathBuf::from("demo.txt"),
-            anchor: "1:aa".into(),
-            dry_run: true,
-            receipt: false,
-            audit_log: None,
-            expect_mtime: None,
-            expect_inode: None,
-            start_query: None,
-            end_query: None,
-            json: true,
-            pretty: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-    }
-
-    #[test]
-    fn supports_json_mode_for_doctor() {
-        let command = Commands::Doctor(DoctorCmd {
-            file: PathBuf::from("demo.txt"),
-            json: true,
-            pretty: false,
-            no_cache: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-    }
-
-    #[test]
-    fn pretty_flag_enables_pretty_json() {
-        let command = Commands::Read(ReadCmd {
-            file: PathBuf::from("demo.txt"),
-            anchor: Vec::new(),
-            context: 5,
-            json: true,
-            pretty: true,
-            ndjson: false,
-            no_cache: false,
-            compact: false,
-        });
-
-        assert_eq!(output_mode_for(&command), OutputMode::Json);
-        assert!(json_pretty_for(&command));
-    }
-
-    #[test]
-    fn pretty_flag_without_json_has_no_effect() {
-        let command = Commands::Read(ReadCmd {
-            file: PathBuf::from("demo.txt"),
-            anchor: Vec::new(),
-            context: 5,
-            json: false,
-            pretty: true,
-            ndjson: false,
-            no_cache: false,
-            compact: false,
+    fn serve_defaults_to_pretty() {
+        let command = Commands::Serve(crate::cli::ServeCmd {
+            socket: None,
+            http: None,
+            detach: false,
+            pid_file: None,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);
-        assert!(!json_pretty_for(&command));
-    }
-
-    #[test]
-    fn ndjson_flag_overrides_json() {
-        let command = Commands::Read(ReadCmd {
-            file: PathBuf::from("demo.txt"),
-            anchor: Vec::new(),
-            context: 5,
-            json: true,
-            pretty: true,
-            ndjson: true,
-            no_cache: false,
-            compact: false,
-        });
-
-        // ndjson wins over json/pretty
-        assert_eq!(output_mode_for(&command), OutputMode::Ndjson);
-        assert!(!json_pretty_for(&command));
     }
 }

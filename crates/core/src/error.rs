@@ -78,7 +78,9 @@ pub enum HashlineError {
     )]
     UnbalancedBlock { line_no: usize },
 
-    #[error("block language is ambiguous at line {line_no} — use an explicit range anchor instead")]
+    #[error(
+        "block language is ambiguous at line {line_no} — use an explicit range anchor instead"
+    )]
     AmbiguousBlockLanguage { line_no: usize },
 
     #[error("invalid pattern '{pattern}': {message}")]
@@ -159,6 +161,31 @@ pub enum HashlineError {
     #[cfg(feature = "sha256-anchors")]
     #[error("{0}")]
     Sha256Anchor(String),
+
+    #[error("parse error at line {line}: {message}")]
+    ParseError { line: usize, message: String },
+
+    #[error("file not found: '{path}'")]
+    FileNotFound { path: String },
+
+    #[error("file '{path}' hash mismatch: expected {expected}, got {actual}")]
+    StaleHash {
+        path: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("cannot recover from inconsistency in '{path}'")]
+    CannotRecover { path: String },
+
+    #[error("block unresolved at line {line}: {message}")]
+    BlockUnresolved { line: usize, message: String },
+
+    #[error("missing snapshot tag in '{path}'")]
+    MissingSnapshotTag { path: String },
+
+    #[error("no block resolver configured")]
+    NoBlockResolver,
 }
 
 impl HashlineError {
@@ -266,6 +293,27 @@ impl HashlineError {
             HashlineError::Json(_) => {
                 Some("fix the JSON input or output handling and retry the command")
             }
+            HashlineError::ParseError { .. } => {
+                Some("check the input syntax around the reported line and retry")
+            }
+            HashlineError::FileNotFound { .. } => {
+                Some("verify the file path exists and is accessible")
+            }
+            HashlineError::StaleHash { .. } => {
+                Some("re-read the file with `hashline read <file>` to get current hashes")
+            }
+            HashlineError::CannotRecover { .. } => {
+                Some("examine the file for structural issues and consider manual repair")
+            }
+            HashlineError::BlockUnresolved { .. } => {
+                Some("check the block boundaries around the reported line and retry")
+            }
+            HashlineError::MissingSnapshotTag { .. } => {
+                Some("ensure the file contains a snapshot tag marker")
+            }
+            HashlineError::NoBlockResolver => {
+                Some("configure a block resolver before using block-based operations")
+            }
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => Some(
                 "use the `sha256_window` module to recompute the expected hash from current content",
@@ -310,7 +358,14 @@ impl HashlineError {
             | HashlineError::ServerError { .. }
             | HashlineError::QueryNotFound { .. }
             | HashlineError::AmbiguousQuery { .. }
-            | HashlineError::QueryRangeTooLarge { .. } => None,
+            | HashlineError::QueryRangeTooLarge { .. }
+            | HashlineError::ParseError { .. }
+            | HashlineError::FileNotFound { .. }
+            | HashlineError::StaleHash { .. }
+            | HashlineError::CannotRecover { .. }
+            | HashlineError::BlockUnresolved { .. }
+            | HashlineError::MissingSnapshotTag { .. }
+            | HashlineError::NoBlockResolver => None,
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => None,
         }
@@ -448,6 +503,29 @@ mod tests {
                 count: 15000,
                 max: 10000,
             },
+            HashlineError::ParseError {
+                line: 42,
+                message: "unexpected token".into(),
+            },
+            HashlineError::FileNotFound {
+                path: "missing.txt".into(),
+            },
+            HashlineError::StaleHash {
+                path: "demo.txt".into(),
+                expected: "aa".into(),
+                actual: "bb".into(),
+            },
+            HashlineError::CannotRecover {
+                path: "broken.txt".into(),
+            },
+            HashlineError::BlockUnresolved {
+                line: 15,
+                message: "mismatched braces".into(),
+            },
+            HashlineError::MissingSnapshotTag {
+                path: "snapshot.txt".into(),
+            },
+            HashlineError::NoBlockResolver,
         ];
 
         for error in errors {
@@ -500,46 +578,36 @@ mod tests {
 
     #[test]
     fn invariant_failures_log_as_error() {
-        assert!(
-            HashlineError::InvalidMutationRange {
-                start: 3,
-                end: 1,
-                len: 2,
-            }
-            .log_as_error()
-        );
+        assert!(HashlineError::InvalidMutationRange {
+            start: 3,
+            end: 1,
+            len: 2,
+        }
+        .log_as_error());
     }
 
     #[test]
     fn implode_errors_have_recovery_hints() {
-        assert!(
-            HashlineError::ImplodeMissingMeta { path: "out".into() }
-                .hint()
-                .is_some()
-        );
-        assert!(
-            HashlineError::ImplodeInvalidMeta {
-                path: "out/.meta.json".into(),
-                reason: "bad".into()
-            }
+        assert!(HashlineError::ImplodeMissingMeta { path: "out".into() }
             .hint()
-            .is_some()
-        );
-        assert!(
-            HashlineError::ImplodeDirtyDirectory {
-                path: "out".into(),
-                entry: "notes.txt".into()
-            }
-            .hint()
-            .is_some()
-        );
-        assert!(
-            HashlineError::ImplodeMissingLineFile {
-                path: "out".into(),
-                line_no: 2
-            }
-            .hint()
-            .is_some()
-        );
+            .is_some());
+        assert!(HashlineError::ImplodeInvalidMeta {
+            path: "out/.meta.json".into(),
+            reason: "bad".into()
+        }
+        .hint()
+        .is_some());
+        assert!(HashlineError::ImplodeDirtyDirectory {
+            path: "out".into(),
+            entry: "notes.txt".into()
+        }
+        .hint()
+        .is_some());
+        assert!(HashlineError::ImplodeMissingLineFile {
+            path: "out".into(),
+            line_no: 2
+        }
+        .hint()
+        .is_some());
     }
 }

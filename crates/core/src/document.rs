@@ -1,36 +1,139 @@
-#![allow(dead_code)]
+//! In-memory file content, normalized to LF and BOM-stripped.
+//!
+//! The primary representation used by hashline commands. Unlike the legacy
+//! `Document` type (removed), this struct does **not** pre-hash every line —
+//! it keeps the raw text and a single 4-hex file-content hash.
 
 use std::fs;
-use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
-use memchr::{memchr, memchr2};
+use memchr::memchr;
 use memmap2::Mmap;
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::error::HashlineError;
-use crate::hash::{self, ShortHash};
+use crate::hash;
 
-/// Files with at least this many lines hash their lines in parallel
-/// via rayon. Below this threshold the sequential single-pass path
-/// is faster because rayon's scheduling overhead dominates.
-const PARALLEL_HASH_LINE_THRESHOLD: usize = 20_000;
+// ---------------------------------------------------------------------------
+// FileContent — single in-memory file representation
+// ---------------------------------------------------------------------------
 
-/// When hashing in parallel, group lines into chunks of this size before
-/// dispatching to rayon. Per-task overhead is ~tens of microseconds, so
-/// we amortize it by keeping each rayon task busy for ~milliseconds.
-const PARALLEL_HASH_CHUNK_SIZE: usize = 2_048;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct LineView {
-    pub n: usize,
+/// Lightweight in-memory file content, normalized to LF and BOM-stripped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileContent {
+    pub path: PathBuf,
+    /// Raw text as read from disk (before any normalization).
+    pub raw: String,
+    /// LF-normalized, BOM-stripped text.
+    pub normalized: String,
+    /// Detected line ending style from the raw content.
+    pub newline: NewlineStyle,
+    /// Whether the raw content ends with a newline.
+    pub trailing_newline: bool,
+    /// 4-hex content hash computed over the **normalized** text.
     pub hash: String,
-    pub content: String,
 }
 
-pub type ShortHashIndex = Vec<Vec<usize>>;
+impl FileContent {
+    /// Read `path`, strip BOM, detect line endings, normalize to LF, compute
+    /// the 4-hex content hash, and return a [`FileContent`].
+    pub fn load(path: &Path) -> Result<Self, HashlineError> {
+        let path_string = path.display().to_string();
+        let file = fs::File::open(path)?;
+        let bytes = unsafe { Mmap::map(&file) }?;
+
+        if bytes.is_empty() {
+            return Ok(FileContent {
+                path: path.to_path_buf(),
+                raw: String::new(),
+                normalized: String::new(),
+                newline: NewlineStyle::Lf,
+                trailing_newline: false,
+                hash: hash::compute_file_hash(""),
+            });
+        }
+
+        // Binary-file check on the first 8 KiB.
+        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
+            return Err(HashlineError::BinaryFile { path: path_string });
+        }
+
+        let raw = std::str::from_utf8(&bytes)
+            .map_err(|_| HashlineError::InvalidUtf8 {
+                path: path_string.clone(),
+            })?
+            .to_owned();
+
+        let bom = crate::normalize::strip_bom(&raw);
+        let trailing_newline = bom.text.ends_with('\n');
+        let newline = NewlineStyle::from_normalize(crate::normalize::detect_line_ending(&bom.text));
+        let normalized = crate::normalize::normalize_to_lf(&bom.text);
+        let hash_val = hash::compute_file_hash(&normalized);
+
+        Ok(FileContent {
+            path: path.to_path_buf(),
+            raw,
+            normalized,
+            newline,
+            trailing_newline,
+            hash: hash_val,
+        })
+    }
+
+    /// Return the lines of the **normalized** text (split on `'\n'`).
+    ///
+    /// This is O(N) and allocates a `Vec`; prefer iterating over the string
+    /// directly when you only need a few lines.
+    pub fn lines(&self) -> Vec<&str> {
+        if self.normalized.is_empty() {
+            return Vec::new();
+        }
+        self.normalized.split('\n').collect()
+    }
+
+    /// Return the lines with per-line short hashes computed.
+    ///
+    /// This allocates a `Vec<LineEntry>` with one entry per line. The
+    /// trailing empty line from `split('\n')` is included when the file
+    /// ends with a newline.
+    pub fn lines_with_hashes(&self) -> Vec<LineEntry> {
+        let lines = self.lines();
+        lines
+            .iter()
+            .map(|line| LineEntry {
+                content: line.to_string(),
+                short_hash: hash::short_hash_value(line),
+            })
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        if self.normalized.is_empty() {
+            return 0;
+        }
+        // Count newlines — that gives the number of lines (which equals
+        // the number of splits).
+        self.normalized.bytes().filter(|&b| b == b'\n').count()
+            + usize::from(!self.normalized.ends_with('\n'))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.normalized.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LineEntry — per-line content + short hash, built on demand
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct LineEntry {
+    pub content: String,
+    pub short_hash: u8,
+}
+
+// ---------------------------------------------------------------------------
+// NewlineStyle
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NewlineStyle {
@@ -45,1487 +148,80 @@ impl NewlineStyle {
             NewlineStyle::Crlf => "\r\n",
         }
     }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileMeta {
-    pub mtime_secs: i64,
-    pub mtime_nanos: u32,
-    pub inode: u64,
-    pub size: u64,
-    pub change_secs: i64,
-    pub change_nanos: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LineRecord {
-    /// Per-line content. Was `Arc<str>` historically; `Box<str>` keeps the
-    /// same accessor API (`Deref<Target=str>`, `as_ref()`, `as_bytes()`)
-    /// while dropping the 16-byte atomic refcount header and the per-drop
-    /// `fetch_sub`. We never clone `LineRecord.content` anywhere in the
-    /// codebase, so the shared-ownership semantics of `Arc` were dead
-    /// weight — ~100k atomic ops + 100k * 16 bytes of header memory on
-    /// a 100k-line file. Box has a single non-atomic free at drop.
-    pub content: Box<str>,
-    pub short_hash: ShortHash,
-}
-
-/// Hard cap on the number of collision pairs surfaced through
-/// [`FileStats::collision_pairs`]. The total pair count grows as O(N²)
-/// inside a single short-hash bucket, so on files with many duplicate lines
-/// it can balloon into the billions and dominate `stats` latency for no
-/// downstream benefit. The total count is always reported via
-/// [`FileStats::collision_pair_count`].
-pub const COLLISION_PAIRS_SAMPLE_CAP: usize = 1024;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct FileStats {
-    pub line_count: usize,
-    pub unique_hashes: usize,
-    pub collision_count: usize,
-    /// A bounded sample of collision pairs (1-indexed line numbers) suitable
-    /// for surfacing examples to the user. Capped at
-    /// [`COLLISION_PAIRS_SAMPLE_CAP`] entries; see
-    /// [`FileStats::collision_pair_count`] for the true total.
-    pub collision_pairs: Vec<(usize, usize)>,
-    /// True total number of unordered collision pairs across all short-hash
-    /// buckets, computed in closed form (Σ |b|*(|b|-1)/2). May exceed
-    /// `collision_pairs.len()`.
-    pub collision_pair_count: u64,
-    /// Set to `true` when [`FileStats::collision_pairs`] is a truncated
-    /// sample (i.e. there are more collision pairs than the sample cap).
-    pub collision_pairs_truncated: bool,
-    pub estimated_read_tokens: usize,
-    pub hash_length_advice: u8,
-    pub suggested_context_n: usize,
-    pub recommended_read_mode: &'static str,
-    pub recommended_anchor_mode: &'static str,
-    pub recommended_workflow: &'static str,
-    pub warnings: Vec<&'static str>,
-}
-
-/// Minimal document metadata obtained via a lightweight streaming scan
-/// that never loads the full file content into memory.
-///
-/// Unlike [`Document`], this struct only holds metadata — path, newline
-/// style, trailing-newline flag, and line count — all determined in a
-/// single pass with a BufReader. Use it when you need to know the shape
-/// of a file without paying the cost of hashing every line.
-///
-/// The [`scan`](Self::scan) method performs a binary-file and UTF-8
-/// check on the first 8 KiB (matching [`Document::load`]) before the
-/// streaming pass.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StreamingDocument {
-    pub path: PathBuf,
-    pub newline: NewlineStyle,
-    pub trailing_newline: bool,
-    pub line_count: usize,
-}
-
-impl StreamingDocument {
-    /// Scan `path` in a streaming fashion, detecting newline style and
-    /// counting lines without loading the full file into memory.
-    pub fn scan(path: &Path) -> Result<Self, HashlineError> {
-        use std::io::Read;
-
-        let path_string = path.display().to_string();
-        let metadata = fs::metadata(path)?;
-
-        // Binary-file + UTF-8 check on the first 8 KiB (matching Document::load).
-        if metadata.len() > 0 {
-            let mut header = vec![0u8; 8192.min(metadata.len() as usize)];
-            let mut file = std::fs::File::open(path)?;
-            file.read_exact(&mut header)?;
-            if memchr(0, &header).is_some() {
-                return Err(HashlineError::BinaryFile { path: path_string });
-            }
-            std::str::from_utf8(&header)
-                .map_err(|_| HashlineError::InvalidUtf8 { path: path_string })?;
-        }
-
-        // Streaming pass: count lines, detect newline style.
-        let file = std::fs::File::open(path)?;
-        let mut reader = std::io::BufReader::new(file);
-        let mut line_count = 0usize;
-        let mut newline = NewlineStyle::Lf;
-        let mut trailing_newline = false;
-        let mut saw_crlf = false;
-        let mut buf = Vec::new();
-
-        loop {
-            buf.clear();
-            let n = reader.read_until(b'\n', &mut buf)?;
-            if n == 0 {
-                break;
-            }
-            line_count += 1;
-            if buf.last() == Some(&b'\n') {
-                trailing_newline = true;
-                if buf.len() >= 2 && buf[buf.len() - 2] == b'\r' {
-                    saw_crlf = true;
-                }
-            } else {
-                trailing_newline = false;
-            }
-        }
-
-        if saw_crlf {
-            newline = NewlineStyle::Crlf;
-        }
-
-        Ok(StreamingDocument {
-            path: path.to_path_buf(),
-            newline,
-            trailing_newline,
-            line_count,
-        })
-    }
-
-    pub fn len(&self) -> usize {
-        self.line_count
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.line_count == 0
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Document {
-    pub path: PathBuf,
-    pub newline: NewlineStyle,
-    pub trailing_newline: bool,
-    pub lines: Vec<LineRecord>,
-    pub content_len: usize,
-    pub file_meta: Option<FileMeta>,
-    #[doc(hidden)]
-    pub short_hash_index: Option<ShortHashIndex>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SearchDocument {
-    pub path: PathBuf,
-    pub content: String,
-    pub newline: NewlineStyle,
-    pub trailing_newline: bool,
-    pub line_offsets: Vec<usize>,
-}
-
-impl SearchDocument {
-    pub fn load(path: &Path) -> Result<SearchDocument, HashlineError> {
-        let file = fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        let path_string = path.display().to_string();
-
-        if metadata.len() == 0 {
-            return Ok(SearchDocument {
-                path: path.to_path_buf(),
-                content: String::new(),
-                newline: NewlineStyle::Lf,
-                trailing_newline: false,
-                line_offsets: vec![0],
-            });
-        }
-
-        let mmap = unsafe { Mmap::map(&file) }?;
-        let bytes = &mmap[..];
-
-        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
-            return Err(HashlineError::BinaryFile { path: path_string });
-        }
-
-        let content_owned = std::str::from_utf8(bytes)
-            .map_err(|_| HashlineError::InvalidUtf8 {
-                path: path_string.clone(),
-            })?
-            .to_owned();
-
-        let (newline, trailing_newline, line_offsets) = parse_line_offsets(&content_owned);
-        let path_buf = path.to_path_buf();
-        drop(file);
-        drop(mmap);
-        let _ = metadata;
-
-        Ok(SearchDocument {
-            path: path_buf,
-            content: content_owned,
-            newline,
-            trailing_newline,
-            line_offsets,
-        })
-    }
-
-    pub fn grep_lines(&self, pattern: &str, invert: bool) -> Vec<LineView> {
-        let mut results = Vec::new();
-        self.grep_for_each(pattern, invert, |line_idx, content, short_hash| {
-            results.push(LineView {
-                n: line_idx + 1,
-                hash: hash::format_short_hash(short_hash),
-                content: content.to_string(),
-            });
-        });
-        results
-    }
-
-    /// Streaming variant of [`SearchDocument::grep_lines`] that hands each
-    /// match to `sink` instead of building a `Vec<LineView>`. The pretty-mode
-    /// `grep` path uses this so we never allocate a `String` per match — the
-    /// content slice is borrowed straight out of the underlying mmap-backed
-    /// `self.content` and a 2-byte hash buffer is rendered inline.
-    pub fn grep_for_each<F>(&self, pattern: &str, invert: bool, mut sink: F)
-    where
-        F: FnMut(usize, &str, crate::hash::ShortHash),
-    {
-        let pattern_bytes = pattern.as_bytes();
-        let pat_len = pattern_bytes.len();
-
-        let finder = if pat_len >= 2 {
-            Some(memchr::memmem::Finder::new(pattern_bytes))
-        } else {
-            None
-        };
-
-        for (line_idx, &start) in self.line_offsets.iter().enumerate() {
-            let end = if line_idx + 1 < self.line_offsets.len() {
-                self.line_offsets[line_idx + 1]
-            } else {
-                self.content.len()
-            };
-            let line_end = if self.trailing_newline
-                && end > start
-                && self.content.as_bytes()[end.saturating_sub(1)] == b'\n'
-            {
-                end - 1
-            } else {
-                end.min(self.content.len())
-            };
-            let line_content = self.content[start..line_end]
-                .strip_suffix('\r')
-                .unwrap_or(&self.content[start..line_end]);
-
-            let is_match = if pat_len == 1 {
-                memchr(pattern_bytes[0], line_content.as_bytes()).is_some()
-            } else if let Some(ref f) = finder {
-                f.find(line_content.as_bytes()).is_some()
-            } else {
-                false
-            };
-
-            let include = if invert { !is_match } else { is_match };
-            if include {
-                let full_hash = hash::full_hash(line_content);
-                let short_hash = hash::short_from_full(full_hash);
-                sink(line_idx, line_content, short_hash);
-            }
-        }
-    }
-
-    /// Construct a `SearchDocument` from a string slice, mostly for testing.
-    /// Skips the file I/O and binary/utf8 checks that `load` performs.
-    #[cfg(test)]
-    pub fn new(content: &str) -> SearchDocument {
-        let (newline, trailing_newline, line_offsets) = parse_line_offsets(content);
-        SearchDocument {
-            path: PathBuf::from("demo.txt"),
-            content: content.to_owned(),
-            newline,
-            trailing_newline,
-            line_offsets,
+    fn from_normalize(le: crate::normalize::LineEnding) -> Self {
+        match le {
+            crate::normalize::LineEnding::Lf => NewlineStyle::Lf,
+            crate::normalize::LineEnding::Crlf => NewlineStyle::Crlf,
         }
     }
 }
 
-impl Document {
-    pub fn load(path: &Path) -> Result<Document, HashlineError> {
-        let file = fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        let path_string = path.display().to_string();
-
-        if metadata.len() == 0 {
-            return Ok(Document {
-                path: path.to_path_buf(),
-                newline: NewlineStyle::Lf,
-                trailing_newline: false,
-                lines: Vec::new(),
-                content_len: 0,
-                file_meta: Some(FileMeta::from_metadata(&metadata)?),
-                short_hash_index: None,
-            });
-        }
-
-        let mmap = unsafe { Mmap::map(&file) }?;
-        let bytes = &mmap[..];
-
-        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
-            return Err(HashlineError::BinaryFile { path: path_string });
-        }
-
-        let content = std::str::from_utf8(bytes).map_err(|_| HashlineError::InvalidUtf8 {
-            path: path_string.clone(),
-        })?;
-
-        let (newline, trailing_newline, lines, content_len) =
-            parse_document_content(content, path)?;
-        let file_meta = Some(FileMeta::from_metadata(&metadata)?);
-
-        Ok(Document {
-            path: path.to_path_buf(),
-            newline,
-            trailing_newline,
-            lines,
-            content_len,
-            file_meta,
-            short_hash_index: None,
-        })
-    }
-
-    pub fn from_str(path: &Path, content: &str) -> Result<Document, HashlineError> {
-        let (newline, trailing_newline, lines, content_len) =
-            parse_document_content(content, path)?;
-
-        Ok(Document {
-            path: path.to_path_buf(),
-            newline,
-            trailing_newline,
-            lines,
-            content_len,
-            file_meta: None,
-            short_hash_index: None,
-        })
-    }
-
-    pub fn load_with_hash_cache(path: &Path, root: &Path) -> Result<Document, HashlineError> {
-        use crate::hash_cache::HashSidecar;
-
-        let file = fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        let path_string = path.display().to_string();
-
-        if metadata.len() == 0 {
-            return Ok(Document {
-                path: path.to_path_buf(),
-                newline: NewlineStyle::Lf,
-                trailing_newline: false,
-                lines: Vec::new(),
-                content_len: 0,
-                file_meta: Some(FileMeta::from_metadata(&metadata)?),
-                short_hash_index: None,
-            });
-        }
-
-        let mmap = unsafe { memmap2::Mmap::map(&file) }?;
-        let bytes = &mmap[..];
-
-        if memchr(0, &bytes[..bytes.len().min(8_000)]).is_some() {
-            return Err(HashlineError::BinaryFile { path: path_string });
-        }
-
-        let content_hash = crate::hash::full_hash_bytes64(bytes);
-        let mtime = metadata
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        if HashSidecar::exists(root, path) {
-            if let Ok(sidecar) = HashSidecar::read(root, path) {
-                if sidecar.mtime_secs == mtime
-                    && sidecar.size == metadata.len()
-                    && sidecar.content_hash == content_hash
-                {
-                    let content =
-                        std::str::from_utf8(bytes).map_err(|_| HashlineError::InvalidUtf8 {
-                            path: path_string.clone(),
-                        })?;
-                    // Single-pass build: collects newline style, trailing
-                    // newline, content_len, and LineRecords (with the
-                    // sidecar's pre-computed short_hashes) in one walk over
-                    // the content. The previous code called
-                    // parse_document_content + build_lines_from_hashes which
-                    // scanned the file twice and re-hashed every line —
-                    // defeating the entire point of the cache.
-                    let (newline, trailing_newline, lines, content_len) =
-                        build_lines_from_hashes_with_meta(&sidecar.short_hashes, content);
-                    let file_meta = Some(FileMeta::from_metadata(&metadata)?);
-
-                    return Ok(Document {
-                        path: path.to_path_buf(),
-                        newline,
-                        trailing_newline,
-                        lines,
-                        content_len,
-                        file_meta,
-                        short_hash_index: None,
-                    });
-                }
-            }
-        }
-
-        let content = std::str::from_utf8(bytes).map_err(|_| HashlineError::InvalidUtf8 {
-            path: path_string.clone(),
-        })?;
-        let file_meta = Some(FileMeta::from_metadata(&metadata)?);
-        let (newline, trailing_newline, lines, content_len) =
-            parse_document_content(content, path)?;
-
-        // Write the sidecar in a background thread so the first-run callers
-        // never wait on the fsync that `HashSidecar::write` triggers. The
-        // returned Document is unaffected — subsequent reads of the same
-        // file pick up the cache.
-        let sidecar_short_hashes: Vec<u8> = lines.iter().map(|l| l.short_hash).collect();
-        let path_clone = path.to_path_buf();
-        let root_clone = root.to_path_buf();
-        let size = metadata.len();
-        std::thread::spawn(move || {
-            let sidecar = HashSidecar {
-                mtime_secs: mtime,
-                size,
-                content_hash,
-                short_hashes: sidecar_short_hashes,
-            };
-            let _ = sidecar.write(&root_clone, &path_clone);
-        });
-
-        Ok(Document {
-            path: path.to_path_buf(),
-            newline,
-            trailing_newline,
-            lines,
-            content_len,
-            file_meta,
-            short_hash_index: None,
-        })
-    }
-
-    pub fn build_index(&self) -> ShortHashIndex {
-        let counts = count_short_hashes(&self.lines);
-        build_index_from_counts(&self.lines, &counts)
-    }
-
-    /// Build and cache index, returning cached reference.
-    /// Call this on a &mut Document to populate the cache for future calls.
-    pub fn build_index_cached(doc: &mut Document) -> &ShortHashIndex {
-        if doc.short_hash_index.is_none() {
-            let counts = count_short_hashes(&doc.lines);
-            doc.short_hash_index = Some(build_index_from_counts(&doc.lines, &counts));
-        }
-        doc.short_hash_index.as_ref().unwrap()
-    }
-
-    pub fn render(&self) -> Vec<u8> {
-        if self.lines.is_empty() {
-            return Vec::new();
-        }
-
-        let separator = self.newline.separator().as_bytes();
-        let separator_count =
-            self.lines.len().saturating_sub(1) + usize::from(self.trailing_newline);
-        let mut rendered = Vec::with_capacity(self.content_len + separator.len() * separator_count);
-
-        let mut first = true;
-        for line in &self.lines {
-            if !first {
-                rendered.extend_from_slice(separator);
-            }
-            first = false;
-            rendered.extend_from_slice(line.content.as_bytes());
-        }
-
-        if self.trailing_newline {
-            rendered.extend_from_slice(separator);
-        }
-
-        rendered
-    }
-
-    pub fn write_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        if self.lines.is_empty() {
-            return Ok(());
-        }
-
-        let separator = self.newline.separator().as_bytes();
-        for (index, line) in self.lines.iter().enumerate() {
-            if index > 0 {
-                writer.write_all(separator)?;
-            }
-            writer.write_all(line.content.as_bytes())?;
-        }
-
-        if self.trailing_newline {
-            writer.write_all(separator)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn compute_stats(&self) -> FileStats {
-        let bucket_counts = count_short_hashes(&self.lines);
-        let index = build_index_from_counts(&self.lines, &bucket_counts);
-        let (mut collision_pairs, collision_pair_count) =
-            collect_collision_pairs_sample(&index, COLLISION_PAIRS_SAMPLE_CAP);
-        collision_pairs.sort_unstable();
-        let collision_pairs_truncated = collision_pair_count > collision_pairs.len() as u64;
-        let (unique_hashes, collision_count) = summarize_bucket_counts(&bucket_counts);
-
-        let estimated_read_tokens = estimate_read_tokens(self);
-        let hash_length_advice = recommend_hash_length(self);
-        let suggested_context_n = suggest_context_n(self);
-        let recommended_read_mode = recommend_read_mode(self, estimated_read_tokens);
-        let recommended_anchor_mode =
-            recommend_anchor_mode(self, collision_count, hash_length_advice);
-        let recommended_workflow = recommend_workflow(self, estimated_read_tokens, collision_count);
-        let warnings = collect_warnings(
-            self,
-            estimated_read_tokens,
-            collision_count,
-            hash_length_advice,
-        );
-
-        FileStats {
-            line_count: self.len(),
-            unique_hashes,
-            collision_count,
-            collision_pairs,
-            collision_pair_count,
-            collision_pairs_truncated,
-            estimated_read_tokens,
-            hash_length_advice,
-            suggested_context_n,
-            recommended_read_mode,
-            recommended_anchor_mode,
-            recommended_workflow,
-            warnings,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-}
-
-impl FileMeta {
-    fn from_metadata(metadata: &fs::Metadata) -> Result<Self, HashlineError> {
-        let modified = metadata.modified()?;
-        let duration = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let (change_secs, change_nanos) = change_time_from_metadata(metadata);
-
-        Ok(Self {
-            mtime_secs: duration.as_secs() as i64,
-            mtime_nanos: duration.subsec_nanos(),
-            inode: inode_from_metadata(metadata),
-            size: metadata.len(),
-            change_secs,
-            change_nanos,
-        })
-    }
-}
-
-pub fn read_file_meta(path: &Path) -> Result<FileMeta, HashlineError> {
-    let metadata = fs::metadata(path)?;
-    FileMeta::from_metadata(&metadata)
-}
-
-pub fn format_short_hash(short_hash: ShortHash) -> String {
-    hash::format_short_hash(short_hash)
-}
-
-fn parse_document_content(
-    content: &str,
-    path: &Path,
-) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), HashlineError> {
-    if content.is_empty() {
-        return Ok((NewlineStyle::Lf, false, Vec::new(), 0));
-    }
-
-    let bytes = content.as_bytes();
-    let trailing_newline = content.ends_with('\n');
-    let estimated_line_count = memchr::memchr_iter(b'\n', bytes).count();
-
-    if estimated_line_count >= PARALLEL_HASH_LINE_THRESHOLD {
-        // Large file: scan line boundaries first, then hash chunks in
-        // parallel via rayon. The (start, end) range vec adds an extra
-        // allocation, but rayon parallelism on a non-trivial CPU workload
-        // amortizes it many times over.
-        parse_document_content_parallel(
-            content,
-            bytes,
-            path,
-            trailing_newline,
-            estimated_line_count,
-        )
-    } else {
-        // Small file: single sequential pass builds LineRecords inline,
-        // avoiding the intermediate ranges Vec entirely. This path matches
-        // the historical single-pass implementation and is the fastest
-        // option when there is not enough work to parallelize.
-        parse_document_content_sequential(
-            content,
-            bytes,
-            path,
-            trailing_newline,
-            estimated_line_count,
-        )
-    }
-}
-
-fn parse_document_content_sequential(
-    content: &str,
-    bytes: &[u8],
-    path: &Path,
-    trailing_newline: bool,
-    estimated_line_count: usize,
-) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), HashlineError> {
-    let mut saw_lf = false;
-    let mut saw_crlf = false;
-    let mut saw_bare_cr = false;
-    let mut newline = NewlineStyle::Lf;
-    let mut lines = Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
-    let mut start = 0usize;
-    let mut search_from = 0usize;
-    let mut content_len = 0usize;
-
-    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
-        let index = search_from + relative;
-        match bytes[index] {
-            b'\r' => {
-                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
-                    saw_crlf = true;
-                    newline = NewlineStyle::Crlf;
-                    let line = &content[start..index];
-                    content_len += line.len();
-                    lines.push(build_line_record(line));
-                    search_from = index + 2;
-                    start = search_from;
-                } else {
-                    saw_bare_cr = true;
-                    search_from = index + 1;
-                }
-            }
-            b'\n' => {
-                saw_lf = true;
-                let line = &content[start..index];
-                content_len += line.len();
-                lines.push(build_line_record(line));
-                search_from = index + 1;
-                start = search_from;
-            }
-            _ => unreachable!("memchr2 only returns requested bytes"),
-        }
-    }
-
-    if saw_bare_cr || (saw_crlf && saw_lf) {
-        return Err(HashlineError::MixedNewlines {
-            path: path.display().to_string(),
-        });
-    }
-
-    if !trailing_newline && start < content.len() {
-        let line = &content[start..];
-        content_len += line.len();
-        lines.push(build_line_record(line));
-    }
-
-    Ok((newline, trailing_newline, lines, content_len))
-}
-
-fn parse_document_content_parallel(
-    content: &str,
-    bytes: &[u8],
-    path: &Path,
-    trailing_newline: bool,
-    estimated_line_count: usize,
-) -> Result<(NewlineStyle, bool, Vec<LineRecord>, usize), HashlineError> {
-    // Phase 1: scan for line boundaries with memchr — fast, single pass,
-    // no hashing here. We record (start, end) byte ranges so the hashing
-    // phase can run in parallel without mutating shared state.
-    let mut saw_lf = false;
-    let mut saw_crlf = false;
-    let mut saw_bare_cr = false;
-    let mut newline = NewlineStyle::Lf;
-    let mut ranges: Vec<(usize, usize)> =
-        Vec::with_capacity(estimated_line_count + usize::from(!trailing_newline));
-    let mut start = 0usize;
-    let mut search_from = 0usize;
-
-    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
-        let index = search_from + relative;
-        match bytes[index] {
-            b'\r' => {
-                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
-                    saw_crlf = true;
-                    newline = NewlineStyle::Crlf;
-                    ranges.push((start, index));
-                    search_from = index + 2;
-                    start = search_from;
-                } else {
-                    saw_bare_cr = true;
-                    search_from = index + 1;
-                }
-            }
-            b'\n' => {
-                saw_lf = true;
-                ranges.push((start, index));
-                search_from = index + 1;
-                start = search_from;
-            }
-            _ => unreachable!("memchr2 only returns requested bytes"),
-        }
-    }
-
-    if saw_bare_cr || (saw_crlf && saw_lf) {
-        return Err(HashlineError::MixedNewlines {
-            path: path.display().to_string(),
-        });
-    }
-
-    if !trailing_newline && start < content.len() {
-        ranges.push((start, content.len()));
-    }
-
-    // Phase 2: hash each line in parallel. We dispatch in chunks of
-    // PARALLEL_HASH_CHUNK_SIZE so per-task overhead is amortized — per-line
-    // parallelism is too fine-grained for xxh32 to be worthwhile.
-    let content_len: usize = ranges.iter().map(|(s, e)| e - s).sum();
-    let lines: Vec<LineRecord> = ranges
-        .par_chunks(PARALLEL_HASH_CHUNK_SIZE)
-        .flat_map_iter(|chunk| {
-            chunk
-                .iter()
-                .map(|&(s, e)| build_line_record(&content[s..e]))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
-    Ok((newline, trailing_newline, lines, content_len))
-}
-
-fn parse_line_offsets(content: &str) -> (NewlineStyle, bool, Vec<usize>) {
-    if content.is_empty() {
-        return (NewlineStyle::Lf, false, vec![0]);
-    }
-
-    let bytes = content.as_bytes();
-    let mut saw_lf = false;
-    let mut saw_crlf = false;
-    let mut saw_bare_cr = false;
-    let mut newline = NewlineStyle::Lf;
-    let trailing_newline = content.ends_with('\n');
-    let estimated_lines = memchr::memchr_iter(b'\n', bytes).count() + 1;
-    let mut line_offsets = Vec::with_capacity(estimated_lines);
-    line_offsets.push(0);
-    let mut search_from = 0;
-
-    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
-        let index = search_from + relative;
-        match bytes[index] {
-            b'\r' => {
-                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
-                    saw_crlf = true;
-                    newline = NewlineStyle::Crlf;
-                    search_from = index + 2;
-                    line_offsets.push(search_from);
-                } else {
-                    saw_bare_cr = true;
-                    search_from = index + 1;
-                }
-            }
-            b'\n' => {
-                saw_lf = true;
-                search_from = index + 1;
-                line_offsets.push(search_from);
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    if saw_bare_cr || (saw_crlf && saw_lf) {
-        return (NewlineStyle::Lf, trailing_newline, line_offsets);
-    }
-
-    (newline, trailing_newline, line_offsets)
-}
-
-fn build_line_record(content: &str) -> LineRecord {
-    let full_hash = hash::full_hash(content);
-    LineRecord {
-        content: Box::from(content),
-        short_hash: hash::short_from_full(full_hash),
-    }
-}
-
-/// Cache-hit variant that computes newline style, trailing-newline flag,
-/// content_len, and the full `Vec<LineRecord>` in a single pass over
-/// `content`, reusing the pre-computed `short_hashes` from the sidecar.
-///
-/// The non-cached path does a sequential or parallel hash pass via
-/// `parse_document_content`; this helper exists so the cache-hit branch
-/// of `Document::load_with_hash_cache` doesn't pay that hashing cost.
-fn build_lines_from_hashes_with_meta(
-    short_hashes: &[u8],
-    content: &str,
-) -> (NewlineStyle, bool, Vec<LineRecord>, usize) {
-    let bytes = content.as_bytes();
-    let trailing_newline = content.ends_with('\n');
-
-    let mut newline = NewlineStyle::Lf;
-    let mut saw_lf = false;
-    let mut saw_crlf = false;
-
-    let mut lines = Vec::with_capacity(short_hashes.len());
-    let mut content_len = 0usize;
-    let mut start = 0usize;
-    let mut search_from = 0usize;
-    let mut hash_idx = 0usize;
-
-    while let Some(relative) = memchr2(b'\n', b'\r', &bytes[search_from..]) {
-        let index = search_from + relative;
-        match bytes[index] {
-            b'\r' => {
-                if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
-                    saw_crlf = true;
-                    newline = NewlineStyle::Crlf;
-                    let line = &content[start..index];
-                    content_len += line.len();
-                    let sh = if hash_idx < short_hashes.len() {
-                        short_hashes[hash_idx]
-                    } else {
-                        hash::short_from_full(hash::full_hash(line))
-                    };
-                    lines.push(LineRecord {
-                        content: Box::from(line),
-                        short_hash: sh,
-                    });
-                    hash_idx += 1;
-                    search_from = index + 2;
-                    start = search_from;
-                } else {
-                    // Bare CR: fall back to LF parsing semantics by skipping
-                    // the byte; the cache-hit branch should never see this on
-                    // a well-formed file since the sidecar was only written
-                    // after parse_document_content accepted it. Defensive.
-                    search_from = index + 1;
-                }
-            }
-            b'\n' => {
-                saw_lf = true;
-                let line = &content[start..index];
-                content_len += line.len();
-                let sh = if hash_idx < short_hashes.len() {
-                    short_hashes[hash_idx]
-                } else {
-                    hash::short_from_full(hash::full_hash(line))
-                };
-                lines.push(LineRecord {
-                    content: Box::from(line),
-                    short_hash: sh,
-                });
-                hash_idx += 1;
-                search_from = index + 1;
-                start = search_from;
-            }
-            _ => unreachable!("memchr2 only returns requested bytes"),
-        }
-    }
-
-    if !trailing_newline && start < content.len() {
-        let line = &content[start..];
-        content_len += line.len();
-        let sh = if hash_idx < short_hashes.len() {
-            short_hashes[hash_idx]
-        } else {
-            hash::short_from_full(hash::full_hash(line))
-        };
-        lines.push(LineRecord {
-            content: Box::from(line),
-            short_hash: sh,
-        });
-    }
-
-    if saw_lf && !saw_crlf {
-        newline = NewlineStyle::Lf;
-    }
-
-    (newline, trailing_newline, lines, content_len)
-}
-
-fn build_lines_from_hashes(short_hashes: &[u8], content: &str) -> Vec<LineRecord> {
-    let bytes = content.as_bytes();
-    let mut lines = Vec::with_capacity(short_hashes.len());
-    let mut start = 0usize;
-    let mut search_from = 0usize;
-    let mut hash_idx = 0usize;
-
-    while let Some(relative) = memchr::memchr(b'\n', &bytes[search_from..]) {
-        let index = search_from + relative;
-        let line = &content[start..index];
-        let sh = if hash_idx < short_hashes.len() {
-            short_hashes[hash_idx]
-        } else {
-            hash::short_from_full(hash::full_hash(line))
-        };
-        lines.push(LineRecord {
-            content: Box::from(line),
-            short_hash: sh,
-        });
-        hash_idx += 1;
-        search_from = index + 1;
-        start = search_from;
-    }
-
-    if start < content.len() {
-        let line = &content[start..];
-        let sh = if hash_idx < short_hashes.len() {
-            short_hashes[hash_idx]
-        } else {
-            hash::short_from_full(hash::full_hash(line))
-        };
-        lines.push(LineRecord {
-            content: Box::from(line),
-            short_hash: sh,
-        });
-    }
-
-    lines
-}
-
-fn empty_index() -> ShortHashIndex {
-    vec![Vec::new(); 256]
-}
-
-pub fn count_short_hashes(lines: &[LineRecord]) -> [usize; 256] {
-    let mut counts = [0; 256];
-    for line in lines {
-        counts[line.short_hash as usize] += 1;
-    }
-    counts
-}
-
-pub fn build_index_from_counts(lines: &[LineRecord], counts: &[usize; 256]) -> ShortHashIndex {
-    let mut index = empty_index();
-    for (bucket, count) in counts.iter().enumerate() {
-        if *count > 0 {
-            index[bucket] = Vec::with_capacity(*count);
-        }
-    }
-
-    for (line_index, line) in lines.iter().enumerate() {
-        index[line.short_hash as usize].push(line_index);
-    }
-
-    index
-}
-
-fn summarize_bucket_counts(counts: &[usize; 256]) -> (usize, usize) {
-    let mut unique_hashes = 0;
-    let mut collision_count = 0;
-
-    for count in counts {
-        if *count == 0 {
-            continue;
-        }
-        unique_hashes += 1;
-        if *count >= 2 {
-            collision_count += *count;
-        }
-    }
-
-    (unique_hashes, collision_count)
-}
-
-/// Walk the short-hash index and return:
-///
-/// * the **true total** number of unordered collision pairs, computed via the
-///   closed-form sum `Σ |b| * (|b| - 1) / 2` over each bucket. This is
-///   `O(unique buckets)` and never materialises the cross-product.
-/// * a bounded **sample** of those pairs (capped at `sample_cap`) for
-///   surfacing examples to the user.
-///
-/// The previous implementation materialised every pair just to call `.len()`
-/// on the result, which is O(N²) in the worst case (one bucket with all
-/// lines) and made `stats` unusable on files with many duplicate lines
-/// (e.g. a 500K-line file of repeated blanks took ~24 s; with this change
-/// it returns in tens of milliseconds).
-fn collect_collision_pairs_sample(
-    index: &ShortHashIndex,
-    sample_cap: usize,
-) -> (Vec<(usize, usize)>, u64) {
-    let mut total: u64 = 0;
-    let mut sample: Vec<(usize, usize)> = Vec::new();
-
-    for positions in index.iter().filter(|positions| positions.len() >= 2) {
-        let n = positions.len() as u64;
-        total = total.saturating_add(n * (n - 1) / 2);
-
-        if sample.len() < sample_cap {
-            'outer: for left in 0..positions.len() {
-                for right in left + 1..positions.len() {
-                    sample.push((positions[left] + 1, positions[right] + 1));
-                    if sample.len() >= sample_cap {
-                        break 'outer;
-                    }
-                }
-            }
-        }
-    }
-
-    (sample, total)
-}
-
-fn estimate_read_tokens(doc: &Document) -> usize {
-    let anchor_overhead = doc.lines.len() * 8;
-    (doc.content_len + anchor_overhead) / 4
-}
-
-fn recommend_hash_length(doc: &Document) -> u8 {
-    let line_count = doc.len();
-    for hash_len in [2_u8, 3, 4] {
-        let buckets = 16_f64.powi(i32::from(hash_len));
-        if collision_probability(line_count, buckets) < 0.01 {
-            return hash_len;
-        }
-    }
-    4
-}
-
-fn collision_probability(line_count: usize, buckets: f64) -> f64 {
-    if line_count <= 1 {
-        return 0.0;
-    }
-
-    let line_count = line_count as f64;
-    1.0 - (-(line_count * (line_count - 1.0)) / (2.0 * buckets)).exp()
-}
-
-fn suggest_context_n(doc: &Document) -> usize {
-    let markers = doc
-        .lines
-        .iter()
-        .map(|line| line.content.as_ref())
-        .enumerate()
-        .filter_map(|(index, content)| is_structure_marker(content).then_some(index + 1))
-        .collect::<Vec<_>>();
-
-    if markers.len() < 2 {
-        return 5;
-    }
-
-    let mut gaps = markers
-        .windows(2)
-        .map(|window| window[1] - window[0])
-        .collect::<Vec<_>>();
-    gaps.sort_unstable();
-    let median_gap = gaps[gaps.len() / 2];
-    (median_gap / 2).clamp(3, 20)
-}
-
-fn recommend_read_mode(doc: &Document, estimated_read_tokens: usize) -> &'static str {
-    if doc.is_empty() || (estimated_read_tokens <= 2_000 && doc.len() <= 400) {
-        "read"
-    } else if estimated_read_tokens <= 8_000 {
-        "read --anchor <line:hash> --context N"
-    } else {
-        "index or read --anchor <line:hash> --context N"
-    }
-}
-
-fn recommend_anchor_mode(
-    doc: &Document,
-    collision_count: usize,
-    hash_length_advice: u8,
-) -> &'static str {
-    if doc.is_empty() || collision_count > 0 || doc.len() >= 200 || hash_length_advice > 2 {
-        "qualified"
-    } else {
-        "bare-or-qualified"
-    }
-}
-
-fn recommend_workflow(
-    doc: &Document,
-    estimated_read_tokens: usize,
-    collision_count: usize,
-) -> &'static str {
-    if doc.is_empty() {
-        "read-empty-file"
-    } else if collision_count > 0 {
-        "stats -> annotate/grep -> read --anchor --context -> edit/patch -> verify"
-    } else if estimated_read_tokens > 8_000 {
-        "index -> annotate/grep -> read --anchor --context -> edit/patch -> verify"
-    } else {
-        "read -> annotate/grep -> verify -> edit/patch -> verify"
-    }
-}
-
-fn collect_warnings(
-    doc: &Document,
-    estimated_read_tokens: usize,
-    collision_count: usize,
-    hash_length_advice: u8,
-) -> Vec<&'static str> {
-    let mut warnings = Vec::new();
-
-    if collision_count > 0 {
-        warnings.push("short-hash collisions detected; prefer qualified anchors like 12:ab");
-    }
-    if hash_length_advice > 2 {
-        warnings.push("2-char hashes may be cramped for this file; use stats and qualified anchors to avoid ambiguity");
-    }
-    if estimated_read_tokens > 8_000 {
-        warnings.push("full read output will be expensive; orient with index/stats, then narrow with --anchor and --context");
-    }
-    if doc.len() > 2_000 {
-        warnings.push("large file: prefer patch/find-block workflows over many tiny edits");
-    }
-
-    warnings
-}
-
-fn is_structure_marker(content: &str) -> bool {
-    ["function ", "def ", "class ", "fn ", "impl "]
-        .iter()
-        .any(|marker| content.contains(marker))
-}
-
-#[cfg(unix)]
-fn inode_from_metadata(metadata: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-
-    metadata.ino()
-}
-
-#[cfg(not(unix))]
-fn inode_from_metadata(_metadata: &fs::Metadata) -> u64 {
-    0
-}
-
-#[cfg(unix)]
-fn change_time_from_metadata(metadata: &fs::Metadata) -> (i64, u32) {
-    use std::os::unix::fs::MetadataExt;
-
-    (metadata.ctime(), metadata.ctime_nsec() as u32)
-}
-
-#[cfg(not(unix))]
-fn change_time_from_metadata(_metadata: &fs::Metadata) -> (i64, u32) {
-    (0, 0)
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    use super::{Document, FileStats, NewlineStyle, format_short_hash};
-    use crate::error::HashlineError;
+    use super::*;
     use std::fs;
-    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     #[test]
     fn test_load_lf_simple() {
         let (_dir, path) = write_temp_file("alpha\nbeta\n");
-        let document = Document::load(&path).unwrap();
+        let fc = FileContent::load(&path).unwrap();
 
-        assert_eq!(document.newline, NewlineStyle::Lf);
-        assert!(document.trailing_newline);
-        assert_eq!(document.lines.len(), 2);
-        assert_eq!(document.lines[0].content.as_ref(), "alpha");
-        assert_eq!(document.lines[1].content.as_ref(), "beta");
-    }
-
-    #[test]
-    fn test_load_crlf_simple() {
-        let (_dir, path) = write_temp_file("alpha\r\nbeta\r\n");
-        let document = Document::load(&path).unwrap();
-
-        assert_eq!(document.newline, NewlineStyle::Crlf);
-        assert!(document.trailing_newline);
-        assert_eq!(document.lines.len(), 2);
-        assert_eq!(document.lines[1].content.as_ref(), "beta");
+        assert_eq!(fc.newline, NewlineStyle::Lf);
+        assert!(fc.trailing_newline);
+        assert_eq!(fc.lines(), vec!["alpha", "beta", ""]);
     }
 
     #[test]
     fn test_load_single_line_no_trailing_newline() {
         let (_dir, path) = write_temp_file("alpha");
-        let document = Document::load(&path).unwrap();
+        let fc = FileContent::load(&path).unwrap();
 
-        assert_eq!(document.lines.len(), 1);
-        assert_eq!(document.lines[0].content.as_ref(), "alpha");
-        assert!(!document.trailing_newline);
-    }
-
-    #[test]
-    fn test_load_single_line_with_trailing_newline() {
-        let (_dir, path) = write_temp_file("alpha\n");
-        let document = Document::load(&path).unwrap();
-
-        assert_eq!(document.lines.len(), 1);
-        assert_eq!(document.lines[0].content.as_ref(), "alpha");
-        assert!(document.trailing_newline);
+        assert!(!fc.trailing_newline);
+        assert_eq!(fc.lines(), vec!["alpha"]);
     }
 
     #[test]
     fn test_load_empty_file() {
         let (_dir, path) = write_temp_file("");
-        let document = Document::load(&path).unwrap();
+        let fc = FileContent::load(&path).unwrap();
 
-        assert!(document.lines.is_empty());
-        assert!(!document.trailing_newline);
+        assert!(!fc.trailing_newline);
+        assert!(fc.lines().is_empty());
+        assert!(fc.is_empty());
     }
 
     #[test]
-    fn test_load_whitespace_only_lines() {
-        let (_dir, path) = write_temp_file("  \n\t\n");
-        let document = Document::load(&path).unwrap();
-
-        assert_eq!(document.lines.len(), 2);
-        assert_eq!(document.lines[0].content.as_ref(), "  ");
-        assert_eq!(document.lines[1].content.as_ref(), "\t");
-    }
-
-    #[test]
-    fn test_load_mixed_newlines_fails() {
-        let (_dir, path) = write_temp_file("alpha\r\nbeta\n");
-        let error = Document::load(&path).unwrap_err();
-
-        assert!(matches!(error, HashlineError::MixedNewlines { .. }));
-    }
-
-    #[test]
-    fn test_load_invalid_utf8_fails() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("invalid.txt");
-        fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
-
-        let error = Document::load(&path).unwrap_err();
-        assert!(matches!(error, HashlineError::InvalidUtf8 { .. }));
-    }
-
-    #[test]
-    fn test_load_binary_file_fails() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("binary.bin");
-        fs::write(&path, b"abc\0def").unwrap();
-
-        let error = Document::load(&path).unwrap_err();
-        assert!(matches!(error, HashlineError::BinaryFile { .. }));
-    }
-
-    #[test]
-    fn test_binary_check_precedes_utf8_error_when_nul_is_present() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("binary-or-invalid.bin");
-        let bytes = vec![0xff, 0x00, 0xfe];
-        fs::write(&path, bytes).unwrap();
-
-        let error = Document::load(&path).unwrap_err();
-        assert!(matches!(error, HashlineError::BinaryFile { .. }));
-    }
-
-    #[test]
-    fn test_binary_file_hint_matches_product_wording() {
-        let error = HashlineError::BinaryFile {
-            path: "demo.bin".to_owned(),
+    fn test_lines_with_hashes_includes_all_lines() {
+        let fc = FileContent {
+            path: PathBuf::from("demo.txt"),
+            raw: "a\nb\n".into(),
+            normalized: "a\nb\n".into(),
+            newline: NewlineStyle::Lf,
+            trailing_newline: true,
+            hash: "abcd".into(),
         };
-        assert_eq!(
-            error.hint(),
-            Some("hashline only supports UTF-8 text files")
-        );
+        let entries = fc.lines_with_hashes();
+        assert_eq!(entries.len(), 3); // "a", "b", ""
+        assert_eq!(entries[0].content, "a");
+        assert_eq!(entries[1].content, "b");
+        assert_eq!(entries[2].content, "");
     }
 
     #[test]
-    fn test_render_lf_round_trip() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
-        assert_eq!(doc.render(), b"alpha\nbeta\n");
-    }
+    fn test_len_matches_line_count() {
+        let (_dir, path) = write_temp_file("a\nb\nc\n");
+        let fc = FileContent::load(&path).unwrap();
+        assert_eq!(fc.len(), 3);
 
-    #[test]
-    fn test_render_crlf_round_trip() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\r\nbeta\r\n").unwrap();
-        assert_eq!(doc.render(), b"alpha\r\nbeta\r\n");
-    }
-
-    #[test]
-    fn test_render_no_trailing_newline_preserved() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta").unwrap();
-        assert_eq!(doc.render(), b"alpha\nbeta");
-    }
-
-    #[test]
-    fn test_render_trailing_newline_preserved() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\n").unwrap();
-        assert_eq!(doc.render(), b"alpha\n");
-    }
-
-    #[test]
-    fn test_render_empty_document_is_empty_bytes() {
-        let doc = Document::from_str(Path::new("demo.txt"), "").unwrap();
-        assert!(doc.render().is_empty());
-    }
-
-    #[test]
-    fn test_write_to_matches_render_for_newline_shapes() {
-        for content in [
-            "",
-            "alpha\n",
-            "alpha\nbeta",
-            "alpha\nbeta\n",
-            "alpha\r\nbeta",
-            "alpha\r\nbeta\r\n",
-        ] {
-            let doc = Document::from_str(Path::new("demo.txt"), content).unwrap();
-            let mut streamed = Vec::new();
-            doc.write_to(&mut streamed).unwrap();
-            assert_eq!(
-                streamed,
-                doc.render(),
-                "streamed render mismatch for {content:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_line_order_matches_vector_positions() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
-        assert_eq!(doc.lines[0].content.as_ref(), "alpha");
-        assert_eq!(doc.lines[1].content.as_ref(), "beta");
-    }
-
-    #[test]
-    fn test_build_index_unique_hashes() {
-        let doc = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\ngamma\n").unwrap();
-        let index = doc.build_index();
-        let alpha_hash = doc.lines[0].short_hash as usize;
-        let beta_hash = doc.lines[1].short_hash as usize;
-        assert_eq!(index[alpha_hash], vec![0]);
-        assert_eq!(index[beta_hash], vec![1]);
-    }
-
-    #[test]
-    fn test_build_index_collision_has_multiple_entries() {
-        let (first, second) = find_collision_pair().expect("collision pair should exist");
-        let doc =
-            Document::from_str(Path::new("demo.txt"), &format!("{first}\n{second}\n")).unwrap();
-        let index = doc.build_index();
-        let short = doc.lines[0].short_hash as usize;
-        assert_eq!(index[short], vec![0, 1]);
-    }
-
-    #[test]
-    fn test_empty_file_stats() {
-        let document = Document::from_str(Path::new("demo.txt"), "").unwrap();
-        let stats = document.compute_stats();
-        assert_eq!(
-            stats,
-            FileStats {
-                line_count: 0,
-                unique_hashes: 0,
-                collision_count: 0,
-                collision_pairs: vec![],
-                collision_pair_count: 0,
-                collision_pairs_truncated: false,
-                estimated_read_tokens: 0,
-                hash_length_advice: 2,
-                suggested_context_n: 5,
-                recommended_read_mode: "read",
-                recommended_anchor_mode: "qualified",
-                recommended_workflow: "read-empty-file",
-                warnings: vec![],
-            }
-        );
-    }
-
-    #[test]
-    fn test_no_collisions_file_stats() {
-        let document = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
-        let stats = document.compute_stats();
-        assert_eq!(stats.line_count, 2);
-        assert_eq!(stats.unique_hashes, 2);
-        assert_eq!(stats.collision_count, 0);
-        assert!(stats.collision_pairs.is_empty());
-    }
-
-    #[test]
-    fn test_collision_count_and_pairs_correct() {
-        let (first, second) = find_collision_pair().expect("collision pair should exist");
-        let document = Document::from_str(
-            Path::new("demo.txt"),
-            &format!("{first}\n{second}\nunique\n"),
-        )
-        .unwrap();
-        let stats = document.compute_stats();
-        assert_eq!(stats.collision_count, 2);
-        assert_eq!(stats.collision_pairs, vec![(1, 2)]);
-    }
-
-    #[test]
-    fn test_token_estimate_proportional_to_size() {
-        let short = Document::from_str(Path::new("demo.txt"), "a\n").unwrap();
-        let long = Document::from_str(Path::new("demo.txt"), "a very long line indeed\n").unwrap();
-        assert!(
-            long.compute_stats().estimated_read_tokens
-                > short.compute_stats().estimated_read_tokens
-        );
-    }
-
-    #[test]
-    fn test_hash_length_advice_2_for_small_file() {
-        let document = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\n").unwrap();
-        assert_eq!(document.compute_stats().hash_length_advice, 2);
-    }
-
-    #[test]
-    fn test_hash_length_advice_4_for_medium_file() {
-        let content = (0..200)
-            .map(|i| format!("line-{i}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        let document = Document::from_str(Path::new("demo.txt"), &content).unwrap();
-        assert_eq!(document.compute_stats().hash_length_advice, 4);
-    }
-
-    #[test]
-    fn test_context_suggestion_minimum_3_with_dense_markers() {
-        let document =
-            Document::from_str(Path::new("demo.txt"), "fn a\nfn b\nfn c\nfn d\n").unwrap();
-        assert_eq!(document.compute_stats().suggested_context_n, 3);
-    }
-
-    #[test]
-    fn test_context_suggestion_falls_back_to_5_without_markers() {
-        let document = Document::from_str(Path::new("demo.txt"), "alpha\nbeta\ngamma\n").unwrap();
-        assert_eq!(document.compute_stats().suggested_context_n, 5);
-    }
-
-    #[test]
-    fn test_context_suggestion_capped_at_20() {
-        let mut lines = (0..100).map(|i| format!("line-{i}")).collect::<Vec<_>>();
-        lines.insert(0, String::from("fn a"));
-        lines.push(String::from("fn b"));
-        let document =
-            Document::from_str(Path::new("demo.txt"), &(lines.join("\n") + "\n")).unwrap();
-        assert_eq!(document.compute_stats().suggested_context_n, 20);
-    }
-
-    #[test]
-    fn test_filemeta_captured() {
-        let (_dir, path) = write_temp_file("alpha\n");
-        let document = Document::load(&path).unwrap();
-
-        let meta = document.file_meta.expect("metadata should be present");
-        assert!(meta.mtime_secs > 0);
-        #[cfg(unix)]
-        assert!(meta.inode > 0);
-    }
-
-    #[test]
-    fn test_short_hash_formatting_round_trip() {
-        let document = Document::from_str(Path::new("demo.txt"), "alpha\n").unwrap();
-        assert_eq!(format_short_hash(document.lines[0].short_hash).len(), 2);
+        let (_dir2, path2) = write_temp_file("single");
+        let fc2 = FileContent::load(&path2).unwrap();
+        assert_eq!(fc2.len(), 1);
     }
 
     fn write_temp_file(content: &str) -> (TempDir, PathBuf) {
@@ -1533,20 +229,5 @@ mod tests {
         let path = dir.path().join("demo.txt");
         fs::write(&path, content).unwrap();
         (dir, path)
-    }
-
-    fn find_collision_pair() -> Option<(String, String)> {
-        for i in 0..10_000 {
-            let left = format!("line-{i}");
-            for j in (i + 1)..10_000 {
-                let right = format!("line-{j}");
-                let doc = Document::from_str(Path::new("demo.txt"), &format!("{left}\n{right}\n"))
-                    .unwrap();
-                if doc.lines[0].short_hash == doc.lines[1].short_hash {
-                    return Some((left, right));
-                }
-            }
-        }
-        None
     }
 }

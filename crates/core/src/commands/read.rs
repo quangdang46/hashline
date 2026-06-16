@@ -1,56 +1,50 @@
 use std::io::Write;
 
 use crate::cli::ReadCmd;
-use crate::context::{CommandContext, OutputMode};
-use crate::document::Document;
+use crate::context::CommandContext;
+use crate::document::FileContent;
 use crate::error::HashlineError;
-use crate::hash_cache::discover_sidecar_root;
-use crate::orchestration::{read_payload, resolve_read_anchors};
-use crate::output;
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: ReadCmd,
 ) -> Result<(), HashlineError> {
-    // Pure read: use the hash sidecar so repeated reads of the same file
-    // skip the per-line hashing pass on cache hit. First read writes the
-    // sidecar in a background thread, so cold-cache latency is unchanged.
-    let root = discover_sidecar_root(&cmd.file);
-    let doc = Document::load_with_hash_cache(&cmd.file, &root)?;
+    let fc = FileContent::load(&cmd.file)?;
 
-    match ctx.output_mode() {
-        OutputMode::Ndjson => {
-            // Tier 1 NDJSON: one header + one object per line, no wrapper.
-            // When no anchor filter is set we serialize straight from the
-            // Document to skip the Vec<LineView> allocation that would
-            // otherwise clone every line's content + hash into owned strings.
-            if cmd.anchor.is_empty() && cmd.context == 0 {
-                output::print_read_ndjson_streaming(ctx.stdout(), &doc, cmd.compact)?;
-            } else {
-                let payload = read_payload(&doc, &cmd.anchor, cmd.context, cmd.compact)?;
-                output::print_read_ndjson(ctx.stdout(), &payload)?;
+    if cmd.json {
+        let raw_lines = fc.lines();
+        let lines: Vec<serde_json::Value> = raw_lines
+            .iter()
+            .enumerate()
+            .filter(|(i, line)| !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline))
+            .map(|(i, line)| {
+                serde_json::json!({
+                    "n": i + 1,
+                    "content": line,
+                })
+            })
+            .collect();
+        let output = serde_json::json!({
+            "path": fc.path.display().to_string(),
+            "hash": fc.hash,
+            "lines": lines,
+        });
+        writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
+    } else {
+        writeln!(
+            ctx.stdout(),
+            "[{}#{}]",
+            fc.path.display(),
+            fc.hash
+        )?;
+        let lines = fc.lines();
+        let count = lines.len();
+        for (i, line) in lines.iter().enumerate() {
+            // Skip the trailing empty line from split('\n') when file ends with '\n'
+            if line.is_empty() && i == count - 1 && fc.trailing_newline {
+                continue;
             }
-            return Ok(());
-        }
-        OutputMode::Json => {
-            let style = output::JsonStyle::from_pretty(ctx.json_pretty());
-            if cmd.anchor.is_empty() && cmd.context == 0 {
-                output::print_read_json_streaming(ctx.stdout(), &doc, style, cmd.compact)?;
-            } else {
-                let payload = read_payload(&doc, &cmd.anchor, cmd.context, cmd.compact)?;
-                output::print_read_json(ctx.stdout(), &payload, style)?;
-            }
-            return Ok(());
-        }
-        OutputMode::Pretty => {
-            if cmd.compact {
-                output::print_compact_read(ctx.stdout(), &doc, &cmd.anchor, cmd.context)?;
-            } else if cmd.anchor.is_empty() {
-                output::print_read(ctx.stdout(), &doc)?;
-            } else {
-                let resolved = resolve_read_anchors(&doc, &cmd.anchor)?;
-                output::print_read_context(ctx.stdout(), &doc, &resolved, cmd.context)?;
-            }
+            writeln!(ctx.stdout(), "{}|{}", i + 1, line)?;
         }
     }
 

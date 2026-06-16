@@ -1,4 +1,0 @@
-updated
-beta
-gamma
-delta

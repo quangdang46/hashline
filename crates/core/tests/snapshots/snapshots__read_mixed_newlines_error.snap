@@ -1,7 +1,0 @@
----
-source: crates/core/tests/snapshots.rs
-assertion_line: 108
-expression: normalized
----
-Error: file '<fixture>' uses mixed newline styles
-Hint: run `dos2unix <file>` or `unix2dos <file>` to normalize first

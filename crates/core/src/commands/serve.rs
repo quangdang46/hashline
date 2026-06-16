@@ -209,7 +209,7 @@ pub fn run<W: Write, E: Write>(
 #[cfg(unix)]
 fn handle_unix(mut stream: std::os::unix::net::UnixStream) -> io::Result<()> {
     // Use a separate reference for reading to avoid borrowing conflicts
-    let mut session = mcp::new_session();
+    let mut session = mcp::Session::new();
     let mut line = String::new();
     let mut reader = io::BufReader::new(stream.try_clone()?);
 
@@ -292,13 +292,13 @@ fn handle_http(stream: TcpStream) -> io::Result<()> {
     reader.read_exact(&mut body)?;
     let body_str = String::from_utf8(body).unwrap_or_default();
 
-    let mut session = mcp::new_session();
+    let mut session = mcp::Session::new();
 
     let request: mcp::JsonRpcRequest = match serde_json::from_str(&body_str) {
         Ok(req) => req,
         Err(error) => {
             let response = mcp::JsonRpcResponse {
-                jsonrpc: "2.0",
+                jsonrpc: "2.0".to_string(),
                 id: None,
                 result: None,
                 error: Some(mcp::JsonRpcError {
@@ -334,7 +334,7 @@ fn handle_http(stream: TcpStream) -> io::Result<()> {
             Ok(payload) => {
                 let text = serde_json::to_string(&payload).unwrap_or_default();
                 mcp::JsonRpcResponse {
-                    jsonrpc: "2.0",
+                    jsonrpc: "2.0".to_string(),
                     id: request.id.clone(),
                     result: Some(json!({
                         "content": [{"type": "text", "text": text}],
@@ -344,7 +344,7 @@ fn handle_http(stream: TcpStream) -> io::Result<()> {
                 }
             }
             Err(e) => mcp::JsonRpcResponse {
-                jsonrpc: "2.0",
+                jsonrpc: "2.0".to_string(),
                 id: request.id.clone(),
                 result: None,
                 error: Some(e),

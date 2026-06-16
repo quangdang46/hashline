@@ -247,23 +247,8 @@ fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i
 fn command_to_tool_name(command: &Commands) -> &'static str {
     match command {
         Commands::Read(_) => "hashline_read",
-        Commands::Index(_) => "hashline_index",
-        Commands::Edit(_) => "hashline_edit",
-        Commands::Insert(_) => "hashline_insert",
-        Commands::Delete(_) => "hashline_delete",
-        Commands::Verify(_) => "hashline_verify",
-        Commands::Grep(_) => "hashline_grep",
-        Commands::Annotate(_) => "hashline_annotate",
         Commands::Patch(_) => "hashline_patch",
-        Commands::Swap(_) => "hashline_swap",
-        Commands::Move(_) => "hashline_move",
-        Commands::Indent(_) => "hashline_indent",
-        Commands::Stats(_) => "hashline_stats",
-        Commands::Doctor(_) => "hashline_doctor",
         Commands::FindBlock(_) => "hashline_find_block",
-        Commands::ApplyDiff(_) => "hashline_apply_diff",
-        Commands::Batch(_) => "hashline_batch",
-        Commands::Replace(_) => "hashline_replace",
         Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
@@ -493,23 +478,8 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
 fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error> {
     match command {
         Commands::Read(cmd) => serde_json::to_value(cmd),
-        Commands::Index(cmd) => serde_json::to_value(cmd),
-        Commands::Edit(cmd) => serde_json::to_value(cmd),
-        Commands::Insert(cmd) => serde_json::to_value(cmd),
-        Commands::Delete(cmd) => serde_json::to_value(cmd),
-        Commands::Verify(cmd) => serde_json::to_value(cmd),
-        Commands::Grep(cmd) => serde_json::to_value(cmd),
-        Commands::Annotate(cmd) => serde_json::to_value(cmd),
         Commands::Patch(cmd) => serde_json::to_value(cmd),
-        Commands::Swap(cmd) => serde_json::to_value(cmd),
-        Commands::Move(cmd) => serde_json::to_value(cmd),
-        Commands::Indent(cmd) => serde_json::to_value(cmd),
-        Commands::Stats(cmd) => serde_json::to_value(cmd),
-        Commands::Doctor(cmd) => serde_json::to_value(cmd),
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
-        Commands::ApplyDiff(cmd) => serde_json::to_value(cmd),
-        Commands::Batch(cmd) => serde_json::to_value(cmd),
-        Commands::Replace(cmd) => serde_json::to_value(cmd),
         Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
@@ -517,7 +487,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
 #[cfg(test)]
 mod tests {
     use super::{default_log_path, run, tracing_filter};
-    use hashline::cli::{Cli, Commands, DoctorCmd, PatchCmd, ReadCmd};
+    use hashline::cli::{Cli, Commands, ReadCmd, PatchCmd};
     use std::path::PathBuf;
 
     #[test]
@@ -525,13 +495,8 @@ mod tests {
         let cli = Cli {
             command: Commands::Read(ReadCmd {
                 file: PathBuf::from("missing.txt"),
-                anchor: Vec::new(),
-                context: 5,
                 json: false,
-                pretty: false,
-                ndjson: false,
                 no_cache: false,
-                compact: false,
             }),
         };
         let mut stdout = Vec::new();
@@ -557,65 +522,6 @@ mod tests {
         assert!(
             stderr.contains("Hint: check the file path and permissions, then retry the command")
         );
-    }
-
-    #[test]
-    fn json_errors_are_machine_readable() {
-        let cli = Cli {
-            command: Commands::Patch(PatchCmd {
-                file: PathBuf::from("foo"),
-                patch: "bar".into(),
-                dry_run: false,
-                receipt: false,
-                audit_log: None,
-                expect_mtime: None,
-                expect_inode: None,
-                json: true,
-                pretty: false,
-            }),
-        };
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run(cli, &mut stdout, &mut stderr);
-        if let Err(error) = result {
-            let mut sink_out = Vec::new();
-            let mut sink_err = Vec::new();
-            let mut ctx = hashline::context::CommandContext::new(
-                &mut sink_out,
-                &mut sink_err,
-                hashline::context::OutputMode::Json,
-            );
-            hashline::output::write_error(&mut ctx, &error).unwrap();
-            stdout = sink_out;
-            stderr = sink_err;
-        }
-
-        assert!(stdout.is_empty());
-        let stderr = String::from_utf8(stderr).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&stderr).unwrap();
-        assert!(parsed["error"].as_str().unwrap().starts_with("I/O error:"));
-        assert_eq!(
-            parsed["hint"],
-            "check the file path and permissions, then retry the command"
-        );
-    }
-
-    #[test]
-    fn doctor_uses_json_mode_when_requested() {
-        let cli = Cli {
-            command: Commands::Doctor(DoctorCmd {
-                file: PathBuf::from("demo.txt"),
-                json: true,
-                pretty: false,
-                no_cache: false,
-            }),
-        };
-
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let result = run(cli, &mut stdout, &mut stderr);
-        assert!(result.is_err());
     }
 
     #[test]

@@ -4,7 +4,6 @@ use std::path::Path;
 
 use tempfile::NamedTempFile;
 
-use crate::document::Document;
 use crate::error::HashlineError;
 
 /// Interpret a small set of C-style escape sequences in `input`.
@@ -39,32 +38,8 @@ pub fn interpret_escapes(input: &str) -> String {
     out
 }
 
-pub fn check_guard(
-    doc: &Document,
-    expect_mtime: Option<i64>,
-    expect_inode: Option<u64>,
-) -> Result<(), HashlineError> {
-    let Some(meta) = &doc.file_meta else {
-        return Ok(());
-    };
-
-    if expect_mtime.is_some_and(|expected| expected != meta.mtime_secs)
-        || expect_inode.is_some_and(|expected| expected != meta.inode)
-    {
-        return Err(HashlineError::StaleFile {
-            path: doc.path.display().to_string(),
-        });
-    }
-
-    Ok(())
-}
-
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     atomic_write_with(path, |file| file.write_all(bytes))
-}
-
-pub fn atomic_write_document(path: &Path, doc: &Document) -> Result<(), HashlineError> {
-    atomic_write_with(path, |file| doc.write_to(file))
 }
 
 pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), HashlineError>

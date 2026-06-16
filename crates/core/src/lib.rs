@@ -1,54 +1,23 @@
-//! # Hashline — hash-anchored line editing
+//! # Hashline — file-level snapshot-tag based line editing
 //!
-//! Library entrypoint for embedding hashline in another tool. The
-//! `hashline` CLI binary is a thin wrapper over these modules.
-//!
-//! ## Quick start
-//!
-//! ```no_run
-//! use std::path::Path;
-//! use hashline::{document::Document, anchor::{parse_anchor, resolve_without_index}};
-//!
-//! let doc = Document::load(Path::new("src/lib.rs")).unwrap();
-//! let anchor = parse_anchor("42:ab").unwrap();
-//! let resolved = resolve_without_index(&anchor, &doc).unwrap();
-//! println!("Anchor resolves to line {}", resolved.line_no);
-//! ```
-//!
-//! ## Stability
-//!
-//! Modules at the crate root that have a doc comment (e.g. [`anchor`],
-//! [`document`], [`hash`], [`mutation`]) are part of the public,
-//! semver-stable API. Modules tagged with `#[doc(hidden)]`
-//! ([`cli`], [`commands`], [`context`], [`mcp`], [`orchestration`],
-//! [`output`], [`receipt`], [`risk`]) back the CLI binary and may
-//! change between minor versions; depend on them at your own risk.
+//! Library entrypoint for embedding hashline in another tool.
 
-#![doc(html_root_url = "https://docs.rs/hashline/0.2.0")]
+#![doc(html_root_url = "https://docs.rs/hashline/0.6.0")]
 
-// ---- Public, stable API ----
-
-pub mod anchor;
-pub mod document;
-pub mod error;
-pub mod fast;
+pub mod types;
+pub mod patch_format;
+pub mod messages;
+pub mod tokenizer;
+pub mod parser;
+pub mod prefixes;
+pub mod normalize;
 pub mod hash;
-pub mod hash_cache;
-pub mod merge;
-pub mod mutation;
+pub mod error;
+pub mod document;
+pub mod anchor;
 
-/// SHA-256 window-hash anchors (backward-compat with jcode and other
-/// tools that pre-date hashline's xxh32 anchor format). Available
-/// only with the `sha256-anchors` feature enabled.
 #[cfg(feature = "sha256-anchors")]
 pub mod sha256_window;
-
-/// Session-scoped document cache with LRU eviction and cache-hit/miss
-/// statistics. Used internally by the MCP server but exposed publicly for
-/// embedders who want to reuse the same caching pattern.
-pub mod session_cache;
-
-// ---- Binary-supporting internals (public for the bin, not for consumers) ----
 
 #[doc(hidden)]
 pub mod cli;
@@ -62,7 +31,4 @@ pub mod mcp;
 pub mod orchestration;
 #[doc(hidden)]
 pub mod output;
-#[doc(hidden)]
-pub mod receipt;
-#[doc(hidden)]
-pub mod risk;
+
