@@ -32,6 +32,9 @@ fn split_text(text: &str) -> (Vec<String>, bool) {
 }
 
 fn join_lines(lines: &[String], trailing_newline: bool) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
     if trailing_newline {
         lines.join("\n") + "\n"
     } else {

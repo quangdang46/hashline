@@ -25,8 +25,10 @@ pub fn run<W: Write, E: Write>(
     let entries = fc.lines_with_hashes();
     apply_edits(&mut lines, &entries, &cmd.file, &edits)?;
 
-    let result = if had_trailing_newline {
+    let result = if had_trailing_newline && !lines.is_empty() {
         lines.join("\n") + "\n"
+    } else if lines.is_empty() {
+        String::new()
     } else {
         lines.join("\n")
     };
