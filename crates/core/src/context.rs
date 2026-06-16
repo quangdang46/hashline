@@ -61,6 +61,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Read(cmd) => flag_mode(cmd.json),
         Commands::Patch(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
+        Commands::Guide(cmd) => flag_mode(cmd.json),
         Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
     }
 }
@@ -70,6 +71,7 @@ pub fn json_pretty_for(command: &Commands) -> bool {
     match command {
         Commands::Read(_) | Commands::Patch(_) => false,
         Commands::FindBlock(cmd) => cmd.pretty,
+        Commands::Guide(_) => false,
         Commands::Serve(_) | Commands::Mcp(_) => false,
     }
 }

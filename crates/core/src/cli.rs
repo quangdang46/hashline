@@ -20,6 +20,7 @@ pub enum Commands {
     Read(ReadCmd),
     Patch(PatchCmd),
     FindBlock(FindBlockCmd),
+    Guide(GuideCmd),
     Serve(ServeCmd),
     Mcp(McpCmd),
 }
@@ -54,6 +55,13 @@ pub struct FindBlockCmd {
     pub json: bool,
     #[arg(long)]
     pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(about = "Show interactive user guide")]
+pub struct GuideCmd {
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]

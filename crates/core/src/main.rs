@@ -249,7 +249,7 @@ fn command_to_tool_name(command: &Commands) -> &'static str {
         Commands::Read(_) => "hashline_read",
         Commands::Patch(_) => "hashline_patch",
         Commands::FindBlock(_) => "hashline_find_block",
-        Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
 
@@ -480,7 +480,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
         Commands::Read(cmd) => serde_json::to_value(cmd),
         Commands::Patch(cmd) => serde_json::to_value(cmd),
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
-        Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
     }
 }
 

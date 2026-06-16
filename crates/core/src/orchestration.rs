@@ -12,6 +12,7 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Read(_) => "read",
         Commands::Patch(_) => "patch",
         Commands::FindBlock(_) => "find-block",
+        Commands::Guide(_) => "guide",
         Commands::Serve(_) => "serve",
         Commands::Mcp(_) => "mcp",
     }
@@ -47,6 +48,7 @@ pub fn run_command<W: Write, E: Write>(
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
         Commands::Patch(cmd) => commands::patch::run(&mut context, cmd).map(|_| 0),
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
+        Commands::Guide(cmd) => commands::guide::run(&mut context, cmd).map(|_| 0),
         Commands::Serve(cmd) => commands::serve::run(&mut context, cmd).map(|_| 0),
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
     }?;
