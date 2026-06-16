@@ -297,43 +297,43 @@ All measurements via `cargo bench` on **Apple M1** (`cargo build --release`).
 
 ### Hash: `lines_with_hashes()` (short lines)
 
-| Lines | Time | Throughput |
-|-------|:----:|:----------:|
-| 100 | 2.9 µs | 1.79 GiB/s |
-| 1,000 | 28.7 µs | 1.84 GiB/s |
-| 10,000 | 278 µs | 1.92 GiB/s |
-| 100,000 | 2.71 ms | 1.97 GiB/s |
+| Lines | Time |
+|-------|:----:|
+| 100 | 2.9 µs |
+| 1,000 | 28.7 µs |
+| 10,000 | 278 µs |
+| 100,000 | 2.71 ms |
 
 ### Hash: long lines
 
-| Lines | Time | Throughput |
-|-------|:----:|:----------:|
-| 1,000 | 38.2 µs | 4.33 GiB/s |
-| 10,000 | 385 µs | 4.34 GiB/s |
+| Lines | Time |
+|-------|:----:|
+| 1,000 | 38.2 µs |
+| 10,000 | 385 µs |
 
-### Hash: real-world files
+### Real-world files
 
 | File | Time |
 |------|:----:|
-| support.rs | 3.07 µs |
-| document.rs | 6.34 µs |
+| `support.rs` | 3.07 µs |
+| `document.rs` | 6.34 µs |
 
-### Resolve: hash + find anchor
+### Resolve anchor
 
-| Lines | Time | Throughput |
-|-------|:----:|:----------:|
-| 1,000 | 28.5 µs | 1.84 GiB/s |
-| 10,000 | 278 µs | 1.92 GiB/s |
-| 100,000 | 2.68 ms | 1.99 GiB/s |
+| Lines | Time |
+|-------|:----:|
+| 1,000 | 28.5 µs |
+| 10,000 | 278 µs |
+| 100,000 | 2.68 ms |
 
-### Verify: pre-hashed anchors (10k-line file)
+### Verify (10k-line file, pre-hashed)
 
-| Anchors | Time | Throughput |
-|---------|:----:|:----------:|
-| 1 | 69 ns | 14.5 Melem/s |
-| 10 | 710 ns | 14.1 Melem/s |
-| 100 | 7.4 µs | 13.5 Melem/s |
-| 1,000 | 82 µs | 12.2 Melem/s |
+| Anchors | Time |
+|---------|:----:|
+| 1 | 69 ns |
+| 10 | 710 ns |
+| 100 | 7.4 µs |
+| 1,000 | 82 µs |
 
 ### Memory footprint
 
