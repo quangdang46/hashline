@@ -17,16 +17,19 @@ pub fn run<W: Write, E: Write>(
     let text = &fc.normalized;
     let (edits, _warnings) = parse_patch(&cmd.patch);
 
-    let mut lines: Vec<String> = if text.is_empty() {
-        Vec::new()
-    } else {
-        text.split('\n').map(|s| s.to_string()).collect()
-    };
+    // Split on newlines. Drop the trailing empty segment that split('\n')
+    // produces when a file ends with '\n' — we add it back on join.
+    let mut lines: Vec<String> = split_normalized(text);
+    let had_trailing_newline = fc.trailing_newline;
 
     let entries = fc.lines_with_hashes();
     apply_edits(&mut lines, &entries, &cmd.file, &edits)?;
 
-    let result = lines.join("\n");
+    let result = if had_trailing_newline {
+        lines.join("\n") + "\n"
+    } else {
+        lines.join("\n")
+    };
     let line_ending = detect_line_ending(&fc.raw);
     let final_text = if line_ending == LineEnding::Crlf {
         restore_line_endings(&result, line_ending)
@@ -41,6 +44,18 @@ pub fn run<W: Write, E: Write>(
     }
 
     Ok(())
+}
+
+fn split_normalized(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut parts: Vec<&str> = text.split('\n').collect();
+    // Drop trailing empty from split when file ends with '\n'
+    if text.ends_with('\n') && parts.last() == Some(&"") {
+        parts.pop();
+    }
+    parts.iter().map(|s| s.to_string()).collect()
 }
 
 /// Apply parsed edits to a mutable lines vector.
@@ -221,8 +236,8 @@ fn resolve_block_span(
         }
         "py" | "verse" => find_python_block(entries, anchor_index),
         "rb" => find_ruby_block(entries, anchor_index),
-        _ => find_indent_block(entries, anchor_index)
-            .or_else(|_| find_brace_block(entries, anchor_index, extension)),
+        _ => find_brace_block(entries, anchor_index, extension)
+            .or_else(|_| find_indent_block(entries, anchor_index)),
     }
     .map_err(|_| HashlineError::UnbalancedBlock {
         line_no: anchor_index + 1,

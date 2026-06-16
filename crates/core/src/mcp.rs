@@ -13,7 +13,31 @@ use crate::cli::McpCmd;
 use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::hash;
+use crate::normalize::{detect_line_ending, restore_line_endings, LineEnding};
 use crate::parser::parse_patch;
+
+/// Split normalized text into lines, discarding the trailing empty segment
+/// that split('\n') produces when the text ends with '\n'.
+fn split_text(text: &str) -> (Vec<String>, bool) {
+    if text.is_empty() {
+        return (Vec::new(), false);
+    }
+    let trailing_newline = text.ends_with('\n');
+    let parts: Vec<&str> = text.split('\n').collect();
+    let mut lines: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
+    if trailing_newline && lines.last().map(|s| s.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    (lines, trailing_newline)
+}
+
+fn join_lines(lines: &[String], trailing_newline: bool) -> String {
+    if trailing_newline {
+        lines.join("\n") + "\n"
+    } else {
+        lines.join("\n")
+    }
+}
 
 // ---------------------------------------------------------------------------
 // JSON-RPC types
@@ -334,9 +358,9 @@ fn handle_find_block(file: &str, anchor_str: &str) -> String {
         }
         "py" => find_indent_block(&entries, anchor_index).ok(),
         "rb" => find_ruby_block(&entries, anchor_index).ok(),
-        _ => find_indent_block(&entries, anchor_index)
+        _ => find_brace_block(&entries, anchor_index, extension)
             .ok()
-            .or_else(|| find_brace_block(&entries, anchor_index, extension).ok()),
+            .or_else(|| find_indent_block(&entries, anchor_index).ok()),
     };
 
     let (start, end) = block_result.unwrap_or((anchor_index, anchor_index));
@@ -586,7 +610,6 @@ fn handle_edit(file: &str, anchor_str: &str, content: &str) -> String {
     };
     let entries = fc.lines_with_hashes();
 
-    // Parse anchor - support both "LINE:HASH" and "LINE:HASH..LINE:HASH"
     let (start_line, end_line) = if let Ok(range) = crate::anchor::parse_range(anchor_str) {
         let start = match crate::anchor::resolve_with_entries(&range.start, &entries, &fc) {
             Ok(r) => r.index,
@@ -609,31 +632,25 @@ fn handle_edit(file: &str, anchor_str: &str, content: &str) -> String {
         (resolved.index, resolved.index)
     };
 
-    let normalized = fc.normalized.clone();
-    let mut lines: Vec<&str> = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        normalized.split('\n').collect()
-    };
+    let (mut lines, _trailing_newline) = split_text(&fc.normalized);
 
     if end_line >= lines.len() {
         return format!("Error: line {} out of range", end_line + 1);
     }
 
-    // Remove old range (from the end for stable indices)
-    let new_content_lines: Vec<&str> = content.split('\n').collect();
+    let new_content_lines: Vec<String> = content.split('\n').map(|s| s.to_string()).collect();
     let num_old = end_line - start_line + 1;
     for _ in 0..num_old {
         lines.remove(start_line);
     }
-    // Insert new content
     for (k, line_text) in new_content_lines.iter().enumerate() {
-        lines.insert(start_line + k, line_text);
+        lines.insert(start_line + k, line_text.clone());
     }
 
-    let result = lines.join("\n");
-    let final_text = if fc.newline == crate::document::NewlineStyle::Crlf {
-        result.replace('\n', "\r\n")
+    let result = join_lines(&lines, fc.trailing_newline);
+    let line_ending = detect_line_ending(&fc.raw);
+    let final_text = if line_ending == LineEnding::Crlf {
+        restore_line_endings(&result, line_ending)
     } else {
         result
     };
@@ -666,12 +683,7 @@ fn handle_insert(file: &str, anchor_str: &str, content: &str, before: bool) -> S
         Err(e) => return format!("Error: {e}"),
     };
 
-    let normalized = fc.normalized.clone();
-    let mut lines: Vec<&str> = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        normalized.split('\n').collect()
-    };
+    let (mut lines, _) = split_text(&fc.normalized);
 
     let insert_line = if before {
         resolved.index
@@ -681,12 +693,13 @@ fn handle_insert(file: &str, anchor_str: &str, content: &str, before: bool) -> S
 
     for (k, line_text) in content.split('\n').enumerate() {
         let pos = (insert_line + k).min(lines.len());
-        lines.insert(pos, line_text);
+        lines.insert(pos, line_text.to_string());
     }
 
-    let result = lines.join("\n");
-    let final_text = if fc.newline == crate::document::NewlineStyle::Crlf {
-        result.replace('\n', "\r\n")
+    let result = join_lines(&lines, fc.trailing_newline);
+    let line_ending = detect_line_ending(&fc.raw);
+    let final_text = if line_ending == LineEnding::Crlf {
+        restore_line_endings(&result, line_ending)
     } else {
         result
     };
@@ -731,12 +744,7 @@ fn handle_delete(file: &str, anchor_str: &str) -> String {
         (resolved.index, resolved.index)
     };
 
-    let normalized = fc.normalized.clone();
-    let mut lines: Vec<&str> = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        normalized.split('\n').collect()
-    };
+    let (mut lines, _) = split_text(&fc.normalized);
 
     let num_del = end_line.saturating_sub(start_line).saturating_add(1);
     for _ in 0..num_del.min(lines.len().saturating_sub(start_line)) {
@@ -745,9 +753,10 @@ fn handle_delete(file: &str, anchor_str: &str) -> String {
         }
     }
 
-    let result = lines.join("\n");
-    let final_text = if fc.newline == crate::document::NewlineStyle::Crlf {
-        result.replace('\n', "\r\n")
+    let result = join_lines(&lines, fc.trailing_newline);
+    let line_ending = detect_line_ending(&fc.raw);
+    let final_text = if line_ending == LineEnding::Crlf {
+        restore_line_endings(&result, line_ending)
     } else {
         result
     };
@@ -771,21 +780,17 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     };
     let (edits, _warnings) = parse_patch(patch_str);
 
-    let normalized = fc.normalized.clone();
-    let mut lines: Vec<String> = if normalized.is_empty() {
-        Vec::new()
-    } else {
-        normalized.split('\n').map(|s| s.to_string()).collect()
-    };
+    let (mut lines, _) = split_text(&fc.normalized);
 
     let entries = fc.lines_with_hashes();
     if let Err(e) = crate::commands::patch::apply_edits(&mut lines, &entries, path, &edits) {
         return format!("Error: {e}");
     }
 
-    let result = lines.join("\n");
-    let final_text = if fc.newline == crate::document::NewlineStyle::Crlf {
-        result.replace('\n', "\r\n")
+    let result = join_lines(&lines, fc.trailing_newline);
+    let line_ending = detect_line_ending(&fc.raw);
+    let final_text = if line_ending == LineEnding::Crlf {
+        restore_line_endings(&result, line_ending)
     } else {
         result
     };

@@ -101,10 +101,10 @@ pub fn find_block_boundaries(
             let (s, e) = find_brace_block(entries, anchor_index, extension)?;
             (language_for_extension(extension), s, e)
         }
-        _ => match find_indent_block(entries, anchor_index) {
+        _ => match find_brace_block(entries, anchor_index, extension) {
             Ok((s, e)) => (Some("Unknown".into()), s, e),
             Err(_) => {
-                let (s, e) = find_brace_block(entries, anchor_index, extension)?;
+                let (s, e) = find_indent_block(entries, anchor_index)?;
                 (Some("Unknown".into()), s, e)
             }
         },
