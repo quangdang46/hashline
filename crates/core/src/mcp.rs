@@ -178,8 +178,6 @@ fn handle_read(file: &str, json: bool) -> String {
     }
 }
 
-
-
 fn handle_find_block(file: &str, anchor_str: &str) -> String {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
