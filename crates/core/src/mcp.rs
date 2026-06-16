@@ -526,11 +526,16 @@ pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRp
     let id = request.id.clone();
     let result = match request.method.as_str() {
         "initialize" => {
-            session._server_info = Some(serde_json::json!({"protocolVersion": "2024-11-05"}));
-            Ok(serde_json::json!({
+            let info = serde_json::json!({
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}}
-            }))
+                "capabilities": {"tools": {}},
+                "serverInfo": {
+                    "name": "hashline",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            });
+            session._server_info = Some(info.clone());
+            Ok(info)
         }
         "tools/list" => Ok(serde_json::to_value(tool_list()).unwrap_or_default()),
         "tools/call" => {

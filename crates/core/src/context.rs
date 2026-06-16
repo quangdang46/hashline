@@ -59,17 +59,18 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
 pub fn output_mode_for(command: &Commands) -> OutputMode {
     match command {
         Commands::Read(cmd) => flag_mode(cmd.json),
+        Commands::Patch(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
-        Commands::Patch(_) | Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
+        Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
     }
 }
 
 /// Returns whether JSON output for `command` should be pretty-printed.
 pub fn json_pretty_for(command: &Commands) -> bool {
     match command {
-        Commands::Read(_) => false, // ReadCmd has no --pretty
-        Commands::FindBlock(cmd) => json_pretty_flag(cmd.json, cmd.pretty, false),
-        Commands::Patch(_) | Commands::Serve(_) | Commands::Mcp(_) => false,
+        Commands::Read(_) | Commands::Patch(_) => false,
+        Commands::FindBlock(cmd) => cmd.pretty,
+        Commands::Serve(_) | Commands::Mcp(_) => false,
     }
 }
 
@@ -79,10 +80,6 @@ fn flag_mode(json: bool) -> OutputMode {
     } else {
         OutputMode::Pretty
     }
-}
-
-fn json_pretty_flag(json: bool, pretty: bool, ndjson: bool) -> bool {
-    json && pretty && !ndjson
 }
 
 #[cfg(test)]
@@ -131,6 +128,7 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             patch: "".into(),
             dry_run: false,
+            json: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Pretty);

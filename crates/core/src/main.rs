@@ -286,7 +286,7 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
-        "method": tool_name,
+        "method": "tools/call",
         "params": {
             "name": tool_name,
             "arguments": arguments,
@@ -383,7 +383,7 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
-        "method": tool_name,
+        "method": "tools/call",
         "params": {
             "name": tool_name,
             "arguments": arguments,

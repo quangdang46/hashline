@@ -26,7 +26,7 @@ def binary_path() -> Path:
         profile_dir = "debug"
     else:
         profile_dir = PROFILE
-    return ROOT / "target" / profile_dir / "linehash"
+    return ROOT / "target" / profile_dir / "hashline"
 
 
 def ensure_binary() -> Path:
@@ -34,7 +34,7 @@ def ensure_binary() -> Path:
     if target.exists():
         return target
 
-    build_cmd = ["cargo", "build", "-q", "-p", "linehash"]
+    build_cmd = ["cargo", "build", "-q", "-p", "hashline"]
     if PROFILE not in {"dev", "debug"}:
         build_cmd.extend(["--profile", PROFILE])
     subprocess.run(build_cmd, cwd=ROOT, check=True)
@@ -55,7 +55,7 @@ class Scenario:
     notes: str
 
 
-def run_linehash(args: list[str]) -> tuple[str, str, int, float]:
+def run_hashline(args: list[str]) -> tuple[str, str, int, float]:
     binary = ensure_binary()
     start = time.perf_counter()
     proc = subprocess.run(
@@ -72,7 +72,7 @@ def decode_json_output(raw: str) -> dict:
     try:
         return json.JSONDecoder().decode(raw)
     except json.JSONDecodeError as error:
-        raise RuntimeError(f"linehash read returned invalid JSON: {error}") from error
+        raise RuntimeError(f"hashline read returned invalid JSON: {error}") from error
 
 
 def build_base_content(line_count: int = 10_000) -> list[str]:
@@ -195,19 +195,19 @@ def scenarios() -> list[Scenario]:
     ]
 
 
-def linehash_workflow(path: Path, scenario: Scenario) -> dict:
+def hashline_workflow(path: Path, scenario: Scenario) -> dict:
     with TemporaryDirectory() as snapshot_dir:
         snapshot_path = Path(snapshot_dir) / "snapshot.txt"
         snapshot_path.write_text(scenario.initial)
-        read_json, read_err, read_code, read_ms = run_linehash(["read", str(snapshot_path), "--json"])
+        read_json, read_err, read_code, read_ms = run_hashline(["read", str(snapshot_path), "--json"])
         if read_code != 0:
-            raise RuntimeError(f"linehash read failed: {read_err}")
+            raise RuntimeError(f"hashline read failed: {read_err}")
         parsed = decode_json_output(read_json)
         anchor = f"{scenario.target_line}:{parsed['lines'][scenario.target_line - 1]['hash']}"
 
     command_count = 1
     total_ms = read_ms
-    stdout, stderr, code, edit_ms = run_linehash(["edit", str(path), anchor, scenario.new_line])
+    stdout, stderr, code, edit_ms = run_hashline(["edit", str(path), anchor, scenario.new_line])
     command_count += 1
     total_ms += edit_ms
     final_content = path.read_text()
@@ -217,7 +217,7 @@ def linehash_workflow(path: Path, scenario: Scenario) -> dict:
     matched_expected_outcome = edited_expected_target if scenario.expect_success else safe_rejection
 
     return {
-        "mode": "linehash_workflow",
+        "mode": "hashline_workflow",
         "anchor": anchor,
         "command_count": command_count,
         "duration_ms": round(total_ms, 3),
@@ -316,7 +316,7 @@ def run_repeated(mode_name: str, runner, scenario: Scenario) -> dict:
 
 def run_scenario(scenario: Scenario) -> list[dict]:
     return [
-        run_repeated("linehash_workflow", linehash_workflow, scenario),
+        run_repeated("hashline_workflow", hashline_workflow, scenario),
         run_repeated("naive_replace_workflow", naive_workflow, scenario),
     ]
 

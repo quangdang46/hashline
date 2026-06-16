@@ -89,16 +89,16 @@ def build_report(rows: list[dict], source_path: Path) -> str:
 
     lines.append("## Scenario comparison")
     lines.append("")
-    lines.append("| Scenario | Expected behavior | linehash outcome | naive outcome | linehash ms | naive ms |")
+    lines.append("| Scenario | Expected behavior | hashline outcome | naive outcome | hashline ms | naive ms |")
     lines.append("|---|---|---|---|---:|---:|")
     by_scenario: dict[str, dict[str, dict]] = defaultdict(dict)
     for row in rows:
         by_scenario[row["scenario"]][row["mode"]] = row
     for scenario, modes in by_scenario.items():
-        linehash_row = modes["linehash_workflow"]
+        hashline_row = modes["hashline_workflow"]
         naive_row = modes["naive_replace_workflow"]
         lines.append(
-            f"| `{scenario}` | {linehash_row['expected_outcome']} | {describe_outcome(linehash_row)} | {describe_outcome(naive_row)} | {linehash_row['duration_ms']:.3f} | {naive_row['duration_ms']:.3f} |"
+            f"| `{scenario}` | {hashline_row['expected_outcome']} | {describe_outcome(hashline_row)} | {describe_outcome(naive_row)} | {hashline_row['duration_ms']:.3f} | {naive_row['duration_ms']:.3f} |"
         )
     lines.append("")
 

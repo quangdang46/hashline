@@ -76,6 +76,7 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             patch: "".into(),
             dry_run: false,
+            json: false,
         });
         assert_eq!(command_name(&cmd), "patch");
     }

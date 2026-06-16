@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Benchmark runner for linehash performance evaluation.
+Benchmark runner for hashline performance evaluation.
 
 Executes `claude -p` for each combination of (task, mode, model, repetition).
 Records token usage, cost, correctness, and tool usage to JSONL format.
@@ -23,11 +23,11 @@ from parse import parse_stream_json, tool_call_counts
 from tasks import TASKS
 
 
-def get_linehash_version() -> Optional[str]:
-    """Get installed linehash version via `linehash --version`."""
+def get_hashline_version() -> Optional[str]:
+    """Get installed hashline version via `hashline --version`."""
     try:
         result = subprocess.run(
-            ["linehash", "--version"],
+            ["hashline", "--version"],
             capture_output=True, text=True, timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else None
@@ -149,7 +149,7 @@ def run_single(
         "mode": mode_name,
         "model": model_name,
         "repetition": repetition,
-        "linehash_version": get_linehash_version() if mode_name == "linehash" else None,
+        "hashline_version": get_hashline_version() if mode_name == "hashline" else None,
         "num_turns": run_result.num_turns,
         "num_tool_calls": sum(tool_breakdown.values()),
         "tool_calls": tool_breakdown,
@@ -185,12 +185,12 @@ def parse_comma_list(value: str, valid_options: dict, name: str) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run linehash benchmarks",
+        description="Run hashline benchmarks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python run.py --models sonnet --reps 3 --tasks all --modes all
-  python run.py --models sonnet --reps 1 --tasks find_definition --modes baseline,linehash
+  python run.py --models sonnet --reps 1 --tasks find_definition --modes baseline,hashline
   python run.py --models sonnet --reps 3 --tasks all --modes all --repos all
         """,
     )
@@ -279,7 +279,7 @@ Examples:
     output_file = RESULTS_DIR / f"benchmark_{timestamp}{model_suffix}.jsonl"
 
     print("=" * 70)
-    print("linehash Benchmark Runner")
+    print("hashline Benchmark Runner")
     print("=" * 70)
     print(f"Models:      {', '.join(models)}")
     print(f"Tasks:       {', '.join(tasks_list)}")

@@ -43,13 +43,13 @@ def format_cost_breakdown(costs: dict[str, float], indent: str = "  ") -> str:
     return f"{indent}{' '.join(parts)}"
 
 
-def format_cost_delta(baseline_costs: dict[str, float], linehash_costs: dict[str, float], indent: str = "  ") -> str:
+def format_cost_delta(baseline_costs: dict[str, float], hashline_costs: dict[str, float], indent: str = "  ") -> str:
     """Format cost delta breakdown."""
     deltas = {
-        "cache_creation": linehash_costs['cache_creation_cost'] - baseline_costs['cache_creation_cost'],
-        "cache_read": linehash_costs['cache_read_cost'] - baseline_costs['cache_read_cost'],
-        "output": linehash_costs['output_cost'] - baseline_costs['output_cost'],
-        "input": linehash_costs['input_cost'] - baseline_costs['input_cost'],
+        "cache_creation": hashline_costs['cache_creation_cost'] - baseline_costs['cache_creation_cost'],
+        "cache_read": hashline_costs['cache_read_cost'] - baseline_costs['cache_read_cost'],
+        "output": hashline_costs['output_cost'] - baseline_costs['output_cost'],
+        "input": hashline_costs['input_cost'] - baseline_costs['input_cost'],
     }
     parts = [
         f"{'Δcache_create='}{'+' if deltas['cache_creation'] >= 0 else ''}{deltas['cache_creation']:.3f}",
@@ -118,11 +118,11 @@ def ascii_sparkline(values: list[int]) -> str:
     )
 
 
-def format_delta(baseline_val: float, linehash_val: float) -> str:
+def format_delta(baseline_val: float, hashline_val: float) -> str:
     """Format delta as percentage change."""
     if baseline_val == 0:
         return "—"
-    pct_change = ((linehash_val - baseline_val) / baseline_val) * 100
+    pct_change = ((hashline_val - baseline_val) / baseline_val) * 100
     sign = "+" if pct_change > 0 else ""
     return f"{sign}{pct_change:.0f}%"
 
@@ -200,7 +200,7 @@ def generate_report(results: list[dict]) -> str:
 
     # Build header
     lines = [
-        "# linehash Benchmark Results",
+        "# hashline Benchmark Results",
         "",
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -237,41 +237,41 @@ def generate_report(results: list[dict]) -> str:
         mode_groups = group_by(task_results, "mode")
 
         has_baseline = ("baseline",) in mode_groups
-        has_linehash = ("linehash",) in mode_groups
+        has_hashline = ("hashline",) in mode_groups
 
-        if has_baseline and has_linehash:
+        if has_baseline and has_hashline:
             baseline_runs = mode_groups[("baseline",)]
-            linehash_runs = mode_groups[("linehash",)]
+            hashline_runs = mode_groups[("hashline",)]
 
             baseline_stats = compute_dollar_per_correct(baseline_runs)
-            linehash_stats = compute_dollar_per_correct(linehash_runs)
+            hashline_stats = compute_dollar_per_correct(hashline_runs)
 
             # Compute accuracy
             baseline_acc = baseline_stats["accuracy"] * 100
-            linehash_acc = linehash_stats["accuracy"] * 100
+            hashline_acc = hashline_stats["accuracy"] * 100
 
             # Compute avg cost per task
             baseline_avg_cost = baseline_stats["avg_cost"]
-            linehash_avg_cost = linehash_stats["avg_cost"]
+            hashline_avg_cost = hashline_stats["avg_cost"]
 
             # Compute cost per correct
             baseline_cpc = baseline_stats["cost_per_correct"]
-            linehash_cpc = linehash_stats["cost_per_correct"]
+            hashline_cpc = hashline_stats["cost_per_correct"]
 
             # Compute delta
             if baseline_cpc == float('inf'):
                 delta_str = "—"
-            elif linehash_cpc == float('inf'):
+            elif hashline_cpc == float('inf'):
                 delta_str = "+∞"
             else:
-                delta_pct = ((linehash_cpc - baseline_cpc) / baseline_cpc) * 100
+                delta_pct = ((hashline_cpc - baseline_cpc) / baseline_cpc) * 100
                 sign = "+" if delta_pct > 0 else ""
                 delta_str = f"{sign}{delta_pct:.0f}%"
 
             lines.append("| Mode | Accuracy | Avg Cost | $/correct |")
             lines.append("|------|----------|----------|-----------|")
             lines.append(f"| baseline | {baseline_acc:.0f}% | ${baseline_avg_cost:.4f} | ${baseline_cpc:.4f} |")
-            lines.append(f"| linehash | {linehash_acc:.0f}% | ${linehash_avg_cost:.4f} | ${linehash_cpc:.4f} |")
+            lines.append(f"| hashline | {hashline_acc:.0f}% | ${hashline_avg_cost:.4f} | ${hashline_cpc:.4f} |")
             lines.append(f"| **Delta** | | | **{delta_str}** |")
             lines.append("")
 
@@ -285,81 +285,81 @@ def generate_report(results: list[dict]) -> str:
                 ("Duration ms", "duration_ms"),
             ]
 
-            lines.append("| Metric | baseline | linehash | delta |")
+            lines.append("| Metric | baseline | hashline | delta |")
             lines.append("|--------|----------|---------|-------|")
 
             for label, key in metrics:
                 baseline_m = compute_stats([r[key] for r in baseline_runs])
-                linehash_m = compute_stats([r[key] for r in linehash_runs])
-                delta = format_delta(baseline_m["median"], linehash_m["median"])
+                hashline_m = compute_stats([r[key] for r in hashline_runs])
+                delta = format_delta(baseline_m["median"], hashline_m["median"])
 
                 if key == "total_cost_usd":
                     baseline_fmt = f"${baseline_m['median']:.4f}"
-                    linehash_fmt = f"${linehash_m['median']:.4f}"
+                    hashline_fmt = f"${hashline_m['median']:.4f}"
                 else:
                     baseline_fmt = f"{baseline_m['median']:.0f}"
-                    linehash_fmt = f"{linehash_m['median']:.0f}"
+                    hashline_fmt = f"{hashline_m['median']:.0f}"
 
-                lines.append(f"| {label} (median) | {baseline_fmt} | {linehash_fmt} | {delta} |")
+                lines.append(f"| {label} (median) | {baseline_fmt} | {hashline_fmt} | {delta} |")
 
             lines.append("")
 
             # Cost breakdown for median run
             baseline_median_run = find_median_run(baseline_runs, "total_cost_usd")
-            linehash_median_run = find_median_run(linehash_runs, "total_cost_usd")
+            hashline_median_run = find_median_run(hashline_runs, "total_cost_usd")
 
             baseline_costs = compute_cost_breakdown(baseline_median_run)
-            linehash_costs = compute_cost_breakdown(linehash_median_run)
+            hashline_costs = compute_cost_breakdown(hashline_median_run)
 
             baseline_total = baseline_median_run.get("total_cost_usd", 0.0)
-            linehash_total = linehash_median_run.get("total_cost_usd", 0.0)
-            total_delta = linehash_total - baseline_total
+            hashline_total = hashline_median_run.get("total_cost_usd", 0.0)
+            total_delta = hashline_total - baseline_total
 
             baseline_turns = baseline_median_run.get("num_turns", 0)
-            linehash_turns = linehash_median_run.get("num_turns", 0)
-            turns_delta = linehash_turns - baseline_turns
+            hashline_turns = hashline_median_run.get("num_turns", 0)
+            turns_delta = hashline_turns - baseline_turns
 
             baseline_correct_str = "correct" if baseline_median_run.get("correct", False) else "incorrect"
-            linehash_correct_str = "correct" if linehash_median_run.get("correct", False) else "incorrect"
+            hashline_correct_str = "correct" if hashline_median_run.get("correct", False) else "incorrect"
 
             lines.append("**Cost breakdown (median run):**")
             lines.append("")
             lines.append(f"  baseline: {baseline_turns} turns, ${baseline_total:.4f}, {baseline_correct_str}")
             lines.append(format_cost_breakdown(baseline_costs))
-            lines.append(f"  linehash:   {linehash_turns} turns, ${linehash_total:.4f}, {linehash_correct_str}")
-            lines.append(format_cost_breakdown(linehash_costs))
+            lines.append(f"  hashline:   {hashline_turns} turns, ${hashline_total:.4f}, {hashline_correct_str}")
+            lines.append(format_cost_breakdown(hashline_costs))
             lines.append(f"  delta:    {'+' if turns_delta >= 0 else ''}{turns_delta} turns, {'+' if total_delta >= 0 else ''}${total_delta:.4f}")
-            lines.append(format_cost_delta(baseline_costs, linehash_costs))
+            lines.append(format_cost_delta(baseline_costs, hashline_costs))
             lines.append("")
 
             # Per-turn sparklines
             baseline_per_turn = baseline_median_run.get("per_turn_context_tokens", [])
-            linehash_per_turn = linehash_median_run.get("per_turn_context_tokens", [])
+            hashline_per_turn = hashline_median_run.get("per_turn_context_tokens", [])
 
-            if baseline_per_turn and linehash_per_turn:
+            if baseline_per_turn and hashline_per_turn:
                 lines.append("**Per-turn context tokens (median run):**")
                 lines.append("")
                 baseline_spark = ascii_sparkline(baseline_per_turn)
-                linehash_spark = ascii_sparkline(linehash_per_turn)
+                hashline_spark = ascii_sparkline(hashline_per_turn)
                 baseline_range = f"{min(baseline_per_turn):,} → {max(baseline_per_turn):,}"
-                linehash_range = f"{min(linehash_per_turn):,} → {max(linehash_per_turn):,}"
+                hashline_range = f"{min(hashline_per_turn):,} → {max(hashline_per_turn):,}"
                 lines.append(f"  baseline: {baseline_spark} ({baseline_range})")
-                lines.append(f"  linehash:    {linehash_spark} ({linehash_range})")
+                lines.append(f"  hashline:    {hashline_spark} ({hashline_range})")
                 lines.append("")
 
             # Tool breakdown
             baseline_tools = merge_tool_calls(baseline_runs)
-            linehash_tools = merge_tool_calls(linehash_runs)
+            hashline_tools = merge_tool_calls(hashline_runs)
 
-            if baseline_tools or linehash_tools:
+            if baseline_tools or hashline_tools:
                 lines.append("**Tool breakdown (median counts):**")
                 lines.append("")
                 if baseline_tools:
                     tool_strs = [f"{name}={count:.0f}" for name, count in baseline_tools.items()]
                     lines.append(f"  baseline: {', '.join(tool_strs)}")
-                if linehash_tools:
-                    tool_strs = [f"{name}={count:.0f}" for name, count in linehash_tools.items()]
-                    lines.append(f"  linehash:    {', '.join(tool_strs)}")
+                if hashline_tools:
+                    tool_strs = [f"{name}={count:.0f}" for name, count in hashline_tools.items()]
+                    lines.append(f"  hashline:    {', '.join(tool_strs)}")
                 lines.append("")
 
         else:
@@ -408,33 +408,33 @@ def generate_report(results: list[dict]) -> str:
 
     # Aggregate summary
     baseline_all = [r for r in valid_results if r["mode"] == "baseline"]
-    linehash_all = [r for r in valid_results if r["mode"] == "linehash"]
+    hashline_all = [r for r in valid_results if r["mode"] == "hashline"]
 
-    if baseline_all and linehash_all:
+    if baseline_all and hashline_all:
         lines.append("## Aggregate Summary")
         lines.append("")
 
         baseline_stats = compute_dollar_per_correct(baseline_all)
-        linehash_stats = compute_dollar_per_correct(linehash_all)
+        hashline_stats = compute_dollar_per_correct(hashline_all)
 
         baseline_acc = baseline_stats["accuracy"] * 100
-        linehash_acc = linehash_stats["accuracy"] * 100
+        hashline_acc = hashline_stats["accuracy"] * 100
         baseline_cpc = baseline_stats["cost_per_correct"]
-        linehash_cpc = linehash_stats["cost_per_correct"]
+        hashline_cpc = hashline_stats["cost_per_correct"]
 
         if baseline_cpc == float('inf'):
             delta_str = "—"
-        elif linehash_cpc == float('inf'):
+        elif hashline_cpc == float('inf'):
             delta_str = "+∞"
         else:
-            delta_pct = ((linehash_cpc - baseline_cpc) / baseline_cpc) * 100
+            delta_pct = ((hashline_cpc - baseline_cpc) / baseline_cpc) * 100
             sign = "+" if delta_pct > 0 else ""
             delta_str = f"{sign}{delta_pct:.0f}%"
 
         lines.append("| Mode | Accuracy | Avg Cost | $/correct |")
         lines.append("|------|----------|----------|-----------|")
         lines.append(f"| baseline | {baseline_acc:.0f}% | ${baseline_stats['avg_cost']:.4f} | ${baseline_cpc:.4f} |")
-        lines.append(f"| linehash | {linehash_acc:.0f}% | ${linehash_stats['avg_cost']:.4f} | ${linehash_cpc:.4f} |")
+        lines.append(f"| hashline | {hashline_acc:.0f}% | ${hashline_stats['avg_cost']:.4f} | ${hashline_cpc:.4f} |")
         lines.append(f"| **Delta** | | | **{delta_str}** |")
         lines.append("")
         lines.append("All values averaged across all tasks and repetitions.")

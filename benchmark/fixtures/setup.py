@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Synthetic Rust project generator for linehash benchmarks.
+Synthetic Rust project generator for hashline benchmarks.
 
 Generates a deterministic Rust source file with specific
 ground truth strings embedded for correctness checking.
@@ -15,7 +15,7 @@ REPO_PATH = Path(__file__).parent / "repo"
 
 def get_test_fixtures_content() -> str:
     """Generate test_fixtures.rs with known function definitions."""
-    return '''//! Test fixtures for linehash benchmark.
+    return '''//! Test fixtures for hashline benchmark.
 //!
 //! This file contains known function definitions for testing
 //! whether AI agents can correctly identify and locate functions.

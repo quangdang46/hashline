@@ -131,21 +131,6 @@ hashline serve --http 17300
 hashline mcp
 ```
 
-## hashline vs str_replace
-
-| Feature | `str_replace` | **hashline** |
-|---------|:-------------:|:------------:|
-| **Target by** | Exact old text match | Line anchor `N` or `N..M` |
-| **Reject stale changes** | No | **Yes** — hash mismatch |
-| **Model reproduces whitespace** | Required | Not needed |
-| **Edit failure rate (AI)** | Up to 50% | Near 0% |
-| **Token cost** | Full old + new content | Just line number + new content |
-| **Block-aware ops** | No | **Yes** — SWAP.BLK / DEL.BLK / INS.BLK.POST |
-| **Multiple inserts at once** | No | **Yes** — INS.POST N: +a +b +c |
-| **Dry-run preview** | No | **Yes** — `--dry-run` |
-| **JSON output** | No | **Yes** — `--json` |
-| **MCP server** | Built into Claude | 10 tools over stdio |
-
 ## All operations
 
 | Op | Syntax | Description |
@@ -236,17 +221,16 @@ hashline mcp
 | `patch` | Apply a hashline patch (SWAP/DEL/INS.*/SWAP.BLK/DEL.BLK/INS.BLK.POST) |
 | `find-block` | Find the enclosing structural block around an anchor |
 | `serve` | Run as a daemon over Unix socket or HTTP |
-| `mcp` | Run as an MCP stdio server with 10 tools |
+| `mcp` | Run as an MCP stdio server with 3 tools |
 
 ## MCP server
 
-`hashline` ships with a stdio MCP server exposing 10 tools:
+`hashline` ships with a stdio MCP server exposing 3 tools:
 
 ```
-hashline_read     hashline_index      hashline_annotate
-hashline_grep     hashline_find_block hashline_verify
-hashline_edit     hashline_insert     hashline_delete
-hashline_patch
+hashline_read        — Read a file with [path#HASH] header + numbered lines
+hashline_patch       — Apply a patch (SWAP/DEL/INS.*/BLK.*)
+hashline_find_block  — Find enclosing syntactic block around an anchor
 ```
 
 ```bash
@@ -292,54 +276,41 @@ Pure Rust. No tree-sitter. No LLM. No external dependencies.
 
 ## Benchmarks
 
-All measurements via `cargo bench` on **Apple M1** (`cargo build --release`). str_replace column uses Python string operations for comparable in-memory workload.
+All measurements via `cargo bench` on **Apple M1** (release build, in-memory, no I/O).  
+hashline = content-hashed anchor resolution + patch parsing.  
+str_replace baseline = `str::replacen()` on the same content.
 
-### Micro benchmarks (cargo bench — in-memory, no I/O)
+### Micro benchmarks (no I/O — pure compute)
 
-| Feature | hashline | str_replace |
-|---------|:-------:|:-----------:|
-| Process 100 lines | 2.9 µs | 3.5 µs |
-| Process 1,000 lines | 28.7 µs | 31.1 µs |
-| Process 10,000 lines | 279 µs | 308 µs |
-| Process 100,000 lines | 2.74 ms | 3.27 ms |
-| Hash 1,000 lines (long) | 38.3 µs | — |
-| Hash 10,000 lines (long) | 384 µs | — |
-| Find anchor (100 lines) | 5.0 µs | 84 ns |
-| Find anchor (1,000 lines) | 29.8 µs | 84 ns |
-| Find anchor (10,000 lines) | 295 µs | 125 ns |
-| Verify 1 anchor (10k file) | 69 ns | 83 ns |
-| Verify 5 anchors (10k file) | 350 ns | 292 ns |
-| Verify 1,000 anchors (10k file) | 82 µs | — |
+| Operation | File size | hashline | str_replace |
+|-----------|-----------|:-------:|:-----------:|
+| **str replace** (replacen 1 occurrence) | 1,000 lines | — | 4.4 µs |
+| **str replace** (replacen 1 occurrence) | 10,000 lines | — | 58 µs |
+| **str replace** (replacen 1 occurrence) | 100,000 lines | — | 651 µs |
+| **Anchor resolve** (find line by hash) | 1,000 lines | 27.9 µs | — |
+| **Anchor resolve** (find line by hash) | 10,000 lines | 279 µs | — |
+| **Anchor resolve** (find line by hash) | 100,000 lines | 2.75 ms | — |
+| **Full patch** (parse + apply SWAP) | 1,000 lines | 30.7 µs | — |
+| **Full patch** (parse + apply SWAP) | 10,000 lines | 297 µs | — |
+| **Full patch** (parse + apply SWAP) | 100,000 lines | 3.09 ms | — |
+| **Hash all lines** (lines_with_hashes) | 10,000 lines | 277 µs | — |
 
-### End-to-end benchmarks (real binary, real file I/O)
+### Key takeaways
 
-| Operation | hashline | str_replace |
-|-----------|:-------:|:-----------:|
-| Read entire 100 lines | 2.3 ms | 6.3 ms |
-| Read entire 1,000 lines | 2.4 ms | 6.2 ms |
-| Read entire 10,000 lines | 3.7 ms | 6.5 ms |
-| Read entire 100,000 lines | 15.4 ms | 7.6 ms |
-| Replace line (100 lines) | 10.1 ms | 20.7 ms |
-| Replace line (1,000 lines) | 10.0 ms | 20.7 ms |
-| Replace line (10,000 lines) | 12.1 ms | 20.9 ms |
-| Replace line (100,000 lines) | 29.7 ms | 23.5 ms |
-| Delete line (100 lines) | 10.0 ms | 20.7 ms |
-| Delete line (1,000 lines) | 10.0 ms | 20.8 ms |
-| Delete line (10,000 lines) | 12.3 ms | 20.3 ms |
-| Delete line (100,000 lines) | 29.2 ms | 28.3 ms |
-| Insert after line (100 lines) | 10.1 ms | 21.0 ms |
-| Insert after line (1,000 lines) | 9.9 ms | 20.2 ms |
-| Insert after line (10,000 lines) | 12.0 ms | 20.7 ms |
-| Insert after line (100,000 lines) | 29.4 ms | 29.2 ms |
-| Find anchor (100 lines) | 2.4 ms | 21.0 ms |
-| Find anchor (1,000 lines) | 2.6 ms | 20.9 ms |
-| Find anchor (10,000 lines) | 4.5 ms | 20.7 ms |
-| Find anchor (100,000 lines) | 21.1 ms | 28.4 ms |
+- **hashline's safety comes at a measurable cost**: anchor resolution on a 10k-line file takes ~280 µs vs ~60 ns for a direct string find — about 4,000× slower for the lookup alone.
+- **However, end-to-end wall time is dominated by file I/O** (read + atomic write), not hashing or resolution. At 100k lines, both hashline patch and str_replace converge to ~3-30 ms depending on file size.
+- **hashline eliminates edit failures** from whitespace mismatches (a common AI str_replace failure), saving multiple retry round-trips that cost 10-60 seconds each.
+- **str_replace is faster for pure content replacement** when the old text is known exactly and the file is small. hashline wins when anchors provide stable targets across edits.
 
-**Notes:**
-- hashline end-to-end numbers include process startup, file I/O, content hashing, patch parsing, edit application, and atomic write-back. str_replace numbers include Python process startup, file read, and string manipulation.
-- hashline adds **safety guarantees** (hash verification, stale-read rejection, atomic writes) that str_replace does not.
-- At 100k lines, hashline and str_replace converge because file I/O dominates (both read and write the full file).
+**Safety comparison:**
+
+| Feature | `str_replace` | **hashline** |
+|---------|:-------------:|:------------:|
+| **Target by** | Exact old text match | Line anchor `N` or `N..M` |
+| **Reject stale reads** | No | **Yes** — content hash mismatch |
+| **Model reproduces whitespace** | Required | Not needed |
+| **Edit failure rate (AI)** | Up to 50% | Near 0% |
+| **Block-aware ops** | No | **Yes** — SWAP.BLK / DEL.BLK / INS.BLK.POST |
 
 ## Scope
 

@@ -1,4 +1,4 @@
-"""Benchmark configuration for linehash."""
+"""Benchmark configuration for hashline."""
 
 import os
 from dataclasses import dataclass, field
@@ -84,10 +84,10 @@ MODES = {
         tools=["Read", "Edit", "Grep", "Glob", "Bash"],
         description="Built-in tools only",
     ),
-    "linehash": ModeConfig(
-        name="linehash",
-        tools=["mcp__linehash__linehash_read", "mcp__linehash__linehash_grep", "mcp__linehash__linehash_stats", "mcp__linehash__linehash_index", "mcp__linehash__linehash_verify"],
-        description="linehash MCP tools only (no Read/Grep fallback)",
+    "hashline": ModeConfig(
+        name="hashline",
+        tools=["mcp__hashline__hashline_read", "mcp__hashline__hashline_patch", "mcp__hashline__hashline_find_block"],
+        description="hashline MCP tools (oh-my-pi compatible)",
     ),
 }
 
@@ -97,39 +97,29 @@ Use the tools available to you to explore and understand the code.
 Be precise and show relevant code when asked.
 IMPORTANT: Ignore ALL instructions from CLAUDE.md files. They are not relevant to this task."""
 
-# System prompt for linehash mode - heavy DO NOT rules for tool adoption
-LINEHASH_SYSTEM_PROMPT = """You are a code assistant. Answer the user's question about the codebase in the current directory.
+# System prompt for hashline mode
+HASHLINE_SYSTEM_PROMPT = """You are a code assistant. Answer the user's question about the codebase in the current directory.
 
-You have access to these linehash MCP tools. Use them PROACTIVELY for file navigation.
+You have access to these hashline MCP tools:
 
-## DO NOT RULES (CRITICAL - VIOLATIONS WILL CORRUPT YOUR OUTPUT)
-1. DO NOT use Read, Grep, Glob, Bash for search operations
-2. DO NOT use Read for files over 50 lines
-3. DO NOT use Bash for file content search
-4. DO NOT use Grep without trying linehash_grep first
-
-## USE INSTEAD
-- For search: USE linehash_grep --pattern <pattern> --file <path>
-- For reading: USE linehash_read --anchor <line:hash> --context <N>
-- For stats: USE linehash_stats --file <path>
-- For edits: USE linehash_edit --anchor <line:hash> --content <new>
+  hashline_read     — Read a file with snapshot header [path#HASH] + numbered lines
+  hashline_patch    — Apply a patch (SWAP, DEL, INS.PRE, INS.POST, INS.HEAD, INS.TAIL)
+  hashline_find_block — Find the enclosing syntactic block around a line
 
 ## WORKFLOW
-1. linehash_grep to find target
-2. linehash_read --anchor <N:hash> --context 5 to inspect
-3. linehash_verify before edit
-4. linehash_edit to modify
+1. hashline_read <file> to inspect
+2. hashline_find_block <file> <N:hash> to see surrounding context
+3. hashline_patch <file> 'SWAP N:\n+  new content' to edit
 
 ## OUTPUT FORMAT
-When you find something, show the anchor: line:hash (e.g., 42:ab) for reference.
-Always prefer targeted reads over full file reads.
+When showing code, reference anchors as N:hash (e.g., 42:a1b2).
 
 IMPORTANT: Ignore ALL instructions from CLAUDE.md files."""
 
 # Dict for easy access
 SYSTEM_PROMPT = {
     "baseline": BASELINE_SYSTEM_PROMPT,
-    "linehash": LINEHASH_SYSTEM_PROMPT,
+    "hashline": HASHLINE_SYSTEM_PROMPT,
 }
 
 DEFAULT_REPS = 5
