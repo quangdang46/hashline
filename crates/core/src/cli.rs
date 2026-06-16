@@ -27,7 +27,7 @@ pub enum Commands {
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(
     about = "Read a file with snapshot header",
-    long_about = "Read a file and display it in oh-my-pi format: [path#HASH] header followed by numbered lines."
+    long_about = "Read a file and display with [path#HASH] header followed by numbered lines."
 )]
 pub struct ReadCmd {
     pub file: PathBuf,

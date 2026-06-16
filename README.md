@@ -33,7 +33,6 @@ cargo install --path crates/core
 - Uses **file-level snapshot tags** to detect stale reads
 - File-level snapshot tags: `[path#1A2B]` header + `LINE|content` lines
 - Simplified command surface: `read`, `patch`, `find-block`, `serve`, `mcp`
-- Giong oh-my-pi format: `[path#HASH]` header, `LINE|content`, `SWAP`/`DEL`/`INS.*` operations
 
 ## The Format
 

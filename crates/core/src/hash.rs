@@ -10,7 +10,7 @@ pub fn full_hash(line: &str) -> u32 {
     //
     // This makes anchors stable across formatter runs that adjust trailing
     // whitespace (Prettier, Black, gofmt, etc.) and across CRLF/LF newline
-    // changes. Matches the behavior of oh-my-pi, hashfile-mcp,
+    // changes. Matches the behavior of hashfile-mcp,
     // mcp-hashline-edit-server, and pi-hashline-edit.
     full_hash_bytes(line.trim_end().as_bytes())
 }

@@ -225,8 +225,7 @@ impl Executor {
             return;
         }
 
-        if text.trim().is_empty() {
-        }
+        if text.trim().is_empty() {}
     }
 
     fn handle_blank(&mut self) {

@@ -13,7 +13,7 @@ use crate::cli::McpCmd;
 use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::hash;
-use crate::normalize::{detect_line_ending, restore_line_endings, LineEnding};
+use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
 
 /// Split normalized text into lines, discarding the trailing empty segment
@@ -1086,9 +1086,7 @@ pub fn run(_cmd: McpCmd) -> Result<(), HashlineError> {
     let mut line = String::new();
     loop {
         line.clear();
-        let n = reader
-            .read_line(&mut line)
-            .map_err(HashlineError::Io)?;
+        let n = reader.read_line(&mut line).map_err(HashlineError::Io)?;
         if n == 0 {
             break;
         }
