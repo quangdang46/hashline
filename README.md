@@ -293,32 +293,55 @@ Pure Rust. No tree-sitter. No LLM. No external dependencies.
 
 ## Benchmarks
 
-All measurements via `cargo bench` on **Apple M1** (`cargo build --release`).
+All measurements via `cargo bench` on **Apple M1** (`cargo build --release`). str_replace column uses Python string operations for comparable in-memory workload.
+
+### Micro benchmarks (cargo bench)
 
 | Feature | hashline | str_replace |
 |---------|:-------:|:-----------:|
-| Hash 100 lines (short) | 2.9 µs | — |
-| Hash 1,000 lines (short) | 28.7 µs | — |
-| Hash 10,000 lines (short) | 278 µs | — |
-| Hash 100,000 lines (short) | 2.71 ms | — |
-| Hash 1,000 lines (long) | 38.2 µs | — |
-| Hash 10,000 lines (long) | 385 µs | — |
-| Real-world `support.rs` | 3.07 µs | — |
-| Real-world `document.rs` | 6.34 µs | — |
-| Resolve anchor 1,000 lines | 28.5 µs | — |
-| Resolve anchor 10,000 lines | 278 µs | — |
-| Resolve anchor 100,000 lines | 2.68 ms | — |
+| Hash 100 lines | 2.9 µs | — |
+| Hash 1,000 lines | 28.7 µs | — |
+| Hash 10,000 lines | 279 µs | — |
+| Hash 100,000 lines | 2.74 ms | — |
+| Hash 1,000 lines (long) | 38.3 µs | — |
+| Hash 10,000 lines (long) | 384 µs | — |
+| Resolve anchor 1,000 lines | 29.7 µs | — |
+| Resolve anchor 10,000 lines | 295 µs | — |
+| Resolve anchor 100,000 lines | 2.92 ms | — |
 | Verify 1 anchor (10k file) | 69 ns | — |
 | Verify 10 anchors (10k file) | 710 ns | — |
 | Verify 100 anchors (10k file) | 7.4 µs | — |
 | Verify 1,000 anchors (10k file) | 82 µs | — |
 
-### Memory footprint
+### End-to-end benchmarks (real binary, real file I/O)
 
-File content loaded as `FileContent`:
-- Raw text + normalized text = 2x file size
-- No per-line hash precomputation until `lines_with_hashes()` called
-- Lazy hashing: hash only what you need, when you need it
+| Operation | hashline | str_replace |
+|-----------|:-------:|:-----------:|
+| Read entire 100 lines | 2.3 ms | 6.3 ms |
+| Read entire 1,000 lines | 2.4 ms | 6.2 ms |
+| Read entire 10,000 lines | 3.7 ms | 6.5 ms |
+| Read entire 100,000 lines | 15.4 ms | 7.6 ms |
+| Replace line (100 lines) | 10.1 ms | 20.7 ms |
+| Replace line (1,000 lines) | 10.0 ms | 20.7 ms |
+| Replace line (10,000 lines) | 12.1 ms | 20.9 ms |
+| Replace line (100,000 lines) | 29.7 ms | 23.5 ms |
+| Delete line (100 lines) | 10.0 ms | 20.7 ms |
+| Delete line (1,000 lines) | 10.0 ms | 20.8 ms |
+| Delete line (10,000 lines) | 12.3 ms | 20.3 ms |
+| Delete line (100,000 lines) | 29.2 ms | 28.3 ms |
+| Insert after line (100 lines) | 10.1 ms | 21.0 ms |
+| Insert after line (1,000 lines) | 9.9 ms | 20.2 ms |
+| Insert after line (10,000 lines) | 12.0 ms | 20.7 ms |
+| Insert after line (100,000 lines) | 29.4 ms | 29.2 ms |
+| Find anchor (100 lines) | 2.4 ms | 21.0 ms |
+| Find anchor (1,000 lines) | 2.6 ms | 20.9 ms |
+| Find anchor (10,000 lines) | 4.5 ms | 20.7 ms |
+| Find anchor (100,000 lines) | 21.1 ms | 28.4 ms |
+
+**Notes:**
+- hashline end-to-end numbers include process startup, file I/O, content hashing, patch parsing, edit application, and atomic write-back. str_replace numbers include Python process startup, file read, and string manipulation.
+- hashline adds **safety guarantees** (hash verification, stale-read rejection, atomic writes) that str_replace does not.
+- At 100k lines, hashline and str_replace converge because file I/O dominates (both read and write the full file).
 
 ## Scope
 
