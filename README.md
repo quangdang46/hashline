@@ -294,22 +294,21 @@ Pure Rust. No tree-sitter. No LLM. No external dependencies.
 
 All measurements via `cargo bench` on **Apple M1** (`cargo build --release`). str_replace column uses Python string operations for comparable in-memory workload.
 
-### Micro benchmarks (cargo bench)
+### Micro benchmarks (cargo bench — in-memory, no I/O)
 
 | Feature | hashline | str_replace |
 |---------|:-------:|:-----------:|
-| Hash 100 lines | 2.9 µs | — |
-| Hash 1,000 lines | 28.7 µs | — |
-| Hash 10,000 lines | 279 µs | — |
-| Hash 100,000 lines | 2.74 ms | — |
+| Process 100 lines | 2.9 µs | 3.5 µs |
+| Process 1,000 lines | 28.7 µs | 31.1 µs |
+| Process 10,000 lines | 279 µs | 308 µs |
+| Process 100,000 lines | 2.74 ms | 3.27 ms |
 | Hash 1,000 lines (long) | 38.3 µs | — |
 | Hash 10,000 lines (long) | 384 µs | — |
-| Resolve anchor 1,000 lines | 29.7 µs | — |
-| Resolve anchor 10,000 lines | 295 µs | — |
-| Resolve anchor 100,000 lines | 2.92 ms | — |
-| Verify 1 anchor (10k file) | 69 ns | — |
-| Verify 10 anchors (10k file) | 710 ns | — |
-| Verify 100 anchors (10k file) | 7.4 µs | — |
+| Find anchor (100 lines) | 5.0 µs | 84 ns |
+| Find anchor (1,000 lines) | 29.8 µs | 84 ns |
+| Find anchor (10,000 lines) | 295 µs | 125 ns |
+| Verify 1 anchor (10k file) | 69 ns | 83 ns |
+| Verify 5 anchors (10k file) | 350 ns | 292 ns |
 | Verify 1,000 anchors (10k file) | 82 µs | — |
 
 ### End-to-end benchmarks (real binary, real file I/O)

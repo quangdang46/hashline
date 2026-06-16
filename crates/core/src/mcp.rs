@@ -103,7 +103,7 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "hashline_read".into(),
                 description:
-                    "Read a file with oh-my-pi style [path#HASH] header and numbered lines".into(),
+                    "Read a file with [path#HASH] header and numbered lines".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {

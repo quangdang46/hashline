@@ -191,7 +191,7 @@ fn scan_range_separator(bytes: &[u8], index: usize, end: usize) -> Option<usize>
         }
         if c == CHAR_DOT && cursor + 1 < end && bytes[cursor + 1] == CHAR_DOT {
             cursor += 2;
-            // Skip optional trailing '=' (oh-my-pi uses ".=" as a range separator)
+            // Skip optional trailing '=' (".=" is used as a range separator)
             if cursor < end && bytes[cursor] == CHAR_EQUALS {
                 cursor += 1;
             }
