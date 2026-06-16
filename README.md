@@ -241,7 +241,58 @@ The `install.sh` / `install.ps1` scripts auto-detect supported MCP host configs
 (claude-code, codex, cursor, windsurf, vscode, gemini, opencode, amp, droid)
 and upsert a `hashline` server entry for each.
 
+## Agent Integration
+
+Add this block to any repository's `AGENTS.md` so coding agents know how to use hashline:
+
+    ## hashline — Hash-Anchored File Editing
+
+    \`hashline\` is a CLI for editing files using content-hashed line anchors (\`42:a3\`).
+    It provides drift detection, atomic writes, and block-aware operations.
+
+    ### Quick Start
+
+    ```bash
+    # Read a file with snapshot hash
+    hashline read src/file.rs
+
+    # Apply a patch using anchor
+    hashline patch src/file.rs 'SWAP 42:a3:
+    +  fn new_code() {'
+    ```
+
+### Workflow for Agents
+
+1. **Read** a file to get anchors: `hashline read <file>`
+2. **Copy** the anchor (e.g. `42:a3`) from the output
+3. **Patch** using the anchor: `hashline patch <file> 'SWAP 42:a3:\n+  new content'`
+4. If anchor fails, **re-read** for fresh hashes
+
+### Patch Cheat Sheet
+
+| Op | Example | Effect |
+|----|---------|--------|
+| Replace line | `SWAP 42:a3:\n+new` | Replace line 42 |
+| Replace range | `SWAP 42:a3..45:b7:\n+c1\n+c2` | Replace lines 42-45 |
+| Delete line | `DEL 42:a3` | Delete line 42 |
+| Delete range | `DEL 42:a3..45:b7` | Delete lines 42-45 |
+| Insert before | `INS.PRE 42:a3:\n+new` | Insert before line 42 |
+| Insert after | `INS.POST 42:a3:\n+new` | Insert after line 42 |
+| Insert head | `INS.HEAD:\n+new` | Insert at file top |
+| Insert tail | `INS.TAIL:\n+new` | Insert at file end |
+| Replace block | `SWAP.BLK 42:a3:\n+new` | Replace entire block |
+| Delete block | `DEL.BLK 42:a3` | Delete entire block |
+
+### Why hashline Over str_replace
+
+- **Stable anchors**: `42:a3` survives nearby edits; old text matching breaks
+- **Stale-read detection**: fails if file changed since last read
+- **Block awareness**: replaces entire functions/classes, not just text
+- **Atomic writes**: temp file + rename, no partial writes
+- **No whitespace fighting**: AI agents don't need to reproduce exact indentation
+
 ## Error Handling
+
 
 ```bash
 # File not found
