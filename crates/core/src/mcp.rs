@@ -114,40 +114,16 @@ fn tool_list() -> ToolList {
                 })),
             },
             ToolDefinition {
-                name: "hashline_index".into(),
-                description: "Show line numbers with their current hashes (no content)".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string", "description": "Path to the file"}
-                    },
-                    "required": ["file"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_annotate".into(),
-                description: "Map text or regex matches back to current anchors".into(),
+                name: "hashline_patch".into(),
+                description: "Apply a hashline patch (SWAP, DEL, INS.* operations)".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file": {"type": "string"},
-                        "query": {"type": "string"},
-                        "regex": {"type": "boolean"}
+                        "patch": {"type": "string", "description": "Hashline patch string"},
+                        "dry_run": {"type": "boolean"}
                     },
-                    "required": ["file", "query"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_grep".into(),
-                description: "Search file content with a pattern".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string"},
-                        "pattern": {"type": "string"},
-                        "invert": {"type": "boolean"}
-                    },
-                    "required": ["file", "pattern"]
+                    "required": ["file", "patch"]
                 })),
             },
             ToolDefinition {
@@ -160,70 +136,6 @@ fn tool_list() -> ToolList {
                         "anchor": {"type": "string", "description": "Line:hash anchor"}
                     },
                     "required": ["file", "anchor"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_verify".into(),
-                description: "Check whether anchors still resolve in the file".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string"},
-                        "anchors": {"type": "array", "items": {"type": "string"}}
-                    },
-                    "required": ["file", "anchors"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_edit".into(),
-                description: "Replace a single line or range by anchor".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string"},
-                        "anchor": {"type": "string", "description": "Line:hash or Line:hash..Line:hash"},
-                        "content": {"type": "string", "description": "New content"}
-                    },
-                    "required": ["file", "anchor", "content"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_insert".into(),
-                description: "Insert content before or after an anchor".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string"},
-                        "anchor": {"type": "string", "description": "Line:hash anchor"},
-                        "content": {"type": "string"},
-                        "before": {"type": "boolean", "description": "Insert before instead of after"}
-                    },
-                    "required": ["file", "anchor", "content"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_delete".into(),
-                description: "Delete a single line or range by anchor".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string"},
-                        "anchor": {"type": "string", "description": "Line:hash or Line:hash..Line:hash"}
-                    },
-                    "required": ["file", "anchor"]
-                })),
-            },
-            ToolDefinition {
-                name: "hashline_patch".into(),
-                description: "Apply a hashline patch (SWAP, DEL, INS.* operations)".into(),
-                input_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "file": {"type": "string"},
-                        "patch": {"type": "string", "description": "Hashline patch string"},
-                        "dry_run": {"type": "boolean"}
-                    },
-                    "required": ["file", "patch"]
                 })),
             },
         ],

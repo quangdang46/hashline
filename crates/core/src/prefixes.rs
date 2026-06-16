@@ -141,7 +141,7 @@ pub fn strip_new_line_prefixes(lines: &[String]) -> Vec<String> {
 
     lines
         .iter()
-        .filter(|line| !is_truncation_notice(line) && !(strip_hash && is_header_line(line)))
+        .filter(|line| !(is_truncation_notice(line) || strip_hash && is_header_line(line)))
         .map(|line| {
             if strip_hash {
                 strip_one_leading_hashline_prefix(line)
