@@ -343,6 +343,21 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
                 println!();
             }
         }
+        // Fallback: structuredContent.content[].text (MCP content format)
+        if content
+            .get("stdout")
+            .and_then(|v| v.as_str())
+            .is_none_or(|s| s.is_empty())
+            && content.get("data").is_none()
+        {
+            if let Some(content_arr) = content.get("content").and_then(|c| c.as_array()) {
+                for item in content_arr {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        print!("{text}");
+                    }
+                }
+            }
+        }
         let exit_code = content
             .get("exit_code")
             .and_then(|v| v.as_i64())
@@ -462,6 +477,21 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
             {
                 let _ = serde_json::to_writer(std::io::stdout().lock(), data);
                 println!();
+            }
+        }
+        // Fallback: structuredContent.content[].text (MCP content format)
+        if content
+            .get("stdout")
+            .and_then(|v| v.as_str())
+            .is_none_or(|s| s.is_empty())
+            && content.get("data").is_none()
+        {
+            if let Some(content_arr) = content.get("content").and_then(|c| c.as_array()) {
+                for item in content_arr {
+                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                        print!("{text}");
+                    }
+                }
             }
         }
         let exit_code = content
