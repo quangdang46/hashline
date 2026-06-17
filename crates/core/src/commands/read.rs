@@ -11,12 +11,16 @@ pub fn run<W: Write, E: Write>(
     cmd: ReadCmd,
 ) -> Result<(), HashlineError> {
     let fc = FileContent::load(&cmd.file)?;
+    let raw_lines = fc.lines();
     let entries = fc.lines_with_hashes();
 
     if cmd.json {
         let lines: Vec<serde_json::Value> = entries
             .iter()
             .enumerate()
+            .filter(|(i, entry)| {
+                !(entry.content.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
+            })
             .map(|(i, entry)| {
                 serde_json::json!({
                     "n": i + 1,
@@ -34,10 +38,8 @@ pub fn run<W: Write, E: Write>(
     } else {
         writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
         let mut hash_buf = [0u8; 2];
-        let count = entries.len();
         for (i, entry) in entries.iter().enumerate() {
-            // Skip the trailing empty line from split('\n') when file ends with '\n'
-            if entry.content.is_empty() && i == count - 1 && fc.trailing_newline {
+            if entry.content.is_empty() && i == raw_lines.len() - 1 && fc.trailing_newline {
                 continue;
             }
             write_short_hash_bytes(&mut hash_buf, entry.short_hash);
