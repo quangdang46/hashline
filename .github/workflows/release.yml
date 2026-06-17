@@ -47,15 +47,13 @@ jobs:
             deps: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      # Pin to v2.7.7 — latest v2 with Windows-specific cache fixes.
-      # cache-on-failure: true prevents a cache error from killing the whole job.
-      - uses: Swatinem/rust-cache@v2.7.7
+      - uses: Swatinem/rust-cache@v2.9.1
         with:
           cache-on-failure: true
 
@@ -69,8 +67,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Windows runners sometimes hit transient cache-extraction or
-          # linker issues; retry once before failing.
           retries=1
           if [ "${{ runner.os }}" = "Windows" ]; then retries=2; fi
           attempt=1
@@ -116,7 +112,7 @@ jobs:
           $hash | Out-File -FilePath "${stageDir}.zip.sha256" -Encoding ascii -NoNewline
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.name }}
           path: ${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive_ext }}*
@@ -127,13 +123,13 @@ jobs:
     needs: build
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
