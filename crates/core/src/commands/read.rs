@@ -4,25 +4,24 @@ use crate::cli::ReadCmd;
 use crate::context::CommandContext;
 use crate::document::FileContent;
 use crate::error::HashlineError;
+use crate::hash::{format_short_hash, write_short_hash_bytes};
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: ReadCmd,
 ) -> Result<(), HashlineError> {
     let fc = FileContent::load(&cmd.file)?;
+    let entries = fc.lines_with_hashes();
 
     if cmd.json {
-        let raw_lines = fc.lines();
-        let lines: Vec<serde_json::Value> = raw_lines
+        let lines: Vec<serde_json::Value> = entries
             .iter()
             .enumerate()
-            .filter(|(i, line)| {
-                !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
-            })
-            .map(|(i, line)| {
+            .map(|(i, entry)| {
                 serde_json::json!({
                     "n": i + 1,
-                    "content": line,
+                    "hash": format_short_hash(entry.short_hash),
+                    "content": entry.content,
                 })
             })
             .collect();
@@ -34,14 +33,16 @@ pub fn run<W: Write, E: Write>(
         writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
     } else {
         writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
-        let lines = fc.lines();
-        let count = lines.len();
-        for (i, line) in lines.iter().enumerate() {
+        let mut hash_buf = [0u8; 2];
+        let count = entries.len();
+        for (i, entry) in entries.iter().enumerate() {
             // Skip the trailing empty line from split('\n') when file ends with '\n'
-            if line.is_empty() && i == count - 1 && fc.trailing_newline {
+            if entry.content.is_empty() && i == count - 1 && fc.trailing_newline {
                 continue;
             }
-            writeln!(ctx.stdout(), "{}|{}", i + 1, line)?;
+            write_short_hash_bytes(&mut hash_buf, entry.short_hash);
+            let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
+            writeln!(ctx.stdout(), "{}:{}|{}", i + 1, hash_str, entry.content)?;
         }
     }
 

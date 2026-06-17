@@ -46,7 +46,7 @@ pub fn run<W: Write, E: Write>(
         }
         let mut hash_buf = [0u8; 2];
         for line in &payload.block_lines {
-            write_short_hash_bytes(&mut hash_buf, line.hash.parse::<u8>().unwrap_or(0));
+            write_short_hash_bytes(&mut hash_buf, u8::from_str_radix(&line.hash, 16).unwrap_or(0));
             let hash_str = std::str::from_utf8(&hash_buf).unwrap_or("??");
             writeln!(ctx.stdout(), "{}:{}|{}", line.n, hash_str, line.content)?;
         }

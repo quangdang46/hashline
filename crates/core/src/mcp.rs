@@ -147,16 +147,19 @@ fn handle_read(file: &str, json: bool) -> String {
         Ok(fc) => fc,
         Err(e) => return format!("Error: {e}"),
     };
+    let entries = fc.lines_with_hashes();
 
     if json {
-        let raw_lines = fc.lines();
-        let lines: Vec<Value> = raw_lines
+        let lines: Vec<Value> = entries
             .iter()
             .enumerate()
-            .filter(|(i, line)| {
-                !(line.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
+            .map(|(i, entry)| {
+                serde_json::json!({
+                    "n": i + 1,
+                    "hash": hash::format_short_hash(entry.short_hash),
+                    "content": entry.content,
+                })
             })
-            .map(|(i, line)| serde_json::json!({"n": i + 1, "content": line}))
             .collect();
         let output = serde_json::json!({
             "path": fc.path.display().to_string(),
@@ -166,13 +169,11 @@ fn handle_read(file: &str, json: bool) -> String {
         serde_json::to_string(&output).unwrap_or_default()
     } else {
         let mut out = format!("[{}#{}]\n", fc.path.display(), fc.hash);
-        let lines = fc.lines();
-        let count = lines.len();
-        for (i, line) in lines.iter().enumerate() {
-            if line.is_empty() && i == count - 1 && fc.trailing_newline {
-                continue;
-            }
-            out.push_str(&format!("{}|{}\n", i + 1, line));
+        let mut hash_buf = [0u8; 2];
+        for (i, entry) in entries.iter().enumerate() {
+            hash::write_short_hash_bytes(&mut hash_buf, entry.short_hash);
+            let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
+            out.push_str(&format!("{}:{}|{}\n", i + 1, hash_str, entry.content));
         }
         out
     }
