@@ -173,3 +173,172 @@ mod tests {
         assert_eq!(normalized, "—\n—\n");
     }
 }
+
+#[test]
+fn test_edge_empty() {
+    assert_eq!(normalize_to_lf(""), "");
+}
+
+#[test]
+fn test_edge_only_newline() {
+    assert_eq!(normalize_to_lf("\n"), "\n");
+}
+
+#[test]
+fn test_edge_ascii_only() {
+    assert_eq!(normalize_to_lf("hello\nworld\n"), "hello\nworld\n");
+}
+
+#[test]
+fn test_edge_all_cr() {
+    assert_eq!(normalize_to_lf("a\rb\rc\r"), "a\nb\nc\n");
+}
+
+#[test]
+fn test_edge_all_crlf() {
+    assert_eq!(normalize_to_lf("a\r\nb\r\nc\r\n"), "a\nb\nc\n");
+}
+
+#[test]
+fn test_edge_mixed_endings() {
+    assert_eq!(normalize_to_lf("a\r\nb\rc\r\nd"), "a\nb\nc\nd");
+}
+
+#[test]
+fn test_edge_emoji_4byte() {
+    let s = "hello 🚀 world\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_emoji_crlf() {
+    let input = "hello 🚀 world\r\nline2\r\n";
+    assert_eq!(normalize_to_lf(input), "hello 🚀 world\nline2\n");
+}
+
+#[test]
+fn test_edge_japanese() {
+    let s = "こんにちは世界\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_arabic() {
+    let s = "مرحبا بالعالم\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_consecutive_cr_with_unicode() {
+    assert_eq!(normalize_to_lf("—\r—\r—\r"), "—\n—\n—\n");
+}
+
+#[test]
+fn test_edge_consecutive_crlf_with_unicode() {
+    assert_eq!(normalize_to_lf("—\r\n—\r\n—\r\n"), "—\n—\n—\n");
+}
+
+#[test]
+fn test_edge_mixed_endings_with_unicode() {
+    assert_eq!(normalize_to_lf("é\r\n—\r🚀\n"), "é\n—\n🚀\n");
+}
+
+#[test]
+fn test_edge_no_trailing_newline_unicode() {
+    let s = "hello 🚀 world";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_no_trailing_newline_crlf() {
+    let input = "hello 🚀 world\r\nline2";
+    assert_eq!(normalize_to_lf(input), "hello 🚀 world\nline2");
+}
+
+#[test]
+fn test_edge_only_crlf_no_text() {
+    assert_eq!(normalize_to_lf("\r\n\r\n\r\n"), "\n\n\n");
+}
+
+#[test]
+fn test_edge_zero_width_space() {
+    let s = "a\u{200B}b\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_bidi_override() {
+    let s = "test\u{202E}back\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_null_byte() {
+    let s = "before\x00after\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_long_repeated_unicode() {
+    let s = "x".repeat(100) + &"\u{2014}".repeat(50) + "\nline2\n";
+    assert_eq!(normalize_to_lf(&s), s);
+}
+
+#[test]
+fn test_edge_only_newlines() {
+    assert_eq!(normalize_to_lf("\n\n\n\n"), "\n\n\n\n");
+}
+
+#[test]
+fn test_edge_max_unicode_codepoint() {
+    let s = "max \u{10FFFF} codepoint\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_snowman() {
+    assert_eq!(normalize_to_lf("snowman ☃\nline2\n"), "snowman ☃\nline2\n");
+}
+
+#[test]
+fn test_edge_music_symbols() {
+    assert_eq!(normalize_to_lf("music ♭♯\nline2\n"), "music ♭♯\nline2\n");
+}
+
+#[test]
+fn test_edge_math_symbols() {
+    assert_eq!(normalize_to_lf("math ∞∂\nline2\n"), "math ∞∂\nline2\n");
+}
+
+#[test]
+fn test_edge_box_drawing() {
+    assert_eq!(normalize_to_lf("box ─│\nline2\n"), "box ─│\nline2\n");
+}
+
+#[test]
+fn test_edge_crlf_restore_with_unicode() {
+    // Verify that restore_line_endings works on normalized unicode text
+    let original = "—\r\n—\r\n";
+    let normalized = normalize_to_lf(original);
+    let restored = restore_line_endings(&normalized, LineEnding::Crlf);
+    assert_eq!(restored, original);
+}
+
+#[test]
+fn test_edge_mixed_width_cjk_with_crlf() {
+    let input = "中文\r\n日本語\r\n한국어\r\n";
+    assert_eq!(normalize_to_lf(input), "中文\n日本語\n한국어\n");
+}
+
+#[test]
+fn test_edge_surrogate_pair_not_in_crlf() {
+    // U+1F600 = 😀 as UTF-8: F0 9F 98 80
+    let s = "grinning 😀 face\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
+
+#[test]
+fn test_edge_bom_preserved() {
+    let s = "\u{FEFF}hello — world\nline2\n";
+    assert_eq!(normalize_to_lf(s), s);
+}
