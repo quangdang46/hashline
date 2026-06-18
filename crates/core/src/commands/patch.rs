@@ -204,9 +204,32 @@ pub fn apply_edits(
             Edit::Insert {
                 mode: Some(InsertMode::Replacement),
                 cursor: Cursor::BeforeAnchor(start_anchor),
+                expected_hash,
                 ..
             } => {
                 let anchor_line = start_anchor.line;
+                if let Some(expected) = expected_hash {
+                    let anchor_index = anchor_line.wrapping_sub(1);
+                    if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
+                    {
+                        return Err(HashlineError::StaleAnchor {
+                            anchor: format!(
+                                "{}:{}",
+                                anchor_line,
+                                crate::hash::format_short_hash(*expected)
+                            )
+                            .into(),
+                            line: anchor_line,
+                            expected: crate::hash::format_short_hash(*expected).into(),
+                            actual: crate::hash::format_short_hash(
+                                entries[anchor_index].short_hash,
+                            )
+                            .into(),
+                            path: path.display().to_string().into(),
+                            relocated_suffix: String::new().into(),
+                        });
+                    }
+                }
 
                 let mut replacement_texts: Vec<String> = Vec::new();
                 let mut j = i;
@@ -228,7 +251,34 @@ pub fn apply_edits(
                 let mut delete_lines: Vec<usize> = Vec::new();
                 while j < edits.len() {
                     match &edits[j] {
-                        Edit::Delete { anchor, .. } => {
+                        Edit::Delete {
+                            anchor,
+                            expected_hash,
+                            ..
+                        } => {
+                            if let Some(expected) = expected_hash {
+                                let anchor_index = anchor.line.wrapping_sub(1);
+                                if anchor_index < entries.len()
+                                    && *expected != entries[anchor_index].short_hash
+                                {
+                                    return Err(HashlineError::StaleAnchor {
+                                        anchor: format!(
+                                            "{}:{}",
+                                            anchor.line,
+                                            crate::hash::format_short_hash(*expected)
+                                        )
+                                        .into(),
+                                        line: anchor.line,
+                                        expected: crate::hash::format_short_hash(*expected).into(),
+                                        actual: crate::hash::format_short_hash(
+                                            entries[anchor_index].short_hash,
+                                        )
+                                        .into(),
+                                        path: path.display().to_string().into(),
+                                        relocated_suffix: String::new().into(),
+                                    });
+                                }
+                            }
                             delete_lines.push(anchor.line);
                             j += 1;
                         }
@@ -259,7 +309,34 @@ pub fn apply_edits(
                 let mut j = i;
                 while j < edits.len() {
                     match &edits[j] {
-                        Edit::Delete { anchor, .. } => {
+                        Edit::Delete {
+                            anchor,
+                            expected_hash,
+                            ..
+                        } => {
+                            if let Some(expected) = expected_hash {
+                                let anchor_index = anchor.line.wrapping_sub(1);
+                                if anchor_index < entries.len()
+                                    && *expected != entries[anchor_index].short_hash
+                                {
+                                    return Err(HashlineError::StaleAnchor {
+                                        anchor: format!(
+                                            "{}:{}",
+                                            anchor.line,
+                                            crate::hash::format_short_hash(*expected)
+                                        )
+                                        .into(),
+                                        line: anchor.line,
+                                        expected: crate::hash::format_short_hash(*expected).into(),
+                                        actual: crate::hash::format_short_hash(
+                                            entries[anchor_index].short_hash,
+                                        )
+                                        .into(),
+                                        path: path.display().to_string().into(),
+                                        relocated_suffix: String::new().into(),
+                                    });
+                                }
+                            }
                             del_lines.push(anchor.line);
                             j += 1;
                         }
@@ -815,8 +892,13 @@ mod tests {
             other => panic!("expected BeforeAnchor insert, got {other:?}"),
         }
         match &edits[1] {
-            crate::types::Edit::Delete { anchor, .. } => {
+            crate::types::Edit::Delete {
+                anchor,
+                expected_hash,
+                ..
+            } => {
                 assert_eq!(anchor.line, 2);
+                assert_eq!(*expected_hash, Some(0x67));
             }
             other => panic!("expected Delete, got {other:?}"),
         }

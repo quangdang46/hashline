@@ -49,7 +49,11 @@ pub fn run<W: Write, E: Write>(
     let changed_line = *lines_with.first().unwrap_or(&1);
 
     if total_lines > 1 {
-        let lines_str = lines_with.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+        let lines_str = lines_with
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         eprintln!(
             "warning: '{}' matched {total_matches} times across {total_lines} lines ({lines_str}) — replaced first occurrence only",
             cmd.old_string

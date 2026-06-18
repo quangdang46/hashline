@@ -140,8 +140,11 @@ impl Executor {
                 self.handle_raw(&text, line_num);
             }
             Token::OpBlock { target, line_num } => {
-                if matches!(&target, BlockTarget::Replace(_) | BlockTarget::Delete(_)) {
-                    if let BlockTarget::Replace(r) | BlockTarget::Delete(r) = &target {
+                if matches!(
+                    &target,
+                    BlockTarget::Replace(_, _) | BlockTarget::Delete(_, _)
+                ) {
+                    if let BlockTarget::Replace(r, _) | BlockTarget::Delete(r, _) = &target {
                         let _ = validate_range_order(r, line_num);
                     }
                 }
@@ -176,7 +179,7 @@ impl Executor {
         };
         if matches!(
             pending.target,
-            BlockTarget::Delete(_) | BlockTarget::DeleteBlock(_)
+            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(_)
         ) {
             return;
         }
@@ -200,7 +203,7 @@ impl Executor {
                 self.handle_blank();
                 return;
             }
-            if matches!(pending.target, BlockTarget::Delete(_)) {
+            if matches!(pending.target, BlockTarget::Delete(_, _)) {
                 return;
             }
             if matches!(pending.target, BlockTarget::DeleteBlock(_)) {
@@ -235,7 +238,7 @@ impl Executor {
         };
         if matches!(
             pending.target,
-            BlockTarget::Delete(_) | BlockTarget::DeleteBlock(_)
+            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(_)
         ) {
             return;
         }
@@ -298,12 +301,13 @@ impl Executor {
         let payload_texts: Vec<String> = payloads.into_iter().map(|r| r.text).collect();
 
         match &target {
-            BlockTarget::Delete(range) => {
-                for anchor in expand_range(range) {
+            BlockTarget::Delete(range, hash) => {
+                for (i, anchor) in expand_range(range).into_iter().enumerate() {
                     self.edits.push(Edit::Delete {
                         anchor,
                         line_num,
                         index: self.edit_index,
+                        expected_hash: if i == 0 { *hash } else { None },
                     });
                     self.edit_index += 1;
                 }
@@ -344,14 +348,15 @@ impl Executor {
                 });
                 self.edit_index += 1;
             }
-            BlockTarget::Replace(range) => {
+            BlockTarget::Replace(range, hash) => {
                 if payload_texts.is_empty() {
                     // SWAP with no body = delete
-                    for anchor in expand_range(range) {
+                    for (i, anchor) in expand_range(range).into_iter().enumerate() {
                         self.edits.push(Edit::Delete {
                             anchor,
                             line_num,
                             index: self.edit_index,
+                            expected_hash: if i == 0 { *hash } else { None },
                         });
                         self.edit_index += 1;
                     }
@@ -368,19 +373,21 @@ impl Executor {
                         index: self.edit_index,
                         mode: Some(InsertMode::Replacement),
                         block_start: None,
+                        expected_hash: None,
                     });
                     self.edit_index += 1;
                 }
-                for anchor in expand_range(range) {
+                for (i, anchor) in expand_range(range).into_iter().enumerate() {
                     self.edits.push(Edit::Delete {
                         anchor,
                         line_num,
                         index: self.edit_index,
+                        expected_hash: if i == 0 { *hash } else { None },
                     });
                     self.edit_index += 1;
                 }
             }
-            BlockTarget::InsertBefore(anchor) => {
+            BlockTarget::InsertBefore(anchor, hash) => {
                 if payload_texts.is_empty() {
                     return;
                 }
@@ -393,11 +400,12 @@ impl Executor {
                         index: self.edit_index,
                         mode: None,
                         block_start: None,
+                        expected_hash: *hash,
                     });
                     self.edit_index += 1;
                 }
             }
-            BlockTarget::InsertAfter(anchor) => {
+            BlockTarget::InsertAfter(anchor, hash) => {
                 if payload_texts.is_empty() {
                     return;
                 }
@@ -410,6 +418,7 @@ impl Executor {
                         index: self.edit_index,
                         mode: None,
                         block_start: None,
+                        expected_hash: *hash,
                     });
                     self.edit_index += 1;
                 }
@@ -424,6 +433,7 @@ impl Executor {
                         index: self.edit_index,
                         mode: None,
                         block_start: None,
+                        expected_hash: None,
                     });
                     self.edit_index += 1;
                 }
@@ -438,6 +448,7 @@ impl Executor {
                         index: self.edit_index,
                         mode: None,
                         block_start: None,
+                        expected_hash: None,
                     });
                     self.edit_index += 1;
                 }
@@ -449,7 +460,10 @@ impl Executor {
         let mut source_lines_by_anchor: HashMap<usize, Vec<usize>> = HashMap::new();
         for edit in &self.edits {
             if let Edit::Delete {
-                anchor, line_num, ..
+                anchor,
+                line_num,
+                expected_hash: None,
+                ..
             } = edit
             {
                 source_lines_by_anchor

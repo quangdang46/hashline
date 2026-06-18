@@ -46,11 +46,15 @@ pub enum Edit {
         /// claims a depth inside the block back across the block's trailing
         /// closer lines (never above this line).
         block_start: Option<usize>,
+        /// Optional short-hash expected at the anchor line, from `SWAP N:HH:`.
+        expected_hash: Option<u8>,
     },
     Delete {
         anchor: Anchor,
         line_num: usize,
         index: usize,
+        /// Optional short-hash expected at the anchor line, from `SWAP N:HH:`.
+        expected_hash: Option<u8>,
     },
     /// Deferred block edit (`replace_block N:` / `delete_block N` /
     /// `insert_after_block N:`). The exact line span is unknown at parse
