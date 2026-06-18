@@ -23,6 +23,7 @@ pub enum Commands {
     Guide(GuideCmd),
     Serve(ServeCmd),
     Mcp(McpCmd),
+    Replace(ReplaceCmd),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
@@ -44,6 +45,11 @@ pub struct PatchCmd {
     pub dry_run: bool,
     #[arg(long)]
     pub json: bool,
+    #[arg(
+        long,
+        help = "Skip fsync for faster writes (skip --safe/atomic behavior)"
+    )]
+    pub fast: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
@@ -55,6 +61,18 @@ pub struct FindBlockCmd {
     pub json: bool,
     #[arg(long)]
     pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(about = "Replace old_string with new_string in file (str_replace-style)")]
+pub struct ReplaceCmd {
+    pub file: PathBuf,
+    pub old_string: String,
+    pub new_string: String,
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long)]
+    pub safe: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]

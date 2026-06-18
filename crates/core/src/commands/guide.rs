@@ -115,9 +115,9 @@ pub fn run<W: Write, E: Write>(
   hashline mcp
 
   Runs a stdio JSON-RPC server exposing 3 tools:
-    • hashline_read       — read file with snapshot hash
-    • hashline_patch      — apply patch (SWAP/DEL/INS.*/BLK.*)
-    • hashline_find_block — find enclosing syntactic block
+    • read       — read file with snapshot hash
+    • patch      — apply patch (SWAP/DEL/INS.*/BLK.*)
+    • find_block — find enclosing syntactic block
 
   Configure in claude_desktop_config.json / .cursor/mcp.json:
     {

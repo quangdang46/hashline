@@ -60,6 +60,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
     match command {
         Commands::Read(cmd) => flag_mode(cmd.json),
         Commands::Patch(cmd) => flag_mode(cmd.json),
+        Commands::Replace(cmd) => flag_mode(cmd.json),
         Commands::FindBlock(cmd) => flag_mode(cmd.json),
         Commands::Guide(cmd) => flag_mode(cmd.json),
         Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
@@ -69,7 +70,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
 /// Returns whether JSON output for `command` should be pretty-printed.
 pub fn json_pretty_for(command: &Commands) -> bool {
     match command {
-        Commands::Read(_) | Commands::Patch(_) => false,
+        Commands::Read(_) | Commands::Patch(_) | Commands::Replace(_) => false,
         Commands::FindBlock(cmd) => cmd.pretty,
         Commands::Guide(_) => false,
         Commands::Serve(_) | Commands::Mcp(_) => false,
@@ -130,6 +131,7 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             patch: "".into(),
             dry_run: false,
+            fast: false,
             json: false,
         });
 

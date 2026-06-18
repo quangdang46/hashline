@@ -101,7 +101,7 @@ fn tool_list() -> ToolList {
     ToolList {
         tools: vec![
             ToolDefinition {
-                name: "hashline_read".into(),
+                name: "read".into(),
                 description: "Read a file with [path#HASH] header and numbered lines".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
@@ -113,7 +113,7 @@ fn tool_list() -> ToolList {
                 })),
             },
             ToolDefinition {
-                name: "hashline_patch".into(),
+                name: "patch".into(),
                 description: "Apply a hashline patch (SWAP, DEL, INS.* operations)".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
@@ -126,7 +126,7 @@ fn tool_list() -> ToolList {
                 })),
             },
             ToolDefinition {
-                name: "hashline_find_block".into(),
+                name: "find_block".into(),
                 description: "Find a likely structural block around an anchor".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
@@ -135,6 +135,20 @@ fn tool_list() -> ToolList {
                         "anchor": {"type": "string", "description": "Line:hash anchor"}
                     },
                     "required": ["file", "anchor"]
+                })),
+            },
+            ToolDefinition {
+                name: "replace".into(),
+                description: "Replace old_string with new_string (str_replace-style)".into(),
+                input_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string"},
+                        "old_string": {"type": "string"},
+                        "new_string": {"type": "string"},
+                        "json": {"type": "boolean"}
+                    },
+                    "required": ["file", "old_string", "new_string"]
                 })),
             },
         ],
@@ -418,13 +432,70 @@ fn leading_ws(s: &str) -> usize {
     s.len() - s.trim_start().len()
 }
 
+fn handle_replace(file: &str, old_string: &str, new_string: &str, json: bool) -> String {
+    let path = std::path::Path::new(file);
+    match crate::document::FileContent::load(path) {
+        Ok(fc) => {
+            let entries = fc.lines_with_hashes();
+            let matches: Vec<(usize, &crate::document::LineEntry)> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.content.contains(old_string))
+                .collect();
+            if matches.is_empty() {
+                return format!("Error: string not found: {old_string}");
+            }
+            if matches.len() > 1 {
+                let lines: Vec<String> = matches.iter().map(|(i, _)| (i + 1).to_string()).collect();
+                return format!("Error: ambiguous — found at lines {}", lines.join(", "));
+            }
+            let (idx, entry) = matches[0];
+            let line_no = idx + 1;
+            let new_content = entry.content.replace(old_string, new_string);
+            let mut lines: Vec<String> = fc.normalized.split('\n').map(|s| s.to_string()).collect();
+            if fc.normalized.ends_with('\n') && lines.last().map(|s| s.is_empty()).unwrap_or(false)
+            {
+                lines.pop();
+            }
+            lines[idx] = new_content.clone();
+            let result = if fc.trailing_newline && !lines.is_empty() {
+                lines.join("\n") + "\n"
+            } else if lines.is_empty() {
+                String::new()
+            } else {
+                lines.join("\n")
+            };
+            let _ = std::fs::write(path, &result);
+            if json {
+                serde_json::json!({
+                    "success": true, "file": path.display().to_string(),
+                    "line": line_no, "new_content": new_content,
+                })
+                .to_string()
+            } else {
+                format!("Replaced line {line_no}")
+            }
+        }
+        Err(e) => format!("Error: {e}"),
+    }
+}
+
 fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
         Ok(fc) => fc,
         Err(e) => return format!("Error: {e}"),
     };
-    let (edits, _warnings) = parse_patch(patch_str);
+    let (edits, warnings) = parse_patch(patch_str);
+
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+
+    if edits.is_empty() {
+        return "Error: patch produced no edits — input was empty or all operations were rejected"
+            .to_string();
+    }
 
     let (mut lines, _) = split_text(&fc.normalized);
 
@@ -457,7 +528,7 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
 
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
-        "hashline_read" => {
+        "read" | "hashline_read" => {
             let file = args
                 .get("file")
                 .and_then(|v| v.as_str())
@@ -465,7 +536,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
             Ok(serde_json::json!({"content": [{"type": "text", "text": handle_read(file, json)}]}))
         }
-        "hashline_patch" => {
+        "patch" | "hashline_patch" => {
             let file = args
                 .get("file")
                 .and_then(|v| v.as_str())
@@ -482,7 +553,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run)}]}),
             )
         }
-        "hashline_find_block" => {
+        "find_block" | "hashline_find_block" => {
             let file = args
                 .get("file")
                 .and_then(|v| v.as_str())
@@ -494,6 +565,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             Ok(
                 serde_json::json!({"content": [{"type": "text", "text": handle_find_block(file, anchor)}]}),
             )
+        }
+        "replace" => {
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let old_string = args
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'old_string'")?;
+            let new_string = args
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'new_string'")?;
+            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+            let result = handle_replace(file, old_string, new_string, json);
+            Ok(serde_json::json!({"content": [{"type": "text", "text": result}]}))
         }
         _ => Err(format!("unknown tool: {name}")),
     }

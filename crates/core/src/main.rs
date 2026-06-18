@@ -191,9 +191,29 @@ fn default_log_path(home: PathBuf) -> PathBuf {
     home.join(".hashline").join("hashline.log")
 }
 
+/// Default cap on the hashline log file. When the log exceeds this many
+/// bytes the writer truncates the file to the most recent half so the
+/// process never runs the disk out of space from accumulated log lines.
+const DEFAULT_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
+
+fn log_max_bytes_from_env() -> u64 {
+    match std::env::var("HASHLINE_LOG_MAX_BYTES") {
+        Ok(value) if !value.trim().is_empty() => value
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_LOG_MAX_BYTES),
+        _ => DEFAULT_LOG_MAX_BYTES,
+    }
+}
+
 #[derive(Clone)]
 struct SharedFileWriter {
     file: Arc<Mutex<std::fs::File>>,
+    path: PathBuf,
+    bytes_written: Arc<std::sync::atomic::AtomicU64>,
+    max_bytes: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl SharedFileWriter {
@@ -206,24 +226,91 @@ impl SharedFileWriter {
             .create(true)
             .append(true)
             .open(path)?;
+        let initial_size = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(Self {
             file: Arc::new(Mutex::new(file)),
+            path: path.to_path_buf(),
+            bytes_written: Arc::new(std::sync::atomic::AtomicU64::new(initial_size)),
+            max_bytes: Arc::new(std::sync::atomic::AtomicU64::new(log_max_bytes_from_env())),
         })
     }
-}
 
-struct SharedFileGuard<'a> {
-    guard: MutexGuard<'a, std::fs::File>,
+    /// Truncate the log to retain the most recent `keep` bytes.
+    ///
+    /// Reads the trailing `keep` bytes (rounded to the next newline so we
+    /// never slice a UTF-8 multi-byte sequence) from the current file
+    /// and writes the retained tail back via `std::fs::write`. The caller
+    /// is responsible for holding the writer mutex.
+    fn rotate_locked(&self, _file: &mut std::fs::File, keep: u64, path: &Path) -> io::Result<()> {
+        use std::io::Read;
+        let len = std::fs::metadata(path)?.len();
+        if len <= keep {
+            return Ok(());
+        }
+        let skip = len - keep;
+        // Open a dedicated read handle (not the mutex-guarded one) so we
+        // never hit EBADF from racing with the MutexGuard's file handle.
+        let mut read_file = std::fs::File::open(path)?;
+        use std::io::Seek;
+        read_file.seek(std::io::SeekFrom::Start(skip))?;
+        let mut tail = Vec::with_capacity(keep as usize);
+        read_file.read_to_end(&mut tail)?;
+        // Find the first newline so we start on a complete log line.
+        let start = tail
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let tail = tail.split_off(start);
+        // Overwrite the file via a fresh write-only handle. This avoids
+        // any interaction with the MutexGuard's append-mode handle.
+        std::fs::write(path, &tail)?;
+        self.bytes_written
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 impl Write for SharedFileGuard<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.guard.write(buf)
+        let written = self.guard.write(buf)?;
+        let new_total = self
+            .writer
+            .bytes_written
+            .fetch_add(written as u64, std::sync::atomic::Ordering::Relaxed)
+            + written as u64;
+        let cap = self
+            .writer
+            .max_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if cap > 0 && new_total > cap {
+            let keep = cap / 2;
+            if self
+                .writer
+                .rotate_locked(&mut self.guard, keep, &self.writer.path)
+                .is_err()
+            {
+                // best-effort
+            }
+            if let Ok(new_file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.writer.path)
+            {
+                let _ = std::mem::replace(&mut *self.guard, new_file);
+            }
+        }
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.guard.flush()
     }
+}
+
+struct SharedFileGuard<'a> {
+    guard: MutexGuard<'a, std::fs::File>,
+    writer: &'a SharedFileWriter,
 }
 
 impl<'a> MakeWriter<'a> for SharedFileWriter {
@@ -235,6 +322,7 @@ impl<'a> MakeWriter<'a> for SharedFileWriter {
                 .file
                 .lock()
                 .expect("hashline tracing file lock poisoned"),
+            writer: self,
         }
     }
 }
@@ -246,10 +334,12 @@ fn run<W: Write, E: Write>(cli: Cli, stdout: &mut W, stderr: &mut E) -> Result<i
 /// Convert a CLI command to a JSON-RPC method name string.
 fn command_to_tool_name(command: &Commands) -> &'static str {
     match command {
-        Commands::Read(_) => "hashline_read",
-        Commands::Patch(_) => "hashline_patch",
-        Commands::FindBlock(_) => "hashline_find_block",
-        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
+        Commands::Read(_) => "read",
+        Commands::Patch(_) => "patch",
+        Commands::FindBlock(_) => "find_block",
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Replace(_) | Commands::Mcp(_) => {
+            unreachable!()
+        }
     }
 }
 
@@ -458,7 +548,15 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
     }
 
     let result = response.get("result");
+
+    // 1. Preferred path: daemon returned a structured `{ stdout, stderr,
+    //    exit_code, data }` envelope. Honor stdout/stderr verbatim and
+    //    fall back to `data` JSON when stdout is empty.
     if let Some(content) = result.and_then(|r| r.get("structuredContent")) {
+        let has_stdout = !content
+            .get("stdout")
+            .and_then(|v| v.as_str())
+            .is_none_or(|s| s.is_empty());
         if let Some(stdout_text) = content.get("stdout").and_then(|v| v.as_str()) {
             if !stdout_text.is_empty() {
                 print!("{stdout_text}");
@@ -469,24 +567,12 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
                 eprint!("{stderr_text}");
             }
         }
-        if let Some(data) = content.get("data") {
-            if content
-                .get("stdout")
-                .and_then(|v| v.as_str())
-                .is_none_or(|s| s.is_empty())
-            {
+        if !has_stdout {
+            if let Some(data) = content.get("data") {
                 let _ = serde_json::to_writer(std::io::stdout().lock(), data);
                 println!();
-            }
-        }
-        // Fallback: structuredContent.content[].text (MCP content format)
-        if content
-            .get("stdout")
-            .and_then(|v| v.as_str())
-            .is_none_or(|s| s.is_empty())
-            && content.get("data").is_none()
-        {
-            if let Some(content_arr) = content.get("content").and_then(|c| c.as_array()) {
+            } else if let Some(content_arr) = content.get("content").and_then(|c| c.as_array()) {
+                // 2. structuredContent.content[].text (legacy 0.7.0 shape)
                 for item in content_arr {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                         print!("{text}");
@@ -501,6 +587,22 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
         return Ok(exit_code);
     }
 
+    // 3. Daemon returned the raw MCP `content` array
+    //    (`{"result": {"content": [{"type": "text", "text": "..."}]}}`).
+    //    This is the shape produced by `serve.rs handle_http` for the
+    //    `/rpc` endpoint, and the shape the legacy 0.7.5 fix relied on.
+    if let Some(content_arr) = result
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+    {
+        for item in content_arr {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                print!("{text}");
+            }
+        }
+        return Ok(0);
+    }
+
     Ok(0)
 }
 
@@ -510,7 +612,9 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
         Commands::Read(cmd) => serde_json::to_value(cmd),
         Commands::Patch(cmd) => serde_json::to_value(cmd),
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
-        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => unreachable!(),
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Replace(_) | Commands::Mcp(_) => {
+            unreachable!()
+        }
     }
 }
 

@@ -6,6 +6,14 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
+// Mutable statics used by the SIGINT/SIGTERM/SIGHUP cleanup handler.
+// They are only written once during daemon startup and read by async
+// signal handlers, so plain globals are sufficient.
+#[cfg(unix)]
+static mut CLEANUP_SOCKET: *const libc::c_char = std::ptr::null();
+#[cfg(unix)]
+static mut CLEANUP_PID: *const libc::c_char = std::ptr::null();
+
 use crate::cli::ServeCmd;
 use crate::context::CommandContext;
 use crate::error::HashlineError;
@@ -125,6 +133,57 @@ pub fn run<W: Write, E: Write>(
     // Remove old socket file again after potential fork
     if socket_path.exists() {
         std::fs::remove_file(&socket_path).ok();
+    }
+
+    // Install signal handlers so SIGINT/SIGTERM/SIGHUP clean up the
+    // lock + pid + socket files. Without this, an aborted daemon
+    // leaves stale artifacts in `~/.hashline/` that block the next
+    // start ("daemon is already running" / "address in use" errors).
+    #[cfg(unix)]
+    {
+        #[allow(clippy::missing_transmute_annotations)]
+        extern "C" fn cleanup_signal(_sig: libc::c_int) {
+            // We are in a signal handler: only async-signal-safe operations.
+            // `_exit` is safe and prevents destructors; the lock file is
+            // released by the kernel when the process exits, so we only
+            // need to remove the explicit pid and socket files. We use
+            // unlink via a fixed path that the helper sets below.
+            unsafe {
+                libc::unlink(CLEANUP_SOCKET);
+                if !CLEANUP_PID.is_null() {
+                    libc::unlink(CLEANUP_PID);
+                }
+                libc::_exit(0);
+            }
+        }
+        // Stash the paths the handler will use. We use leaked CStrings
+        // because the signal handler may fire at any time and cannot
+        // borrow from the stack.
+        let sock_c =
+            std::ffi::CString::new(socket_path.to_string_lossy().as_bytes()).unwrap_or_default();
+        let pid_c = pid_file
+            .as_ref()
+            .and_then(|p| std::ffi::CString::new(p.to_string_lossy().as_bytes()).ok());
+        unsafe {
+            CLEANUP_SOCKET = sock_c.into_raw();
+            CLEANUP_PID = pid_c
+                .map(|c| c.into_raw() as *const _)
+                .unwrap_or(std::ptr::null());
+            {
+                libc::signal(
+                    libc::SIGINT,
+                    cleanup_signal as *const () as libc::sighandler_t,
+                );
+                libc::signal(
+                    libc::SIGTERM,
+                    cleanup_signal as *const () as libc::sighandler_t,
+                );
+                libc::signal(
+                    libc::SIGHUP,
+                    cleanup_signal as *const () as libc::sighandler_t,
+                );
+            }
+        }
     }
 
     // Thread pool for handling connections (simple: spawn a thread per connection)

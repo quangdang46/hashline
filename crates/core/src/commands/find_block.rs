@@ -97,7 +97,7 @@ pub fn find_block_boundaries(
 
     let (language, block_start, block_end) = match extension {
         "py" => find_python_block(entries, anchor_index)?,
-        "verse" => find_python_block(entries, anchor_index)?,
+        "verse" => find_verse_block(entries, anchor_index)?,
         "rb" => find_ruby_block(entries, anchor_index)?,
         "rs" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" | "cs"
         | "kt" | "kts" | "swift" | "scala" | "dart" | "zig" | "m" | "mm" => {
@@ -300,6 +300,77 @@ fn find_indent_block(
     Ok((start, end))
 }
 
+fn find_verse_block(
+    entries: &[crate::document::LineEntry],
+    anchor_index: usize,
+) -> Result<(Option<String>, usize, usize), HashlineError> {
+    // Verse combines indented class/method bodies (`base_x := class():` /
+    // `OnBegin():void=`) with brace blocks (`using { /Verse... }`,
+    // `if (X) { ... }`). Try indent first (most blocks are class bodies),
+    // then brace-balanced for anchor lines that live inside `{ }`.
+    if let Ok((s, e)) = find_verse_indent_block(entries, anchor_index) {
+        return Ok((Some("Verse".into()), s, e));
+    }
+    if let Ok((s, e)) = find_brace_block(entries, anchor_index, "verse") {
+        return Ok((Some("Verse".into()), s, e));
+    }
+    // Last resort: return the whole file as a single block (top-level anchor).
+    Ok((Some("Verse".into()), 0, entries.len().saturating_sub(1)))
+}
+
+fn find_verse_indent_block(
+    entries: &[crate::document::LineEntry],
+    anchor_index: usize,
+) -> Result<(usize, usize), HashlineError> {
+    let anchor_indent = leading_whitespace(&entries[anchor_index].content);
+
+    // Walk backwards for the first non-empty line with strictly less
+    // indentation. If we never find one (anchor is at top of file), look
+    // forward instead: the first non-empty line with indent <= anchor_indent
+    // marks the block end, and the block extends from anchor_index..end.
+    let mut start: Option<usize> = None;
+    for i in (0..anchor_index).rev() {
+        if entries[i].content.trim().is_empty() {
+            continue;
+        }
+        let indent = leading_whitespace(&entries[i].content);
+        if indent < anchor_indent {
+            start = Some(i);
+            break;
+        }
+    }
+    let (start, start_indent) = if let Some(s) = start {
+        (s, leading_whitespace(&entries[s].content))
+    } else {
+        // Top-of-file anchor: block extends back to line 0.
+        (0, leading_whitespace(&entries[0].content))
+    };
+
+    let mut end = entries.len().saturating_sub(1);
+    let mut found_end = false;
+    for i in (start + 1)..entries.len() {
+        let entry = &entries[i];
+        let trimmed = entry.content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Verse treats lines beginning with `#` as a comment-like marker,
+        // matching the Python rule. There is no native block-comment in
+        // Verse, so we only need to skip `#` rows.
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = leading_whitespace(&entry.content);
+        if indent <= start_indent {
+            end = i.saturating_sub(1);
+            found_end = true;
+            break;
+        }
+    }
+    let _ = found_end;
+    Ok((start, end))
+}
+
 fn find_python_block(
     entries: &[crate::document::LineEntry],
     anchor_index: usize,
@@ -491,6 +562,32 @@ mod tests {
         let payload = find_block_payload(&fc, &entries, &anchor_for(2, &entries)).unwrap();
         assert_eq!(payload.block_lines.len(), 3);
         assert_eq!(payload.block_lines[2].content, "}");
+    }
+
+    #[test]
+    fn test_verse_top_level_using() {
+        let content = "using { /Verse.org/Simulation }\nusing { /Fortnite.com/Devices }\n\nbase_x := class():\n    x:int = 0\n";
+        let (fc, entries) = make_fc(content, "test.verse");
+        // Anchor on the top-level `using` should not fail.
+        let payload = find_block_payload(&fc, &entries, &anchor_for(1, &entries)).unwrap();
+        assert_eq!(payload.language.as_deref(), Some("Verse"));
+        assert!(!payload.block_lines.is_empty());
+    }
+
+    #[test]
+    fn test_verse_class_body() {
+        let content = "using { /Verse.org/Simulation }\n\nsignal_device := class(creative_device):\n    var Count:int = 0\n    OnBegin<override>()<suspends>:void=\n        Count += 1\n        Print(\"ok\")\n";
+        let (fc, entries) = make_fc(content, "test.verse");
+        // Anchor inside the class body (the var Count line) should resolve
+        // to the enclosing class block.
+        let payload = find_block_payload(&fc, &entries, &anchor_for(4, &entries)).unwrap();
+        assert_eq!(payload.language.as_deref(), Some("Verse"));
+        assert!(
+            payload
+                .block_lines
+                .iter()
+                .any(|l| l.content.starts_with("signal_device"))
+        );
     }
 
     #[test]

@@ -241,9 +241,11 @@ everything you need in one place.
 `hashline` ships with a stdio MCP server exposing 3 tools:
 
 ```
-hashline_read        — Read a file with [path#HASH] header + numbered lines
-hashline_patch       — Apply a patch (SWAP/DEL/INS.*/BLK.*)
-hashline_find_block  — Find enclosing syntactic block around an anchor
+read                 — Read a file with [path#HASH] header + numbered lines
+patch                — Apply a patch (SWAP/DEL/INS.*/BLK.*)
+find_block           — Find enclosing syntactic block around an anchor
+
+(legacy aliases `hashline_read`, `hashline_patch`, `hashline_find_block` remain accepted)
 ```
 
 ```bash

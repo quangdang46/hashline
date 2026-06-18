@@ -114,6 +114,9 @@ pub enum HashlineError {
     #[error("patch failed at operation {op_index}: {reason}")]
     PatchFailed { op_index: usize, reason: String },
 
+    #[error("patch produced no edits — input was empty or all operations were rejected")]
+    EmptyPatch,
+
     #[error("multi-line content is only supported for range edits")]
     MultiLineContentUnsupported,
 
@@ -264,6 +267,9 @@ impl HashlineError {
             HashlineError::PatchFailed { .. } => {
                 Some("fix the failing patch operation and retry the transaction")
             }
+            HashlineError::EmptyPatch => {
+                Some("verify the patch contains a valid operation (SWAP/DEL/INS.*) and re-run")
+            }
             HashlineError::MultiLineContentUnsupported => Some(
                 "use a range anchor like '2:f1..4:9c' for multi-line replacement, or use `hashline patch` for mixed edits",
             ),
@@ -350,6 +356,7 @@ impl HashlineError {
             | HashlineError::ImplodeMissingLineFile { .. }
             | HashlineError::InvalidWorkflowPack { .. }
             | HashlineError::PatchFailed { .. }
+            | HashlineError::EmptyPatch
             | HashlineError::MultiLineContentUnsupported
             | HashlineError::MutationIndexOutOfBounds { .. }
             | HashlineError::InvalidMutationRange { .. }

@@ -13,9 +13,22 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: PatchCmd,
 ) -> Result<(), HashlineError> {
+    // Resolve patch content: `-` reads stdin, `@path` reads file, otherwise use literal.
+    let patch_content = resolve_patch_content(&cmd.patch)?;
+
     let fc = FileContent::load(&cmd.file)?;
     let text = &fc.normalized;
-    let (edits, _warnings) = parse_patch(&cmd.patch);
+    let (edits, warnings) = parse_patch(&patch_content);
+
+    // Surface parser warnings even when no edits were produced so callers
+    // can tell a syntactically-broken patch from an empty one.
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+
+    if edits.is_empty() {
+        return Err(HashlineError::EmptyPatch);
+    }
 
     // Split on newlines. Drop the trailing empty segment that split('\n')
     // produces when a file ends with '\n' — we add it back on join.
@@ -40,12 +53,126 @@ pub fn run<W: Write, E: Write>(
     };
 
     if cmd.dry_run {
-        writeln!(ctx.stdout(), "{}", final_text)?;
+        // Show a unified-diff-alike snippet instead of the entire file.
+        let original_text = &fc.normalized;
+        let diff_lines = format_diff(original_text, &final_text);
+        for dl in &diff_lines {
+            writeln!(ctx.stdout(), "{dl}")?;
+        }
+        return Ok(());
+    }
+
+    if cmd.fast {
+        crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
     } else {
         crate::commands::common::atomic_write(&cmd.file, final_text.as_bytes())?;
     }
 
+    // Structured JSON output for agent integration.
+    if cmd.json {
+        use crate::hash::format_short_hash;
+        let new_entries: Vec<serde_json::Value> = final_text
+            .split('\n')
+            .filter(|l| !l.is_empty() || final_text.ends_with('\n'))
+            .enumerate()
+            .map(|(i, content)| {
+                let short = crate::hash::short_hash_value(content);
+                serde_json::json!({
+                    "line": i + 1,
+                    "hash": format_short_hash(short),
+                    "content": content,
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "success": true,
+            "file": cmd.file.display().to_string(),
+            "edits_applied": edits.len(),
+            "lines": new_entries,
+        });
+        writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+    }
+
     Ok(())
+}
+
+/// Resolve the `<PATCH>` argument: `-` reads stdin, `@path` reads file, otherwise literal.
+fn resolve_patch_content(patch: &str) -> Result<String, HashlineError> {
+    if patch == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(HashlineError::Io)?;
+        return Ok(buf);
+    }
+    if let Some(path_str) = patch.strip_prefix('@') {
+        let path = Path::new(path_str);
+        return std::fs::read_to_string(path).map_err(|e| {
+            HashlineError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("failed to read patch file '{}': {e}", path.display()),
+            ))
+        });
+    }
+    Ok(patch.to_owned())
+}
+
+/// Produce a minimal unified-diff snippet showing only changed lines,
+/// suitable for dry-run review. Uses a simple LCS-based shortest-edit
+/// path that correctly handles insertions and deletions that shift
+/// subsequent line indices. Loosely follows `diff -u` style but omits
+/// the timestamp header.
+fn format_diff(original: &str, final_text: &str) -> Vec<String> {
+    let left: Vec<&str> = if original.is_empty() {
+        vec![]
+    } else {
+        original.split('\n').collect()
+    };
+    let right: Vec<&str> = if final_text.is_empty() {
+        vec![]
+    } else {
+        final_text.split('\n').collect()
+    };
+    if left == right {
+        return vec!["(no changes)".into()];
+    }
+    // Compute LCS table (Wagner-Fischer).
+    let m = left.len();
+    let n = right.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if left[i - 1] == right[j - 1] {
+                dp[i - 1][j - 1] + 1
+            } else {
+                dp[i - 1][j].max(dp[i][j - 1])
+            };
+        }
+    }
+    // Backtrack to produce edit operations.
+    let mut ops: Vec<(usize, &'static str, &str)> = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && left[i - 1] == right[j - 1] {
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            ops.push((j, "+", right[j - 1]));
+            j -= 1;
+        } else {
+            ops.push((i, "-", left[i - 1]));
+            i -= 1;
+        }
+    }
+    ops.reverse();
+    let mut out: Vec<String> = Vec::new();
+    out.push("@@ -- ++ @@".into());
+    for (_, tag, line) in &ops {
+        out.push(format!("{tag}{line}"));
+    }
+    out
 }
 
 fn split_normalized(text: &str) -> Vec<String> {
@@ -641,5 +768,69 @@ mod tests {
         let original = "def hello():\n    x = 1\n    if True:\n        print('ok')\n    return x\n";
         let result = apply_text_ext(original, "SWAP.BLK 1:\n+def hi():\n+    pass\n", "py");
         assert_eq!(result, "def hi():\n    pass\n");
+    }
+
+    // ---- Empty-patch detection (fixes #58) ----
+
+    /// Build a synthetic `Edit::Insert` for empty-patch assertions.
+    fn parse_only(text: &str) -> Vec<crate::types::Edit> {
+        let (edits, _warnings) = parse_patch(text);
+        edits
+    }
+
+    #[test]
+    fn parse_patch_empty_string_yields_no_edits() {
+        let edits = parse_only("");
+        assert!(edits.is_empty(), "expected zero edits for empty patch");
+    }
+
+    #[test]
+    fn parse_patch_unparseable_garbage_yields_no_edits() {
+        let edits = parse_only("this is not a hashline patch\nborked\n!!");
+        assert!(edits.is_empty(), "expected zero edits for garbage patch");
+    }
+
+    #[test]
+    fn parse_patch_hash_suffix_yields_real_swap() {
+        // From issue #56: `SWAP 2:67:` used to be silently rejected by the
+        // tokenizer, producing zero edits. After the fix, the hash suffix
+        // is consumed and the SWAP produces a replacement insert + delete.
+        let edits = parse_only("SWAP 2:67:\n+REPLACED");
+        assert_eq!(
+            edits.len(),
+            2,
+            "expected 1 insert + 1 delete, got {edits:?}"
+        );
+        match &edits[0] {
+            crate::types::Edit::Insert {
+                cursor: crate::types::Cursor::BeforeAnchor(a),
+                text,
+                mode,
+                ..
+            } => {
+                assert_eq!(a.line, 2);
+                assert_eq!(text, "REPLACED");
+                assert!(matches!(mode, Some(crate::types::InsertMode::Replacement)));
+            }
+            other => panic!("expected BeforeAnchor insert, got {other:?}"),
+        }
+        match &edits[1] {
+            crate::types::Edit::Delete { anchor, .. } => {
+                assert_eq!(anchor.line, 2);
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_patch_hash_suffix_on_range() {
+        // Range form: `SWAP 2..3:67:` should also accept the hash suffix
+        // and produce 2 inserts + 2 deletes.
+        let edits = parse_only("SWAP 2..3:67:\n+AAA\n+BBB");
+        assert_eq!(
+            edits.len(),
+            4,
+            "expected 2 inserts + 2 deletes, got {edits:?}"
+        );
     }
 }

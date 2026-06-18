@@ -42,6 +42,22 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }
 
+/// Fast variant of atomic_write that skips fsync and uses a simple
+/// read-modify-write instead of temp-file + rename. Suitable for agent
+/// use cases where crash safety is not critical (the agent can always
+/// re-read and re-edit on failure).
+pub fn fast_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    // No sync_all / sync_parent_directory call.
+    Ok(())
+}
+
 pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), HashlineError>
 where
     F: FnOnce(&mut fs::File) -> io::Result<()>,

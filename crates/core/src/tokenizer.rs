@@ -286,6 +286,41 @@ fn consume_optional_colon(bytes: &[u8], index: usize, end: usize) -> usize {
     }
 }
 
+/// In hunk headers like `SWAP 2:67:` the optional `HH?` (1-2 hex digits)
+/// hash suffix sits between the line number and the terminating colon.
+/// Both colons and the hash are consumed here so the hunk header parses
+/// as a whole. The hash itself is treated as a fingerprint hint and is
+/// NOT validated at tokenize time (no file content is available); the
+/// applier ignores the hash for SWAP/DEL and only requires the line
+/// number to be in range.
+///
+/// Accepts:
+///   `SWAP 2:`         — single colon, no hash
+///   `SWAP 2:67:`      — hash + trailing colon
+///   `SWAP 2..3:67:`   — range with hash suffix
+fn consume_optional_colon_with_hash(bytes: &[u8], index: usize, end: usize) -> usize {
+    let cursor = skip_whitespace(bytes, index, end);
+    if cursor < end && bytes[cursor] == CHAR_COLON {
+        let mut after = cursor + 1;
+        // Try to consume 1-2 hex digits. If we find any, also consume the
+        // trailing terminator colon. If no hex digits are present, this
+        // colon IS the terminator and was already consumed.
+        if after < end && is_hex_digit_code(bytes[after]) {
+            after += 1;
+            if after < end && is_hex_digit_code(bytes[after]) {
+                after += 1;
+            }
+            // The hash's terminator colon (e.g. the final `:` in `2:67:`).
+            if after < end && bytes[after] == CHAR_COLON {
+                after += 1;
+            }
+        }
+        skip_whitespace(bytes, after, end)
+    } else {
+        cursor
+    }
+}
+
 fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetScan> {
     if index >= end || bytes[index] != CHAR_DOT {
         return None;
@@ -295,7 +330,7 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
     // INS.PRE N:
     if let Some(before_end) = scan_keyword(bytes, cursor, end, HL_INSERT_BEFORE) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, before_end, end), end)?;
-        let next = consume_optional_colon(bytes, anchor.next_index, end);
+        let next = consume_optional_colon_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::InsertBefore(Anchor { line: anchor.line }),
             next_index: next,
@@ -305,7 +340,7 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
     // INS.POST N:
     if let Some(after_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, after_end, end), end)?;
-        let next = consume_optional_colon(bytes, anchor.next_index, end);
+        let next = consume_optional_colon_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::InsertAfter(Anchor { line: anchor.line }),
             next_index: next,
@@ -339,7 +374,7 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // SWAP.BLK N:
     if let Some(block_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, block_end, end), end)?;
-        let next = consume_optional_colon(bytes, anchor.next_index, end);
+        let next = consume_optional_colon_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::Block(Anchor { line: anchor.line }),
             next_index: next,
@@ -349,9 +384,10 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // SWAP N..=M:
     if let Some(replace_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_KEYWORD) {
         let range = scan_header_range(bytes, replace_end, end, true)?;
+        let next = consume_optional_colon_with_hash(bytes, range.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::Replace(range.range),
-            next_index: consume_optional_colon(bytes, range.next_index, end),
+            next_index: next,
         });
     }
 
@@ -384,7 +420,7 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // INS.BLK.POST N:
     if let Some(iblk_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_end, end), end)?;
-        let next = consume_optional_colon(bytes, anchor.next_index, end);
+        let next = consume_optional_colon_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }),
             next_index: next,
