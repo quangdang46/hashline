@@ -40,21 +40,21 @@ pub fn run<W: Write, E: Write>(
         line_nos
     };
 
-    // Ambiguity: if old_string appears on 2+ distinct lines, error with line numbers.
-    // Multiple occurrences on the SAME line are fine — replace the first one.
-    if lines_with.len() > 1 {
-        let lines_str: Vec<String> = lines_with.iter().map(|l| l.to_string()).collect();
-        return Err(HashlineError::AmbiguousQuery {
-            query: cmd.old_string.clone(),
-            count: occurrences.len(),
-            lines: lines_str.join(", "),
-            path: cmd.file.display().to_string(),
-        });
-    }
-
-    // Single match (or multiple on same line) — replace the first occurrence.
+    // Replace the first occurrence always — no error on ambiguity.
+    // If there are more matches on other lines, emit a structured warning
+    // so the agent can decide (but doesn't have to).
+    let total_matches = occurrences.len();
+    let total_lines = lines_with.len();
     let result_text = text.replacen(&cmd.old_string, &cmd.new_string, 1);
     let changed_line = *lines_with.first().unwrap_or(&1);
+
+    if total_lines > 1 {
+        let lines_str = lines_with.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+        eprintln!(
+            "warning: '{}' matched {total_matches} times across {total_lines} lines ({lines_str}) — replaced first occurrence only",
+            cmd.old_string
+        );
+    }
 
     // Compute the new line content and its hash for the JSON response.
     // Find the line containing the match.
