@@ -137,6 +137,7 @@ hashline mcp
 |----|--------|-------------|
 | Read | `hashline read <file>` | `[path#HASH]` header + `LINE|content` |
 | Read JSON | `hashline read <file> --json` | Machine-readable JSON output |
+| Guide | `hashline guide` | Interactive user guide with anchor format, patch ops, MCP setup, examples |
 | Swap (replace) | `SWAP N:` / `SWAP N..M:` + `+content` | Replace single line or range |
 | Delete | `DEL N` / `DEL N..M` | Delete single line or range |
 | Insert before | `INS.PRE N:` + `+content` | Insert content before line N |
@@ -149,7 +150,19 @@ hashline mcp
 | Dry run | `--dry-run` | Preview changes without writing |
 | Find block | `hashline find-block <file> <anchor>` | Find enclosing block (brace/indent/ruby) |
 
+### Guide
+
+```bash
+# Show interactive user guide with anchor format, workflow, patch ops, examples, and tips
+hashline guide
+```
+
+The `guide` command prints a comprehensive ASCII reference covering the anchor format,
+all patch operations, convenience flags, daemon/MCP setup, worked examples, and pro tips —
+everything you need in one place.
+
 ## ASCII workflow
+
 
 ```
                     ┌─────────────────┐
@@ -369,6 +382,21 @@ str_replace baseline = `str::replacen()` on the same content.
 analysis are intentionally out of scope — companion tools like
 [`ffs`](https://github.com/quangdang46/fast_file_search) handle those better.
 
+## Quick Command Reference
+
+| Command | Description | See also |
+|---------|-------------|----------|
+| `read` | Read file with snapshot hash | `hashline guide` → _Basics_ |
+| `patch` | Apply SWAP/DEL/INS/BLK edits | `hashline guide` → _Patch Operations_ |
+| `find-block` | Find enclosing syntactic block | `hashline guide` → _Workflow_ |
+| `guide` | Show interactive user guide | built-in help |
+| `serve` | Run as daemon (HTTP/Unix socket) | `hashline guide` → _Daemon Mode_ |
+| `mcp` | Run as MCP stdio server | `hashline guide` → _MCP Mode_ |
+
+For complete, up-to-date documentation run `hashline guide` — it always matches your
+installed binary.
+
 ## License
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+
