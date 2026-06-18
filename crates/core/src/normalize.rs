@@ -36,23 +36,20 @@ pub fn detect_line_ending(content: &str) -> LineEnding {
 }
 
 /// Normalize every line ending to LF. Handles bare CR as well.
+///
+/// Iterates by `char` (not byte) so multi-byte UTF-8 sequences like — (em dash,
+/// U+2014, 3 bytes) pass through unchanged instead of being split and corrupted.
 pub fn normalize_to_lf(text: &str) -> String {
-    // Match: \r\n → \n, and \r alone → \n
     let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\r' {
-            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                out.push('\n');
-                i += 2;
-            } else {
-                out.push('\n');
-                i += 1;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next(); // skip the \n of \r\n
             }
+            out.push('\n');
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            out.push(c);
         }
     }
     out
@@ -133,5 +130,46 @@ mod tests {
             "a\r\nb\r\n"
         );
         assert_eq!(restore_line_endings("a\nb\n", LineEnding::Lf), "a\nb\n");
+    }
+
+    #[test]
+    fn test_normalize_utf8_multibyte_roundtrip() {
+        let input = "# Brainrot MoneyPopUpManager — floating +$ UI on cash gains.\nline2\n";
+        let normalized = normalize_to_lf(input);
+        assert_eq!(normalized, input);
+        // Em dash — is U+2014, encoded as E2 80 94 in UTF-8 (3 bytes)
+        assert!(normalized.contains('—'));
+    }
+
+    #[test]
+    fn test_normalize_utf8_multibyte_crlf() {
+        let input = "# em dash — and arrow →\r\nsecond line\r\n";
+        let normalized = normalize_to_lf(input);
+        assert_eq!(normalized, "# em dash — and arrow →\nsecond line\n");
+        assert!(normalized.contains('—'));
+        assert!(normalized.contains('→'));
+    }
+
+    #[test]
+    fn test_normalize_utf8_en_dash() {
+        let input = "en dash – and em dash —\n";
+        let normalized = normalize_to_lf(input);
+        assert_eq!(normalized, input);
+        assert!(normalized.contains('–'));
+        assert!(normalized.contains('—'));
+    }
+
+    #[test]
+    fn test_normalize_utf8_accented() {
+        let input = "café résumé naïve façade\n";
+        let normalized = normalize_to_lf(input);
+        assert_eq!(normalized, input);
+    }
+
+    #[test]
+    fn test_normalize_crlf_utf8_multibyte() {
+        let input = "—\r\n—\r\n";
+        let normalized = normalize_to_lf(input);
+        assert_eq!(normalized, "—\n—\n");
     }
 }
