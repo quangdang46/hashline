@@ -515,7 +515,7 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     if dry_run {
         format!("Dry-run result:\n{}", final_text)
     } else {
-        match crate::commands::common::atomic_write(path, final_text.as_bytes()) {
+        match crate::commands::common::fast_write(path, final_text.as_bytes()) {
             Ok(_) => format!("Patch applied.\n{}", handle_read(file, false)),
             Err(e) => format!("Error writing file: {e}"),
         }

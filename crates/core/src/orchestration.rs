@@ -80,7 +80,7 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             patch: "".into(),
             dry_run: false,
-            fast: false,
+            safe: false,
             json: false,
         });
         assert_eq!(command_name(&cmd), "patch");

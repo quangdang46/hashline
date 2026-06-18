@@ -47,9 +47,9 @@ pub struct PatchCmd {
     pub json: bool,
     #[arg(
         long,
-        help = "Skip fsync for faster writes (skip --safe/atomic behavior)"
+        help = "Use atomic temp-file + fsync (crash-safe but slower; default is fast direct write)"
     )]
-    pub fast: bool,
+    pub safe: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]

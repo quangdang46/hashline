@@ -62,10 +62,10 @@ pub fn run<W: Write, E: Write>(
         return Ok(());
     }
 
-    if cmd.fast {
-        crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
-    } else {
+    if cmd.safe {
         crate::commands::common::atomic_write(&cmd.file, final_text.as_bytes())?;
+    } else {
+        crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
     }
 
     // Structured JSON output for agent integration.
