@@ -337,7 +337,7 @@ fn command_to_tool_name(command: &Commands) -> &'static str {
         Commands::Read(_) => "read",
         Commands::Patch(_) => "patch",
         Commands::FindBlock(_) => "find_block",
-        Commands::Guide(_) | Commands::Serve(_) | Commands::Replace(_) | Commands::Mcp(_) => {
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => {
             unreachable!()
         }
     }
@@ -612,7 +612,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
         Commands::Read(cmd) => serde_json::to_value(cmd),
         Commands::Patch(cmd) => serde_json::to_value(cmd),
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
-        Commands::Guide(_) | Commands::Serve(_) | Commands::Replace(_) | Commands::Mcp(_) => {
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => {
             unreachable!()
         }
     }

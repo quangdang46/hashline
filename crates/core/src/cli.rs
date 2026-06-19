@@ -23,7 +23,6 @@ pub enum Commands {
     Guide(GuideCmd),
     Serve(ServeCmd),
     Mcp(McpCmd),
-    Replace(ReplaceCmd),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
