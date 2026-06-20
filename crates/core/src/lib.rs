@@ -21,6 +21,11 @@ pub mod recovery;
 pub mod snapshot_store;
 pub mod tokenizer;
 pub mod types;
+pub mod block;
+pub mod merge;
+pub mod snapshot_store;
+pub mod recovery;
+pub mod apply;
 
 #[cfg(feature = "sha256-anchors")]
 pub mod sha256_window;
