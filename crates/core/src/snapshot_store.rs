@@ -8,7 +8,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::hash;
 
 /// One full-file version observed at a point in time. The tag the model sees is
 /// [`Snapshot::hash`]; recovery replays edits against [`Snapshot::text`].
@@ -31,12 +30,12 @@ pub struct Snapshot {
 /// Storage seam for full-file version snapshots. The patcher calls [`head`]
 /// for the latest version of a path and [`by_hash`] when it needs the specific
 /// historical version a section's stale tag names.
-pub trait SnapshotStore {
+pub trait SnapshotStore: Send + Sync {
     /// Most-recently recorded version for `path`, or `None` if none.
-    fn head(&self, path: &str) -> Option<&Snapshot>;
+    fn head(&self, path: &str) -> Option<Snapshot>;
 
     /// Recorded version for `path` whose tag equals `hash`, or `None`.
-    fn by_hash(&self, path: &str, hash: &str) -> Option<&Snapshot>;
+    fn by_hash(&self, path: &str, hash: &str) -> Option<Snapshot>;
 
     /// Record the full normalized text of `path` and return its content tag.
     /// `seen_lines` (optional) are the 1-indexed lines the producer displayed;
@@ -184,12 +183,12 @@ impl Default for InMemorySnapshotStore {
 }
 
 impl SnapshotStore for InMemorySnapshotStore {
-    fn head(&self, path: &str) -> Option<&Snapshot> {
-        self.versions.get(path)?.first()
+    fn head(&self, path: &str) -> Option<Snapshot> {
+        self.versions.get(path)?.first().cloned()
     }
 
-    fn by_hash(&self, path: &str, hash: &str) -> Option<&Snapshot> {
-        self.versions.get(path)?.iter().find(|s| s.hash == hash)
+    fn by_hash(&self, path: &str, hash: &str) -> Option<Snapshot> {
+        self.versions.get(path)?.iter().find(|s| s.hash == hash).cloned()
     }
 
     fn record(&mut self, path: &str, full_text: &str, seen_lines: Option<&[usize]>) -> String {

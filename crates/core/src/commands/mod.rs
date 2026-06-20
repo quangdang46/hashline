@@ -4,3 +4,4 @@ pub mod guide;
 pub mod patch;
 pub mod read;
 pub mod serve;
+pub mod write;

@@ -3,7 +3,9 @@
 
 use std::collections::HashMap;
 
-use crate::messages::BARE_BODY_AUTO_PIPED_WARNING;
+use regex::Regex;
+
+use crate::messages::{BARE_BODY_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED};
 use crate::patch_format::HL_RANGE_SEP;
 use crate::prefixes::strip_one_hashline_prefix;
 use crate::tokenizer::{BlockTarget, Token, clone_cursor};
@@ -210,6 +212,12 @@ impl Executor {
                 return;
             }
             if text.trim_start().starts_with('-') {
+                if !self
+                    .warnings
+                    .contains(&MINUS_ROW_REJECTED.to_string())
+                {
+                    self.warnings.push(MINUS_ROW_REJECTED.to_owned());
+                }
                 return;
             }
             if !self
@@ -229,6 +237,12 @@ impl Executor {
         }
 
         if text.trim().is_empty() {}
+
+        if text.trim_start().starts_with('-') {
+            if !self.warnings.contains(&MINUS_ROW_REJECTED.to_string()) {
+                self.warnings.push(MINUS_ROW_REJECTED.to_owned());
+            }
+        }
     }
 
     fn handle_blank(&mut self) {
@@ -484,18 +498,197 @@ impl Executor {
     }
 }
 
+/// Merge consecutive sections targeting the same path into one.
+/// When same-path sections have different hash tags, returns an error.
+/// Returns the merged diff with all sections concatenated under one header.
+pub fn merge_same_path_sections(patch_text: &str) -> Result<String, String> {
+    let header_re = Regex::new(r"^\[([^\[\]#]+)(?:#([0-9a-fA-F]{1,4}))?\]\s*$")
+        .expect("valid header regex");
+
+    let lines: Vec<&str> = patch_text.lines().collect();
+    if lines.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Find all header line indices
+    let header_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| header_re.is_match(line))
+        .map(|(i, _)| i)
+        .collect();
+
+    if header_indices.is_empty() {
+        return Ok(patch_text.to_owned());
+    }
+
+    // Build sections: each section spans from a header to the next header (or end of input).
+    // body_start is the line after the header; body_end is the next header line (or lines.len()).
+    struct Section {
+        header: String,
+        path: String,
+        hash: Option<String>,
+        body_start: usize,
+        body_end: usize,
+    }
+
+    let mut sections: Vec<Section> = Vec::new();
+    for (i, &hdr_idx) in header_indices.iter().enumerate() {
+        let caps = header_re.captures(lines[hdr_idx]).unwrap();
+        let path = caps[1].to_string();
+        let hash = caps.get(2).map(|m| m.as_str().to_string());
+        let body_start = hdr_idx + 1;
+        let body_end = header_indices.get(i + 1).copied().unwrap_or(lines.len());
+        sections.push(Section {
+            header: lines[hdr_idx].to_string(),
+            path,
+            hash,
+            body_start,
+            body_end,
+        });
+    }
+
+    // Merge consecutive sections targeting the same path.
+    struct Merged {
+        header: String,
+        path: String,
+        hash: Option<String>,
+        body_parts: Vec<(usize, usize)>,
+    }
+
+    let mut merged: Vec<Merged> = Vec::new();
+    for section in sections {
+        if let Some(last) = merged.last_mut() {
+            if last.path == section.path {
+                // Same path — check for hash conflicts
+                match (&last.hash, &section.hash) {
+                    (Some(a), Some(b)) if a != b => {
+                        return Err(format!(
+                            "conflicting hash tags for '{}': '{}' vs '{}'",
+                            section.path, a, b
+                        ));
+                    }
+                    (None, Some(h)) => {
+                        // Later section has a hash where the first didn't — prefer the hash
+                        last.hash = Some(h.clone());
+                        last.header = section.header;
+                    }
+                    _ => {}
+                }
+                last.body_parts.push((section.body_start, section.body_end));
+                continue;
+            }
+        }
+        merged.push(Merged {
+            header: section.header,
+            path: section.path,
+            hash: section.hash,
+            body_parts: vec![(section.body_start, section.body_end)],
+        });
+    }
+
+    // Rebuild the patch string with merged sections.
+    let mut output: Vec<&str> = Vec::new();
+
+    // Content before the first header (leading non-header lines)
+    if header_indices[0] > 0 {
+        output.extend_from_slice(&lines[..header_indices[0]]);
+    }
+
+    for group in &merged {
+        output.push(&group.header);
+        for &(start, end) in &group.body_parts {
+            output.extend_from_slice(&lines[start..end]);
+        }
+    }
+
+    Ok(output.join("\n"))
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn merge(s: &str) -> String {
+        merge_same_path_sections(s).unwrap()
+    }
+
+    #[test]
+    fn two_sections_same_path_merged() {
+        let input = "[file.rs#ABCD]\nSWAP 5:\n+foo\n[file.rs#ABCD]\nSWAP 10:\n+bar";
+        let result = merge(input);
+        assert_eq!(
+            result,
+            "[file.rs#ABCD]\nSWAP 5:\n+foo\nSWAP 10:\n+bar"
+        );
+    }
+
+    #[test]
+    fn two_sections_different_path_kept_separate() {
+        let input =
+            "[a.rs#ABCD]\nSWAP 5:\n+foo\n[b.rs#1234]\nSWAP 10:\n+bar";
+        let result = merge(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn three_sections_middle_different_path() {
+        let input = "[a.rs#ABCD]\nSWAP 5:\n+foo\n[b.rs#1234]\nDEL 3\n[a.rs#ABCD]\nSWAP 10:\n+bar";
+        let result = merge(input);
+        // a, b, a — first a and second a are not consecutive (b is in between),
+        // so they stay separate.
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn three_sections_last_also_same_path() {
+        // Three sections all same path and all consecutive — all merged
+        let input =
+            "[a.rs#ABCD]\nSWAP 5:\n+foo\n[a.rs#ABCD]\nSWAP 5:\n+bar\n[a.rs#ABCD]\nDEL 3";
+        let result = merge(input);
+        assert_eq!(
+            result,
+            "[a.rs#ABCD]\nSWAP 5:\n+foo\nSWAP 5:\n+bar\nDEL 3"
+        );
+    }
+
+    #[test]
+    fn conflicting_hashes_error() {
+        let input = "[file.rs#ABCD]\nSWAP 5:\n+foo\n[file.rs#1234]\nSWAP 10:\n+bar";
+        let err = merge_same_path_sections(input).unwrap_err();
+        assert!(
+            err.contains("conflicting hash tags"),
+            "expected hash conflict error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn single_section_unchanged() {
+        let input = "[file.rs#ABCD]\nSWAP 5:\n+foo";
+        let result = merge(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn no_headers_unchanged() {
+        let input = "SWAP 5:\n+foo\nDEL 3";
+        let result = merge(input);
+        assert_eq!(result, input);
+    }
+}
+
 /// Parse a complete patch diff body into `Edit`s.
 pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>) {
+    let merged = match merge_same_path_sections(diff) {
+        Ok(m) => m,
+        Err(e) => return (Vec::new(), vec![e]),
+    };
     let tokenizer = crate::tokenizer::Tokenizer;
     let mut executor = Executor::new();
 
-    for (i, line) in diff.lines().enumerate() {
+    for (i, line) in merged.lines().enumerate() {
         let token = tokenizer.tokenize(line, i + 1);
         executor.feed(token);
-    }
-    // Handle final line if no trailing newline
-    if !diff.ends_with('\n') && !diff.is_empty() {
-        // Already handled by lines() which splits without trailing
     }
 
     executor.end()

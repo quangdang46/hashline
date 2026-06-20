@@ -26,6 +26,14 @@ pub const DELETE_BLOCK_TAKES_NO_BODY: &str =
 pub const UNRESOLVED_BLOCK_INTERNAL: &str =
     "internal: block edit reached apply_edits without resolution";
 
+// === Apply-patch path noise constants ===
+
+/// Prefixes LLMs commonly prepend to file paths when generating apply-patch style output.
+pub const APPLY_PATCH_UPDATE_PREFIX: &str = "Update File:";
+pub const APPLY_PATCH_ADD_PREFIX: &str = "Add File:";
+pub const APPLY_PATCH_DELETE_PREFIX: &str = "Delete File:";
+pub const APPLY_PATCH_MOVE_PREFIX: &str = "Move to:";
+
 // === Recovery warnings ===
 
 /// File was modified by an external process between the snapshot tag was minted

@@ -126,6 +126,20 @@ fn tool_list() -> ToolList {
                 })),
             },
             ToolDefinition {
+                name: "write".into(),
+                description: "Write content to a file (creates new file or overwrites with --force)".into(),
+                input_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string"},
+                        "content": {"type": "string", "description": "File content to write"},
+                        "force": {"type": "boolean", "description": "Overwrite existing file if it exists"},
+                        "json": {"type": "boolean", "description": "Output as JSON"}
+                    },
+                    "required": ["file", "content"]
+                })),
+            },
+            ToolDefinition {
                 name: "find_block".into(),
                 description: "Find a likely structural block around an anchor".into(),
                 input_schema: Some(serde_json::json!({
@@ -522,6 +536,60 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     }
 }
 
+fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
+    let path = Path::new(file);
+
+    // Check file exists — refuse unless --force
+    if path.exists() && !force {
+        return format!("Error: target '{}' already exists — use force=true to overwrite", file);
+    }
+
+    let normalized = crate::normalize::normalize_to_lf(content);
+    let bom_result = crate::normalize::strip_bom(&normalized);
+    let write_content = bom_result.text;
+
+    if let Err(e) = crate::commands::common::fast_write(path, write_content.as_bytes()) {
+        return format!("Error: {e}");
+    }
+
+    match FileContent::load(path) {
+        Ok(fc) => {
+            let entries = fc.lines_with_hashes();
+
+            if json {
+                let lines: Vec<Value> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, entry)| {
+                        serde_json::json!({
+                            "n": i + 1,
+                            "hash": hash::format_short_hash(entry.short_hash),
+                            "content": entry.content,
+                        })
+                    })
+                    .collect();
+                serde_json::to_string(&serde_json::json!({
+                    "success": true,
+                    "path": fc.path.display().to_string(),
+                    "hash": fc.hash,
+                    "lines": lines,
+                }))
+                .unwrap_or_default()
+            } else {
+                let mut out = format!("[{}#{}]\n", fc.path.display(), fc.hash);
+                let mut hash_buf = [0u8; 2];
+                for (i, entry) in entries.iter().enumerate() {
+                    hash::write_short_hash_bytes(&mut hash_buf, entry.short_hash);
+                    let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
+                    out.push_str(&format!("{}:{}|{}\n", i + 1, hash_str, entry.content));
+                }
+                out
+            }
+        }
+        Err(e) => format!("Written successfully.\nError re-reading file: {e}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tool dispatch
 // ---------------------------------------------------------------------------
@@ -551,6 +619,27 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .unwrap_or(false);
             Ok(
                 serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run)}]}),
+            )
+        }
+        "write" | "hashline_write" => {
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'content'")?;
+            let force = args
+                .get("force")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let json = args
+                .get("json")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_write(file, content, force, json)}]}),
             )
         }
         "find_block" | "hashline_find_block" => {

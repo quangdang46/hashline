@@ -21,31 +21,8 @@ use crate::messages::{
     RECOVERY_EXTERNAL_WARNING, RECOVERY_SESSION_CHAIN_WARNING, RECOVERY_SESSION_REPLAY_WARNING,
 };
 use crate::merge::merge_texts;
+use crate::snapshot_store::SnapshotStore;
 use crate::types::{Anchor, ApplyResult, Cursor, Edit};
-
-// ---------------------------------------------------------------------------
-// Snapshot types (defined here until `snapshot_store.rs` is fleshed out;
-// they belong there once the module is implemented.)
-// ---------------------------------------------------------------------------
-
-/// A snapshot of file text captured at a point in time, keyed by file hash.
-pub struct Snapshot {
-    pub text: String,
-    pub hash: String,
-}
-
-/// Storage and lookup for file snapshots keyed by file hash.
-///
-/// Implementations are responsible for managing the lifecycle of stored
-/// snapshots — persisting to disk, expiring old entries, etc. The simplest
-/// implementation is an in-memory `HashMap<(String, String), Snapshot>`.
-pub trait SnapshotStore: Send + Sync {
-    /// Look up a snapshot by file hash for the given path.
-    fn by_hash(&self, path: &str, file_hash: &str) -> Option<Snapshot>;
-
-    /// Return the head (most recent) snapshot for the given path, or `None`.
-    fn head(&self, path: &str) -> Option<Snapshot>;
-}
 
 // ---------------------------------------------------------------------------
 // Recovery types
@@ -80,12 +57,12 @@ pub struct RecoveryResult {
 /// Construct once and call [`Recovery::try_recover`] per stale-tag
 /// incident. The default implementation tries two strategies in order
 /// (see [module-level docs](self) for details).
-pub struct Recovery {
-    store: Box<dyn SnapshotStore>,
+pub struct Recovery<'a> {
+    store: &'a dyn SnapshotStore,
 }
 
-impl Recovery {
-    pub fn new(store: Box<dyn SnapshotStore>) -> Self {
+impl<'a> Recovery<'a> {
+    pub fn new(store: &'a dyn SnapshotStore) -> Self {
         Self { store }
     }
 
