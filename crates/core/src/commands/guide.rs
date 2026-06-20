@@ -66,6 +66,8 @@ pub fn run<W: Write, E: Write>(
   ├──────────────┼──────────────────────────────────────────────┤
   │ DEL N        │ Delete line N                                │
   ├──────────────┼──────────────────────────────────────────────┤
+  │ DEL N:HH:    │ Delete line N with hash validation           │
+  ├──────────────┼──────────────────────────────────────────────┤
   │ DEL N..M     │ Delete lines N through M                     │
   ├──────────────┼──────────────────────────────────────────────┤
   │ INS.PRE N:   │ Insert content before line N                 │
@@ -89,6 +91,30 @@ pub fn run<W: Write, E: Write>(
   │ N: +content  │                                              │
   └──────────────┴──────────────────────────────────────────────┘
 
+───────────────────  RANGE SYNTAX  ──────────────────────────
+
+  Two forms are accepted for ranges:
+    A..B    hashline native range syntax
+    A.=B    oh-my-pi compatible range syntax
+
+───────────────────  ENVELOPE MARKERS  ──────────────────────
+
+  Wrap patches in markers for embedding in text:
+
+    *** Begin Patch
+    [path/file#HASH]
+    SWAP 5:
+    +new content
+    *** End Patch
+
+  Use *** Abort to suppress a patch without applying it.
+
+───────────────────  PAYLOAD ESCAPES  ──────────────────────
+
+  +content    Normal payload line (content starts with text)
+  ++content   Payload line starting with literal '+'
+  +-content   Payload line starting with literal '-'
+
 ───────────────────  CONVENIENCE FLAGS  ──────────────────────
 
   hashline patch <file> <patch> --dry-run    Preview only
@@ -96,6 +122,8 @@ pub fn run<W: Write, E: Write>(
   hashline read  <file>         --json       JSON output
   hashline find-block <f> <a>   --json       JSON output
   hashline find-block <f> <a>   --pretty     Pretty-print JSON
+  hashline write <file> <cont>              Write a new file
+  hashline write <file> <cont> --force      Overwrite existing
 
 ──────────────────────  DAEMON MODE  ──────────────────────────
 
@@ -114,9 +142,10 @@ pub fn run<W: Write, E: Write>(
 
   hashline mcp
 
-  Runs a stdio JSON-RPC server exposing 3 tools:
+  Runs a stdio JSON-RPC server exposing 4 tools:
     • read       — read file with snapshot hash
     • patch      — apply patch (SWAP/DEL/INS.*/BLK.*)
+    • write      — write content to a new file
     • find_block — find enclosing syntactic block
 
   Configure in claude_desktop_config.json / .cursor/mcp.json:
@@ -161,6 +190,10 @@ pub fn run<W: Write, E: Write>(
       .rb                   → keyword (def/class/end)
   • hashline writes atomically (temp file + rename)
   • JSON mode is ideal for agent consumption
+  • Use write to create new files: hashline write <file> <content>
+  • Wrap complex patches in *** Begin/End Patch markers
+  • Use ++ for literal +, +- for literal - in payload lines
+  • A.=B range syntax is accepted alongside A..B
 "#;
 
     writeln!(ctx.stdout(), "{}", guide.trim())?;

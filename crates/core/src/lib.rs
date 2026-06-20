@@ -6,14 +6,19 @@
 #![allow(clippy::needless_range_loop, clippy::ptr_arg, clippy::needless_return)]
 
 pub mod anchor;
+pub mod apply;
+pub mod block;
 pub mod document;
 pub mod error;
 pub mod hash;
+pub mod merge;
 pub mod messages;
 pub mod normalize;
 pub mod parser;
 pub mod patch_format;
 pub mod prefixes;
+pub mod recovery;
+pub mod snapshot_store;
 pub mod tokenizer;
 pub mod types;
 pub mod block;

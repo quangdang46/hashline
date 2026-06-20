@@ -270,6 +270,24 @@ fn find_indent_block(
     anchor_index: usize,
 ) -> Result<(usize, usize), HashlineError> {
     let anchor_indent = leading_whitespace(&entries[anchor_index].content);
+
+    // If anchor is at indent 0 (e.g. a `def` statement), it IS the block header.
+    if anchor_indent == 0 {
+        let mut end = entries.len() - 1;
+        for i in (anchor_index + 1)..entries.len() {
+            let trimmed = entries[i].content.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+            let indent = leading_whitespace(&entries[i].content);
+            if indent <= anchor_indent {
+                end = i.saturating_sub(1);
+                break;
+            }
+        }
+        return Ok((anchor_index, end));
+    }
+
     let mut start: Option<usize> = None;
     for i in (0..anchor_index).rev() {
         if entries[i].content.trim().is_empty() {
@@ -376,6 +394,23 @@ fn find_python_block(
     anchor_index: usize,
 ) -> Result<(Option<String>, usize, usize), HashlineError> {
     let anchor_indent = leading_whitespace(&entries[anchor_index].content);
+
+    // If anchor is at indent 0 (e.g. a `def` statement), it IS the block header.
+    if anchor_indent == 0 {
+        let mut end = entries.len() - 1;
+        for i in (anchor_index + 1)..entries.len() {
+            let trimmed = entries[i].content.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = leading_whitespace(&entries[i].content);
+            if indent <= anchor_indent {
+                end = i.saturating_sub(1);
+                break;
+            }
+        }
+        return Ok((Some("Python".into()), anchor_index, end));
+    }
 
     let mut start: Option<usize> = None;
     for i in (0..anchor_index).rev() {

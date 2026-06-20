@@ -4,7 +4,7 @@
 //! - Boundary echoes (payload restates unchanged lines at range edges)
 //! - Duplicate prefixes/suffixes
 //! - Dropped structural closers
-//! All repairs emit warnings but never fail — conservative by default.
+//!   All repairs emit warnings but never fail — conservative by default.
 
 /// Check if a line is a structural closer (braces, parens, end keyword).
 pub fn is_structural_closer(trimmed: &str) -> bool {
@@ -50,7 +50,7 @@ pub fn detect_boundary_issues(
     // Check for boundary echo: payload's last line matches content just below range
     if end_line < entries_len {
         let line_below = &entries[end_line].content;
-        if payload.last().map_or(false, |p| p == line_below) {
+        if payload.last().is_some_and(|p| p == line_below) {
             warnings.push(
                 "Boundary echo detected: last payload line duplicates the line below the range. \
                  Use SWAP on the range whose content actually changes."
@@ -61,9 +61,7 @@ pub fn detect_boundary_issues(
 
     // Check for dropped suffix closers: range deletes structural closers
     // that the payload doesn't restate.
-    let payload_has_closer = payload
-        .iter()
-        .any(|l| is_structural_closer(l.trim()));
+    let payload_has_closer = payload.iter().any(|l| is_structural_closer(l.trim()));
     if !payload_has_closer {
         let mut deleted_closers = 0;
         for i in start_line..=end_line.min(entries_len) {
@@ -202,4 +200,3 @@ mod tests {
         assert!(warnings.is_empty());
     }
 }
-

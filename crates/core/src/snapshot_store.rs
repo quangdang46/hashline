@@ -8,7 +8,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-
 /// One full-file version observed at a point in time. The tag the model sees is
 /// [`Snapshot::hash`]; recovery replays edits against [`Snapshot::text`].
 #[derive(Debug, Clone)]
@@ -144,7 +143,9 @@ impl InMemorySnapshotStore {
 
     /// Evict the least-recently-used path (from the front of `access_order`).
     fn evict_one(&mut self) {
-        let Some(path) = self.access_order.pop_front() else { return };
+        let Some(path) = self.access_order.pop_front() else {
+            return;
+        };
         if let Some(history) = self.versions.remove(&path) {
             for s in &history {
                 self.total_bytes = self.total_bytes.saturating_sub(s.text.len());
@@ -188,7 +189,11 @@ impl SnapshotStore for InMemorySnapshotStore {
     }
 
     fn by_hash(&self, path: &str, hash: &str) -> Option<Snapshot> {
-        self.versions.get(path)?.iter().find(|s| s.hash == hash).cloned()
+        self.versions
+            .get(path)?
+            .iter()
+            .find(|s| s.hash == hash)
+            .cloned()
     }
 
     fn record(&mut self, path: &str, full_text: &str, seen_lines: Option<&[usize]>) -> String {
@@ -201,7 +206,7 @@ impl SnapshotStore for InMemorySnapshotStore {
             let history = self
                 .versions
                 .entry(path.to_owned())
-                .or_insert_with(Vec::new);
+                .or_default();
 
             // Read fusion: same content observed again.
             if let Some(pos) = history.iter().position(|s| s.hash == hash) {
@@ -252,8 +257,12 @@ impl SnapshotStore for InMemorySnapshotStore {
         if lines.is_empty() {
             return;
         }
-        let Some(history) = self.versions.get_mut(path) else { return };
-        let Some(snapshot) = history.iter_mut().find(|s| s.hash == hash) else { return };
+        let Some(history) = self.versions.get_mut(path) else {
+            return;
+        };
+        let Some(snapshot) = history.iter_mut().find(|s| s.hash == hash) else {
+            return;
+        };
         let set = snapshot.seen_lines.get_or_insert_with(HashSet::new);
         for &line in lines {
             set.insert(line);
