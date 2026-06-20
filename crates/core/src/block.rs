@@ -12,8 +12,7 @@
 //! resolved edits.
 
 use crate::types::{
-    Anchor, BlockMode, BlockResolver, BlockResolverRequest, BlockSpan, Cursor, Edit,
-    InsertMode,
+    Anchor, BlockMode, BlockResolver, BlockResolverRequest, BlockSpan, Cursor, Edit, InsertMode,
 };
 
 /// Returns `true` when at least one edit is a deferred block edit.

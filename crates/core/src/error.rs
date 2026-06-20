@@ -117,6 +117,11 @@ pub enum HashlineError {
     #[error("patch produced no edits — input was empty or all operations were rejected")]
     EmptyPatch,
 
+    #[error("patch produced no edits: {reason}")]
+    EmptyPatchWithReason {
+        reason: Box<str>,
+    },
+
     #[error("multi-line content is only supported for range edits")]
     MultiLineContentUnsupported,
 
@@ -270,6 +275,9 @@ impl HashlineError {
             HashlineError::EmptyPatch => {
                 Some("verify the patch contains a valid operation (SWAP/DEL/INS.*) and re-run")
             }
+            HashlineError::EmptyPatchWithReason { .. } => {
+                Some("verify the patch syntax and re-run. The warning above may explain what was rejected.")
+            }
             HashlineError::MultiLineContentUnsupported => Some(
                 "use a range anchor like '2:f1..4:9c' for multi-line replacement, or use `hashline patch` for mixed edits",
             ),
@@ -357,6 +365,7 @@ impl HashlineError {
             | HashlineError::InvalidWorkflowPack { .. }
             | HashlineError::PatchFailed { .. }
             | HashlineError::EmptyPatch
+            | HashlineError::EmptyPatchWithReason { .. }
             | HashlineError::MultiLineContentUnsupported
             | HashlineError::MutationIndexOutOfBounds { .. }
             | HashlineError::InvalidMutationRange { .. }

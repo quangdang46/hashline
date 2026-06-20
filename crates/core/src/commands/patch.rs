@@ -27,7 +27,14 @@ pub fn run<W: Write, E: Write>(
     }
 
     if edits.is_empty() {
-        return Err(HashlineError::EmptyPatch);
+        if warnings.is_empty() {
+            return Err(HashlineError::EmptyPatch);
+        }
+        // Include the first warning in the error message so callers get
+        // context about what went wrong, not just "empty patch".
+        return Err(HashlineError::EmptyPatchWithReason {
+            reason: warnings[0].clone().into_boxed_str(),
+        });
     }
 
     // Split on newlines. Drop the trailing empty segment that split('\n')
@@ -223,7 +230,10 @@ pub fn apply_edits(
                 let anchor_line = start_anchor.line;
                 if anchor_line > entries.len() {
                     return Err(HashlineError::InvalidAnchor {
-                        anchor: format!("line {anchor_line} not found (file has {} lines)", entries.len()),
+                        anchor: format!(
+                            "line {anchor_line} not found (file has {} lines)",
+                            entries.len()
+                        ),
                     });
                 }
                 if let Some(expected) = expected_hash {
@@ -380,7 +390,10 @@ pub fn apply_edits(
                 for line in &del_lines {
                     if *line > entries.len() {
                         return Err(HashlineError::InvalidAnchor {
-                            anchor: format!("line {line} not found (file has {} lines)", entries.len()),
+                            anchor: format!(
+                                "line {line} not found (file has {} lines)",
+                                entries.len()
+                            ),
                         });
                     }
                 }
@@ -488,28 +501,25 @@ pub fn apply_edits(
                         // content likely belongs inside the block, not after it.
                         let closer_line = &lines[block_end];
                         let closer_indent = leading_ws(closer_line);
-                        let first_payload_indent = payloads
-                            .first()
-                            .map(|p| leading_ws(p))
-                            .unwrap_or(0);
+                        let first_payload_indent =
+                            payloads.first().map(|p| leading_ws(p)).unwrap_or(0);
 
-                        let insert_pos = if first_payload_indent > closer_indent && first_payload_indent > 0 {
-                            // Slide backward to just before the first structural closer
-                            let mut pos = block_end;
-                            for scan in (block_start + 1..=block_end).rev() {
-                                let trimmed = lines[scan].trim();
-                                if is_structural_closer_line(trimmed)
-                                    || trimmed.is_empty()
-                                {
-                                    pos = scan;
-                                } else {
-                                    break;
+                        let insert_pos =
+                            if first_payload_indent > closer_indent && first_payload_indent > 0 {
+                                // Slide backward to just before the first structural closer
+                                let mut pos = block_end;
+                                for scan in (block_start + 1..=block_end).rev() {
+                                    let trimmed = lines[scan].trim();
+                                    if is_structural_closer_line(trimmed) || trimmed.is_empty() {
+                                        pos = scan;
+                                    } else {
+                                        break;
+                                    }
                                 }
-                            }
-                            pos
-                        } else {
-                            block_end + 1
-                        };
+                                pos
+                            } else {
+                                block_end + 1
+                            };
 
                         let insert_pos = insert_pos.min(lines.len());
                         for (k, payload) in payloads.iter().enumerate() {
@@ -1036,8 +1046,13 @@ mod tests {
         // A bare `-something` line should emit MINUS_ROW_REJECTED warning
         let (_edits, warnings) = crate::parser::parse_patch("SWAP 2:\n+-ok\n-bad\n++also_ok");
         // The `-bad` line should generate a warning at least once
-        let has_minus_warning = warnings.iter().any(|w| w.contains("`-` rows are not valid"));
-        assert!(has_minus_warning, "expected MINUS_ROW_REJECTED warning, got warnings: {warnings:?}");
+        let has_minus_warning = warnings
+            .iter()
+            .any(|w| w.contains("`-` rows are not valid"));
+        assert!(
+            has_minus_warning,
+            "expected MINUS_ROW_REJECTED warning, got warnings: {warnings:?}"
+        );
     }
 
     #[test]

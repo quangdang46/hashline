@@ -17,10 +17,10 @@
 //!    current — a prior in-session edit advanced the file and the
 //!    model's anchors still name the same logical rows.
 
+use crate::merge::merge_texts;
 use crate::messages::{
     RECOVERY_EXTERNAL_WARNING, RECOVERY_SESSION_CHAIN_WARNING, RECOVERY_SESSION_REPLAY_WARNING,
 };
-use crate::merge::merge_texts;
 use crate::snapshot_store::SnapshotStore;
 use crate::types::{Anchor, ApplyResult, Cursor, Edit};
 
@@ -76,19 +76,13 @@ impl<'a> Recovery<'a> {
     ///
     /// Returns `None` when no path forward is found — the caller should
     /// then surface a mismatch error.
-    pub fn try_recover<F>(
-        &self,
-        args: &RecoveryArgs,
-        apply_edits: F,
-    ) -> Option<RecoveryResult>
+    pub fn try_recover<F>(&self, args: &RecoveryArgs, apply_edits: F) -> Option<RecoveryResult>
     where
         F: Fn(&str, &[Edit]) -> Result<ApplyResult, String>,
     {
         let snapshot = self.store.by_hash(&args.path, &args.file_hash)?;
         let head = self.store.head(&args.path);
-        let is_head = head
-            .as_ref()
-            .is_some_and(|h| h.hash == args.file_hash);
+        let is_head = head.as_ref().is_some_and(|h| h.hash == args.file_hash);
 
         let recovery_warning = if is_head {
             RECOVERY_EXTERNAL_WARNING
@@ -221,7 +215,7 @@ where
         first_changed_line: applied.first_changed_line,
         text: applied.text,
         warnings: std::iter::once(RECOVERY_SESSION_REPLAY_WARNING.to_string())
-            .chain(applied.warnings.into_iter())
+            .chain(applied.warnings)
             .collect(),
     })
 }

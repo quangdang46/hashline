@@ -13,6 +13,10 @@ pub const BARE_BODY_AUTO_PIPED_WARNING: &str =
     "bare body auto-piped (no `+` prefix) — model should prefix body rows with `+` to be explicit";
 pub const MINUS_ROW_REJECTED: &str =
     "`-` rows are not valid in hashline; only `+TEXT` payload lines are accepted";
+/// Warning when a raw line looks like it's trying to be a hunk operation
+/// but uses an unknown keyword. Example: `FOO 1:` or `BAR.BAZ 5:`.
+pub const UNKNOWN_OP_ROW: &str = "unknown operation";
+
 pub const EMPTY_BLOCK: &str =
     "block replacement has no body; provide replacement lines after the header";
 pub const EMPTY_INSERT: &str = "insert has no body; provide content after the header";

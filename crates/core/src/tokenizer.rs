@@ -411,10 +411,11 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
         });
     }
 
-    // DEL.BLK N (no colon)
+    // DEL.BLK N (no body, but accepts optional :HH: hash suffix)
     if let Some(del_block_end) = scan_keyword(bytes, cursor, end, HL_DELETE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, del_block_end, end), end)?;
-        let next = skip_whitespace(bytes, anchor.next_index, end);
+        let (next, _hash) = consume_with_hash(bytes, anchor.next_index, end);
+        // No colon after hash allowed — DEL.BLK takes no body
         if next < end && bytes[next] == CHAR_COLON {
             return None;
         }
@@ -491,11 +492,7 @@ pub fn strip_apply_patch_path_noise(path_text: &str) -> String {
         while i < len && i < 3 && bytes[i] == CHAR_ASTERISK {
             i += 1;
         }
-        if i > 0 {
-            &path_text[i..]
-        } else {
-            path_text
-        }
+        if i > 0 { &path_text[i..] } else { path_text }
     };
     let s = s.trim_start();
 
@@ -509,32 +506,25 @@ pub fn strip_apply_patch_path_noise(path_text: &str) -> String {
     let mut result: Option<String> = None;
 
     // Try each keyword prefix in order; take the longest match wins.
-    for &(keyword, kw_len) in &[
-        ("update", 6usize),
-        ("delete", 6),
-        ("add", 3),
-        ("move", 4),
-    ] {
+    for &(keyword, kw_len) in &[("update", 6usize), ("delete", 6), ("add", 3), ("move", 4)] {
         if !lower.starts_with(keyword) {
             continue;
         }
         let after_kw = &s[kw_len..];
 
         // Skip non-alphanumeric separator characters
-        let after_sep = after_kw
-            .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+        let after_sep =
+            after_kw.trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
 
         // Check for optional "File" or "to"
         let after_opt = {
             let after_sep_lower = after_sep.to_lowercase();
             if after_sep_lower.starts_with("file") {
                 let after_file = &after_sep[4..];
-                after_file
-                    .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+                after_file.trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
             } else if after_sep_lower.starts_with("to") {
                 let after_to = &after_sep[2..];
-                after_to
-                    .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+                after_to.trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
             } else {
                 after_sep
             }
@@ -602,10 +592,7 @@ fn try_parse_header(line: &str) -> Option<HeaderResult> {
     if path.is_empty() {
         return None;
     }
-    Some(HeaderResult {
-        path,
-        file_hash,
-    })
+    Some(HeaderResult { path, file_hash })
 }
 
 struct HeaderResult {
@@ -775,8 +762,7 @@ impl Tokenizer {
     }
 
     pub fn is_header(&self, line: &str) -> bool {
-        try_parse_header(line).is_some()
-            || try_parse_recovery_header(line).is_some()
+        try_parse_header(line).is_some() || try_parse_recovery_header(line).is_some()
     }
 
     pub fn is_envelope_marker(&self, line: &str) -> bool {
@@ -822,18 +808,12 @@ mod tests {
 
     #[test]
     fn test_strip_noise_update_file() {
-        assert_eq!(
-            strip_apply_patch_path_noise("Update File:foo.ts"),
-            "foo.ts"
-        );
+        assert_eq!(strip_apply_patch_path_noise("Update File:foo.ts"), "foo.ts");
     }
 
     #[test]
     fn test_strip_noise_update_file_case() {
-        assert_eq!(
-            strip_apply_patch_path_noise("update file:foo.ts"),
-            "foo.ts"
-        );
+        assert_eq!(strip_apply_patch_path_noise("update file:foo.ts"), "foo.ts");
     }
 
     #[test]
@@ -843,10 +823,7 @@ mod tests {
 
     #[test]
     fn test_strip_noise_delete_file() {
-        assert_eq!(
-            strip_apply_patch_path_noise("Delete File:foo.ts"),
-            "foo.ts"
-        );
+        assert_eq!(strip_apply_patch_path_noise("Delete File:foo.ts"), "foo.ts");
     }
 
     #[test]
@@ -856,10 +833,7 @@ mod tests {
 
     #[test]
     fn test_strip_noise_update_no_file() {
-        assert_eq!(
-            strip_apply_patch_path_noise("Update:foo.ts"),
-            "foo.ts"
-        );
+        assert_eq!(strip_apply_patch_path_noise("Update:foo.ts"), "foo.ts");
     }
 
     #[test]

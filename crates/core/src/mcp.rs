@@ -127,7 +127,8 @@ fn tool_list() -> ToolList {
             },
             ToolDefinition {
                 name: "write".into(),
-                description: "Write content to a file (creates new file or overwrites with --force)".into(),
+                description:
+                    "Write content to a file (creates new file or overwrites with --force)".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -358,6 +359,24 @@ fn find_indent_block(
     anchor_index: usize,
 ) -> Result<(usize, usize), ()> {
     let anchor_indent = leading_ws(&entries[anchor_index].content);
+
+    // If anchor is at indent 0 (e.g. a `def` statement), it IS the block header.
+    if anchor_indent == 0 {
+        let mut end = entries.len() - 1;
+        for i in (anchor_index + 1)..entries.len() {
+            let t = entries[i].content.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            if leading_ws(&entries[i].content) <= anchor_indent {
+                end = i.saturating_sub(1);
+                break;
+            }
+        }
+        return Ok((anchor_index, end));
+    }
+
+    // Indented anchor: scan backward for the block header (less-indented line)
     let mut start = None;
     for i in (0..anchor_index).rev() {
         if entries[i].content.trim().is_empty() {
@@ -541,7 +560,10 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
 
     // Check file exists — refuse unless --force
     if path.exists() && !force {
-        return format!("Error: target '{}' already exists — use force=true to overwrite", file);
+        return format!(
+            "Error: target '{}' already exists — use force=true to overwrite",
+            file
+        );
     }
 
     let normalized = crate::normalize::normalize_to_lf(content);
@@ -630,14 +652,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("content")
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'content'")?;
-            let force = args
-                .get("force")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let json = args
-                .get("json")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
             Ok(
                 serde_json::json!({"content": [{"type": "text", "text": handle_write(file, content, force, json)}]}),
             )

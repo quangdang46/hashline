@@ -212,10 +212,7 @@ impl Executor {
                 return;
             }
             if text.trim_start().starts_with('-') {
-                if !self
-                    .warnings
-                    .contains(&MINUS_ROW_REJECTED.to_string())
-                {
+                if !self.warnings.contains(&MINUS_ROW_REJECTED.to_string()) {
                     self.warnings.push(MINUS_ROW_REJECTED.to_owned());
                 }
                 return;
@@ -236,11 +233,30 @@ impl Executor {
             return;
         }
 
-        if text.trim().is_empty() {}
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
 
-        if text.trim_start().starts_with('-') {
-            if !self.warnings.contains(&MINUS_ROW_REJECTED.to_string()) {
-                self.warnings.push(MINUS_ROW_REJECTED.to_owned());
+        // No pending operation — check for orphan `-` rows
+        if trimmed.starts_with('-') && !self.warnings.contains(&MINUS_ROW_REJECTED.to_string()) {
+            self.warnings.push(MINUS_ROW_REJECTED.to_owned());
+        }
+
+        // Check for unknown operation keywords — lines like `FOO 1:` or `BAR.BAZ 5:`
+        // that look like they're trying to be hunk operations but failed to parse.
+        if !text.trim().is_empty() {
+            let first_word_end = text.find([' ', '.', ':'])
+                .unwrap_or(text.len());
+            let first_word = &text[..first_word_end];
+            if first_word.len() >= 2
+                && first_word.chars().all(|c| c.is_ascii_uppercase() || c == '.')
+                && !self.warnings.contains(&format!("unknown operation `{first_word}`"))
+            {
+                self.warnings.push(format!(
+                    "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
+                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, or INS.BLK.POST"
+                ));
             }
         }
     }
@@ -502,8 +518,8 @@ impl Executor {
 /// When same-path sections have different hash tags, returns an error.
 /// Returns the merged diff with all sections concatenated under one header.
 pub fn merge_same_path_sections(patch_text: &str) -> Result<String, String> {
-    let header_re = Regex::new(r"^\[([^\[\]#]+)(?:#([0-9a-fA-F]{1,4}))?\]\s*$")
-        .expect("valid header regex");
+    let header_re =
+        Regex::new(r"^\[([^\[\]#]+)(?:#([0-9a-fA-F]{1,4}))?\]\s*$").expect("valid header regex");
 
     let lines: Vec<&str> = patch_text.lines().collect();
     if lines.is_empty() {
@@ -605,6 +621,7 @@ pub fn merge_same_path_sections(patch_text: &str) -> Result<String, String> {
     Ok(output.join("\n"))
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod merge_tests {
     use super::*;
@@ -617,16 +634,12 @@ mod merge_tests {
     fn two_sections_same_path_merged() {
         let input = "[file.rs#ABCD]\nSWAP 5:\n+foo\n[file.rs#ABCD]\nSWAP 10:\n+bar";
         let result = merge(input);
-        assert_eq!(
-            result,
-            "[file.rs#ABCD]\nSWAP 5:\n+foo\nSWAP 10:\n+bar"
-        );
+        assert_eq!(result, "[file.rs#ABCD]\nSWAP 5:\n+foo\nSWAP 10:\n+bar");
     }
 
     #[test]
     fn two_sections_different_path_kept_separate() {
-        let input =
-            "[a.rs#ABCD]\nSWAP 5:\n+foo\n[b.rs#1234]\nSWAP 10:\n+bar";
+        let input = "[a.rs#ABCD]\nSWAP 5:\n+foo\n[b.rs#1234]\nSWAP 10:\n+bar";
         let result = merge(input);
         assert_eq!(result, input);
     }
@@ -643,13 +656,9 @@ mod merge_tests {
     #[test]
     fn three_sections_last_also_same_path() {
         // Three sections all same path and all consecutive — all merged
-        let input =
-            "[a.rs#ABCD]\nSWAP 5:\n+foo\n[a.rs#ABCD]\nSWAP 5:\n+bar\n[a.rs#ABCD]\nDEL 3";
+        let input = "[a.rs#ABCD]\nSWAP 5:\n+foo\n[a.rs#ABCD]\nSWAP 5:\n+bar\n[a.rs#ABCD]\nDEL 3";
         let result = merge(input);
-        assert_eq!(
-            result,
-            "[a.rs#ABCD]\nSWAP 5:\n+foo\nSWAP 5:\n+bar\nDEL 3"
-        );
+        assert_eq!(result, "[a.rs#ABCD]\nSWAP 5:\n+foo\nSWAP 5:\n+bar\nDEL 3");
     }
 
     #[test]
