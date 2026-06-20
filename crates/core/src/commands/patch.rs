@@ -53,11 +53,24 @@ pub fn run<W: Write, E: Write>(
     };
 
     if cmd.dry_run {
-        // Show a unified-diff-alike snippet instead of the entire file.
-        let original_text = &fc.normalized;
-        let diff_lines = format_diff(original_text, &final_text);
-        for dl in &diff_lines {
-            writeln!(ctx.stdout(), "{dl}")?;
+        if cmd.json {
+            // Return JSON diff info instead of text diff
+            let diff_lines = format_diff(&fc.normalized, &final_text);
+            let payload = serde_json::json!({
+                "success": true,
+                "file": cmd.file.display().to_string(),
+                "dry_run": true,
+                "edits_applied": edits.len(),
+                "diff": diff_lines,
+            });
+            writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+        } else {
+            // Show a unified-diff-alike snippet instead of the entire file.
+            let original_text = &fc.normalized;
+            let diff_lines = format_diff(original_text, &final_text);
+            for dl in &diff_lines {
+                writeln!(ctx.stdout(), "{dl}")?;
+            }
         }
         return Ok(());
     }
@@ -208,6 +221,11 @@ pub fn apply_edits(
                 ..
             } => {
                 let anchor_line = start_anchor.line;
+                if anchor_line > entries.len() {
+                    return Err(HashlineError::InvalidAnchor {
+                        anchor: format!("line {anchor_line} not found (file has {} lines)", entries.len()),
+                    });
+                }
                 if let Some(expected) = expected_hash {
                     let anchor_index = anchor_line.wrapping_sub(1);
                     if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
@@ -356,6 +374,14 @@ pub fn apply_edits(
                             j += 1;
                         }
                         _ => break,
+                    }
+                }
+                // Validate all delete lines are in bounds
+                for line in &del_lines {
+                    if *line > entries.len() {
+                        return Err(HashlineError::InvalidAnchor {
+                            anchor: format!("line {line} not found (file has {} lines)", entries.len()),
+                        });
                     }
                 }
                 del_lines.sort_by(|a, b| b.cmp(a));
