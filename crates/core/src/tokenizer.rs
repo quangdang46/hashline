@@ -424,15 +424,17 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
         });
     }
 
-    // DEL N..=M (no colon)
+    // DEL N..=M (no colon, but may have :HH: hash suffix)
     if let Some(delete_end) = scan_keyword(bytes, cursor, end, HL_DELETE_KEYWORD) {
         let range = scan_header_range(bytes, delete_end, end, true)?;
-        let next = skip_whitespace(bytes, range.next_index, end);
+        let (next, hash) = consume_with_hash(bytes, range.next_index, end);
+        // Ensure DEL does not take a body (a colon after the optional hash
+        // suffix means there's trailing content, which DEL doesn't accept).
         if next < end && bytes[next] == CHAR_COLON {
             return None;
         }
         return Some(TargetScan {
-            target: BlockTarget::Delete(range.range, None),
+            target: BlockTarget::Delete(range.range, hash),
             next_index: next,
         });
     }
