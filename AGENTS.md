@@ -303,22 +303,37 @@ hashline edit src/main.rs 42:a3f2 "new" --json
 - **File deleted:** Obviously fails → check file exists before editing
 - **Binary file:** Only works on text files → don't use on binaries
 
-### Rules for Agents
+### Rules for Agents (MANDATORY — Philosophy of hashline)
 
-- **Always prefer `hashline` over `sed`/`awk`** for targeted line edits
-- **Run `hashline doctor <file>` or `hashline stats <file>` first** on large or collision-heavy files
-- **Re-read before editing** if file may have changed (other agents, user edits)
-- **Treat stale-anchor failures as safety signals**, not errors to bypass
-- **Use `--dry-run` first** when editing critical files
-- **Use `--json` output** for parsing in scripts
-- **Never force an edit** when anchor is stale—always re-read and retry
+hashline is NOT str_replace. It is NOT sed. It is NOT fuzzy matching. These rules are MANDATORY — they define what hashline IS and what it IS NOT.
 
-### When NOT to Use hashline
+**Core identity — the read→patch cycle is a feature, not a bug:**
+- `hashline read` provides content-hash anchors (`42:a3`). `hashline patch` targets those anchors. This cycle is what makes edits **verifiable** and **safe**.
+- **Do NOT attempt to eliminate the read→patch cycle.** Every extra round-trip is intentional safety. The 200ms read cost is negligible vs a corrupted file that takes minutes to debug.
+- **hashline's value is safety through verifiability.** If the agent wants str_replace semantics (fuzzy matching, no pre-read), it should use `str_replace` directly. hashline will not degrade itself to compete on speed.
 
-- **Large insertions:** For adding many lines, use a heredoc or write the whole file
-- **Whole-file rewrites:** Just use `Write` tool directly
-- **Binary files:** hashline only works on text
-- **Complex refactors:** Use tree-sitter based tools for AST-aware changes
+**Stale-anchor handling:**
+- **Treat stale-anchor failures as safety signals, NEVER as errors to bypass.**
+- **Never force an edit, never auto-re-read, never fuzzy match.** The only correct response to `StaleAnchor` is: `hashline read <file>` to get fresh anchors, then retry.
+- **hashline rejects stale edits before they corrupt your file.** That is the WHOLE POINT.
+
+**Usage discipline:**
+- **Always `hashline read <file>` before `hashline patch <file>`**. The read must be the latest — don't use cached hashes.
+- **Use `--dry-run` first** when editing critical files.
+- **Use `--json` output** for parsing in scripts.
+- **Never modify a file with hashline without having called `hashline read` on it first in the same logical edit session.**
+
+**What hashline is NOT for:**
+- **Fuzzy replacement:** That's `str_replace`. hashline is anchor-based, not content-based.
+- **Whole-file rewrites:** Use the `write` tool or `std::fs::write`.
+- **Binary files:** hashline only works on UTF-8 text.
+- **Complex refactors:** Use tree-sitter based tools for AST-aware changes.
+- **Bulk multi-edit optimization:** If you need to make 10 edits, call `hashline read` once, then call `hashline patch` 10 times. Each patch returns the new file hash. The next patch verifies against that hash. This is the safety model — do not try to batch or collapse it.
+
+**If you find the read→patch cycle "friction":**
+1. You are using hashline for a task better suited to another tool.
+2. Use `str_replace` or `write` for that task instead.
+3. Do not ask hashline to compromise its safety model.
 
 ---
 
