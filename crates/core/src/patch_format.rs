@@ -42,6 +42,11 @@ pub const HL_RANGE_SEP: &str = "..";
 /** Separator between a line number and displayed line content. */
 pub const HL_LINE_BODY_SEP: &str = ":";
 
+/** Escape prefix for payload lines whose content literally starts with `+`. Write `++text` to get `+text`. */
+pub const HL_PAYLOAD_ESCAPE_PLUS: &str = "++";
+/** Escape prefix for payload lines whose content literally starts with `-`. Write `+-text` to get `-text`. */
+pub const HL_PAYLOAD_ESCAPE_DASH: &str = "+-";
+
 /** Number of hex characters in a content-derived file-hash tag. */
 pub const HL_FILE_HASH_LENGTH: usize = 4;
 

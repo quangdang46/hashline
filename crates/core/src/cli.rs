@@ -19,6 +19,7 @@ pub struct Cli {
 pub enum Commands {
     Read(ReadCmd),
     Patch(PatchCmd),
+    Write(WriteCmd),
     FindBlock(FindBlockCmd),
     Guide(GuideCmd),
     Serve(ServeCmd),
@@ -60,6 +61,22 @@ pub struct FindBlockCmd {
     pub json: bool,
     #[arg(long)]
     pub pretty: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(about = "Write content to a file (creates new file or overwrites with --force)")]
+pub struct WriteCmd {
+    pub file: PathBuf,
+    pub content: String,
+    #[arg(long, help = "Overwrite existing file if it already exists")]
+    pub force: bool,
+    #[arg(long)]
+    pub json: bool,
+    #[arg(
+        long,
+        help = "Use atomic temp-file + fsync (crash-safe but slower; default is fast direct write)"
+    )]
+    pub safe: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]

@@ -11,6 +11,7 @@ pub fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Read(_) => "read",
         Commands::Patch(_) => "patch",
+        Commands::Write(_) => "write",
         Commands::FindBlock(_) => "find-block",
         Commands::Guide(_) => "guide",
         Commands::Serve(_) => "serve",
@@ -47,6 +48,7 @@ pub fn run_command<W: Write, E: Write>(
     let exit_code = match command {
         Commands::Read(cmd) => commands::read::run(&mut context, cmd).map(|_| 0),
         Commands::Patch(cmd) => commands::patch::run(&mut context, cmd).map(|_| 0),
+        Commands::Write(cmd) => commands::write::run(&mut context, cmd).map(|_| 0),
         Commands::FindBlock(cmd) => commands::find_block::run(&mut context, cmd).map(|_| 0),
         Commands::Guide(cmd) => commands::guide::run(&mut context, cmd).map(|_| 0),
         Commands::Serve(cmd) => commands::serve::run(&mut context, cmd).map(|_| 0),

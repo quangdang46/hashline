@@ -32,6 +32,7 @@ const CHAR_UPPER_F: u8 = b'F';
 const CHAR_LOWER_A: u8 = b'a';
 const CHAR_LOWER_F: u8 = b'f';
 const CHAR_COLON: u8 = b':';
+const CHAR_ASTERISK: u8 = b'*';
 const CHAR_PAYLOAD_REPLACE: u8 = b'+';
 
 const FILE_PREFIX_LEN: usize = HL_FILE_PREFIX.len();
@@ -468,6 +469,86 @@ fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
     Some(scan.target)
 }
 
+/// Strip common apply-patch path noise that LLMs prepend to file headers.
+///
+/// Strips:
+/// - 1-3 leading `*` characters (4+ stars are preserved since they could be envelope markers)
+/// - Case-insensitive `(Update|Add|Delete|Move)[^A-Za-z0-9]*(File|to)?[^A-Za-z0-9]*:`
+///
+/// Returns the cleaned path string.
+pub fn strip_apply_patch_path_noise(path_text: &str) -> String {
+    if path_text.is_empty() {
+        return String::new();
+    }
+
+    // Step 1: Strip 1-3 leading '*' characters (but not 4+ — those are envelope markers)
+    let s = {
+        let bytes = path_text.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len && i < 3 && bytes[i] == CHAR_ASTERISK {
+            i += 1;
+        }
+        if i > 0 {
+            &path_text[i..]
+        } else {
+            path_text
+        }
+    };
+    let s = s.trim_start();
+
+    if s.is_empty() {
+        return s.to_string();
+    }
+
+    // Step 2: Strip case-insensitive keyword prefix.
+    // Pattern: (Update|Add|Delete|Move)[^A-Za-z0-9]*(File|to)?[^A-Za-z0-9]*:
+    let lower = s.to_lowercase();
+    let mut result: Option<String> = None;
+
+    // Try each keyword prefix in order; take the longest match wins.
+    for &(keyword, kw_len) in &[
+        ("update", 6usize),
+        ("delete", 6),
+        ("add", 3),
+        ("move", 4),
+    ] {
+        if !lower.starts_with(keyword) {
+            continue;
+        }
+        let after_kw = &s[kw_len..];
+
+        // Skip non-alphanumeric separator characters
+        let after_sep = after_kw
+            .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+
+        // Check for optional "File" or "to"
+        let after_opt = {
+            let after_sep_lower = after_sep.to_lowercase();
+            if after_sep_lower.starts_with("file") {
+                let after_file = &after_sep[4..];
+                after_file
+                    .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+            } else if after_sep_lower.starts_with("to") {
+                let after_to = &after_sep[2..];
+                after_to
+                    .trim_start_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':')
+            } else {
+                after_sep
+            }
+        };
+
+        // Expect ':'
+        if let Some(rest) = after_opt.strip_prefix(':') {
+            let cleaned = rest.trim_start().to_string();
+            result = Some(cleaned);
+            break;
+        }
+    }
+
+    result.unwrap_or_else(|| s.to_string())
+}
+
 fn try_parse_header(line: &str) -> Option<HeaderResult> {
     if !line.starts_with(HL_FILE_PREFIX) {
         return None;
@@ -515,8 +596,12 @@ fn try_parse_header(line: &str) -> Option<HeaderResult> {
         return None;
     }
     let path = &line[FILE_PREFIX_LEN..path_end];
+    let path = strip_apply_patch_path_noise(path);
+    if path.is_empty() {
+        return None;
+    }
     Some(HeaderResult {
-        path: path.to_owned(),
+        path,
         file_hash,
     })
 }
@@ -524,6 +609,63 @@ fn try_parse_header(line: &str) -> Option<HeaderResult> {
 struct HeaderResult {
     path: String,
     file_hash: Option<String>,
+}
+
+/// Attempt to recover a header from a bracketed line that the strict header parser
+/// rejected (e.g., `[*** Update File:foo.ts#CB5A]`).
+///
+/// This function:
+/// - Checks that the line starts with `[` and ends with `]`
+/// - Strips noise from the inner body via `strip_apply_patch_path_noise`
+/// - Looks for `#XXXX` hash suffix
+/// - Returns path + optional hash
+fn try_parse_recovery_header(line: &str) -> Option<HeaderResult> {
+    let line = line.trim();
+    if !line.starts_with(HL_FILE_PREFIX) || !line.ends_with(HL_FILE_SUFFIX) {
+        return None;
+    }
+
+    let end = trim_end_index(line);
+    let body_end = end - FILE_SUFFIX_LEN;
+
+    if FILE_PREFIX_LEN >= body_end {
+        return None;
+    }
+
+    let raw_body = &line[FILE_PREFIX_LEN..body_end];
+
+    // Detect trailing #XXXX tag in the raw body
+    let mut path_end = raw_body.len();
+    let mut file_hash: Option<String> = None;
+    let tag_start = raw_body.len().saturating_sub(HL_FILE_HASH_LENGTH + 1);
+    let raw_bytes = raw_body.as_bytes();
+    if tag_start > 0 && raw_bytes[tag_start] == CHAR_HASH {
+        let mut all_hex = true;
+        for probe in (tag_start + 1)..raw_body.len() {
+            if !is_hex_digit_code(raw_bytes[probe]) {
+                all_hex = false;
+                break;
+            }
+        }
+        if all_hex {
+            path_end = tag_start;
+            let hash_slice = &raw_body[tag_start + 1..];
+            file_hash = Some(hash_slice.to_uppercase());
+        }
+    }
+
+    let path_section = &raw_body[..path_end];
+    let path = strip_apply_patch_path_noise(path_section);
+    if path.is_empty() {
+        return None;
+    }
+
+    // No '#' allowed in the cleaned path portion
+    if path.contains('#') {
+        return None;
+    }
+
+    Some(HeaderResult { path, file_hash })
 }
 
 /// A single classified line from the tokenizer.
@@ -584,6 +726,15 @@ fn classify_line(line: &str, line_num: usize) -> Token {
                 file_hash: hr.file_hash,
             };
         }
+        // Fallback: try recovery header for noisy for
+        // [*** Update File:foo.ts#CB5A]
+        if let Some(hr) = try_parse_recovery_header(line) {
+            return Token::Header {
+                line_num,
+                path: hr.path,
+                file_hash: hr.file_hash,
+            };
+        }
     }
 
     let lead = skip_whitespace(line.as_bytes(), 0, line.len());
@@ -623,11 +774,200 @@ impl Tokenizer {
 
     pub fn is_header(&self, line: &str) -> bool {
         try_parse_header(line).is_some()
+            || try_parse_recovery_header(line).is_some()
     }
 
     pub fn is_envelope_marker(&self, line: &str) -> bool {
         marker_line_equals(line, BEGIN_PATCH_MARKER)
             || marker_line_equals(line, END_PATCH_MARKER)
             || marker_line_equals(line, ABORT_MARKER)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── strip_apply_patch_path_noise ──────────────────────────────────
+
+    #[test]
+    fn test_strip_noise_no_noise() {
+        // Clean path passes through unchanged
+        assert_eq!(strip_apply_patch_path_noise("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_strip_noise_empty() {
+        assert_eq!(strip_apply_patch_path_noise(""), "");
+    }
+
+    #[test]
+    fn test_strip_noise_leading_stars() {
+        assert_eq!(strip_apply_patch_path_noise("*foo.ts"), "foo.ts");
+        assert_eq!(strip_apply_patch_path_noise("**foo.ts"), "foo.ts");
+        assert_eq!(strip_apply_patch_path_noise("***foo.ts"), "foo.ts");
+        // 4+ stars: only the first 3 are stripped
+        assert_eq!(strip_apply_patch_path_noise("****foo.ts"), "*foo.ts");
+    }
+
+    #[test]
+    fn test_strip_noise_star_update_file() {
+        assert_eq!(
+            strip_apply_patch_path_noise("*** Update File:foo.ts#CB5A"),
+            "foo.ts#CB5A"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_update_file() {
+        assert_eq!(
+            strip_apply_patch_path_noise("Update File:foo.ts"),
+            "foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_update_file_case() {
+        assert_eq!(
+            strip_apply_patch_path_noise("update file:foo.ts"),
+            "foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_add_file() {
+        assert_eq!(strip_apply_patch_path_noise("Add File:foo.ts"), "foo.ts");
+    }
+
+    #[test]
+    fn test_strip_noise_delete_file() {
+        assert_eq!(
+            strip_apply_patch_path_noise("Delete File:foo.ts"),
+            "foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_move_to() {
+        assert_eq!(strip_apply_patch_path_noise("Move to:foo.ts"), "foo.ts");
+    }
+
+    #[test]
+    fn test_strip_noise_update_no_file() {
+        assert_eq!(
+            strip_apply_patch_path_noise("Update:foo.ts"),
+            "foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_add_no_separator() {
+        assert_eq!(strip_apply_patch_path_noise("Add:foo.ts"), "foo.ts");
+    }
+
+    #[test]
+    fn test_strip_noise_leading_stars_with_whitespace() {
+        assert_eq!(
+            strip_apply_patch_path_noise("*** Update File:  foo.ts"),
+            "foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_star_then_update() {
+        assert_eq!(
+            strip_apply_patch_path_noise("**Update File:foo.ts"),
+            "foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_invalid_prefix_not_stripped() {
+        // Unknown prefix should remain
+        assert_eq!(
+            strip_apply_patch_path_noise("Modify:foo.ts"),
+            "Modify:foo.ts"
+        );
+    }
+
+    #[test]
+    fn test_strip_noise_path_with_hash() {
+        // Path with hash should keep hash
+        assert_eq!(
+            strip_apply_patch_path_noise("***Update File:src/lib.ts#1A2B"),
+            "src/lib.ts#1A2B"
+        );
+    }
+
+    // ─── try_parse_recovery_header ─────────────────────────────────────
+
+    #[test]
+    fn test_recovery_noisy_bracket() {
+        // [*** Update File:foo.ts#CB5A]
+        let hr = try_parse_recovery_header("[*** Update File:foo.ts#CB5A]").unwrap();
+        assert_eq!(hr.path, "foo.ts");
+        assert_eq!(hr.file_hash.as_deref(), Some("CB5A"));
+    }
+
+    #[test]
+    fn test_recovery_noisy_no_hash() {
+        let hr = try_parse_recovery_header("[** Add File:bar.rs]").unwrap();
+        assert_eq!(hr.path, "bar.rs");
+        assert_eq!(hr.file_hash, None);
+    }
+
+    #[test]
+    fn test_recovery_normal_header_returns_none() {
+        // Normal headers are handled by try_parse_header, not recovery
+        let hr = try_parse_recovery_header("[foo.ts#A1B2]").unwrap();
+        assert_eq!(hr.path, "foo.ts");
+        assert_eq!(hr.file_hash.as_deref(), Some("A1B2"));
+    }
+
+    #[test]
+    fn test_recovery_unclosed_bracket() {
+        assert!(try_parse_recovery_header("[*** Update File:foo.ts#CB5A").is_none());
+    }
+
+    #[test]
+    fn test_recovery_empty_body() {
+        assert!(try_parse_recovery_header("[]").is_none());
+    }
+
+    // ─── Integration: classify_line ────────────────────────────────────
+
+    fn check_token_path(token: &Token, expected_path: &str) {
+        match token {
+            Token::Header { path, .. } => assert_eq!(path, expected_path),
+            _ => panic!("expected Header token, got {:?}", token),
+        }
+    }
+
+    #[test]
+    fn test_classify_noisy_header() {
+        let t = classify_line("[*** Update File:src/lib.ts#1A2B]", 1);
+        check_token_path(&t, "src/lib.ts");
+    }
+
+    #[test]
+    fn test_classify_noisy_header_no_hash() {
+        let t = classify_line("[*Add File:new.rs]", 1);
+        check_token_path(&t, "new.rs");
+    }
+
+    #[test]
+    fn test_classify_clean_header_still_works() {
+        let t = classify_line("[src/lib.ts#1A2B]", 1);
+        check_token_path(&t, "src/lib.ts");
+    }
+
+    #[test]
+    fn test_is_header_noisy() {
+        let tokenizer = Tokenizer;
+        assert!(tokenizer.is_header("[*** Update File:foo.ts#CB5A]"));
+        assert!(tokenizer.is_header("[**Add File:bar.rs]"));
+        assert!(tokenizer.is_header("[Delete File:baz.rs]"));
+        // Clean headers still work
+        assert!(tokenizer.is_header("[clean.ts#1A2B]"));
     }
 }

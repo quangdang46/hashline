@@ -48,7 +48,7 @@ pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
 
     let normalized = normalize_anchor_input(trimmed);
 
-    if normalized.contains("..") {
+    if normalized.contains("..") || normalized.contains(".=") {
         return Err(HashlineError::InvalidAnchor {
             anchor: trimmed.to_owned(),
         });
@@ -66,13 +66,16 @@ pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
 
 pub fn parse_range(s: &str) -> Result<RangeAnchor, HashlineError> {
     let normalized = normalize_anchor_input(s);
+
+    // Try `..` separator first, then `.=`
     let (left, right) = normalized
         .split_once("..")
+        .or_else(|| normalized.split_once(".="))
         .ok_or_else(|| HashlineError::InvalidRange {
             range: s.trim().to_owned(),
         })?;
 
-    if right.contains("..") {
+    if right.contains("..") || right.contains(".=") {
         return Err(HashlineError::InvalidRange {
             range: s.trim().to_owned(),
         });
@@ -315,7 +318,7 @@ fn parse_line_number(raw: &str, original: &str) -> Result<usize, HashlineError> 
 /// Try to parse a simple "line:hexhash" anchor.
 pub fn try_parse_line_anchor(anchor: &str) -> Option<(usize, ShortHash)> {
     let normalized = anchor.trim();
-    if normalized.contains("..") {
+    if normalized.contains("..") || normalized.contains(".=") {
         return None;
     }
     parse_anchor(normalized).ok().and_then(|a| match a {
@@ -478,6 +481,36 @@ mod tests {
         let fc = make_fc("alpha\nbeta\n");
         let error = resolve(&Anchor::Hash { short: 0xff }, &fc).unwrap_err();
         assert!(matches!(error, HashlineError::HashNotFound { .. }));
+    }
+
+    #[test]
+    fn test_parse_range_dot_eq() {
+        let range = parse_range("2:f1.=4:9c").unwrap();
+        assert_eq!(
+            range.start,
+            Anchor::LineHash {
+                line: 2,
+                short: 0xf1
+            }
+        );
+        assert_eq!(
+            range.end,
+            Anchor::LineHash {
+                line: 4,
+                short: 0x9c
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchor_rejects_dot_eq() {
+        let err = parse_anchor("2:f1.=4:9c").unwrap_err();
+        assert!(matches!(err, HashlineError::InvalidAnchor { .. }));
+    }
+
+    #[test]
+    fn test_try_parse_line_anchor_rejects_dot_eq() {
+        assert!(try_parse_line_anchor("2:f1.=4:9c").is_none());
     }
 
     #[test]

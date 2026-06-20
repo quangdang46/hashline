@@ -93,6 +93,7 @@ pub fn resolve_block_edits(
                             index: synth_index,
                             mode: None,
                             block_start: None,
+                            expected_hash: None,
                         });
                         synth_index += 1;
                     }
@@ -142,6 +143,7 @@ pub fn resolve_block_edits(
                             index: synth_index,
                             mode: None,
                             block_start: Some(start),
+                            expected_hash: None,
                         });
                         synth_index += 1;
                     }
@@ -161,6 +163,7 @@ pub fn resolve_block_edits(
                         index: synth_index,
                         mode: Some(InsertMode::Replacement),
                         block_start: None,
+                        expected_hash: None,
                     });
                     synth_index += 1;
                 }
@@ -169,6 +172,7 @@ pub fn resolve_block_edits(
                         anchor: Anchor { line },
                         line_num: *line_num,
                         index: synth_index,
+                        expected_hash: None,
                     });
                     synth_index += 1;
                 }
