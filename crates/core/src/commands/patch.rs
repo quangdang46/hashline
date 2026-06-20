@@ -409,43 +409,12 @@ pub fn apply_edits(
 
             // ---- INS.PRE / INS.POST / INS.HEAD / INS.TAIL --------------------
             Edit::Insert { cursor, text, .. } => {
-                let mut base_line = match cursor {
+                let base_line = match cursor {
                     Cursor::BeforeAnchor(a) => a.line.wrapping_sub(1),
                     Cursor::AfterAnchor(a) => a.line,
                     Cursor::Bof => 0,
                     Cursor::Eof => lines.len(),
                 };
-
-                // Landing correction for INS.POST: if body indentation is
-                // shallower than the anchor line, slide forward past structural
-                // closer lines (outward correction).
-                if let Cursor::AfterAnchor(a) = cursor {
-                    let body_indent = leading_ws(text);
-                    let anchor_idx = a.line.wrapping_sub(1);
-                    if anchor_idx < lines.len() && anchor_idx < entries.len() {
-                        let anchor_indent = leading_ws(&lines[anchor_idx]);
-                        if body_indent < anchor_indent && body_indent > 0 {
-                            // Scan forward past structural closers
-                            let mut scan = a.line; // 1-indexed
-                            while scan < lines.len() {
-                                let line_text = &lines[scan];
-                                let trimmed = line_text.trim();
-                                if trimmed.is_empty() || is_structural_closer_line(trimmed) {
-                                    scan += 1;
-                                    continue;
-                                }
-                                // If we hit a line at the body's depth, stop there
-                                if leading_ws(line_text) >= body_indent {
-                                    break;
-                                }
-                                break;
-                            }
-                            if scan > a.line {
-                                base_line = scan; // slide past closers
-                            }
-                        }
-                    }
-                }
 
                 let offset = insert_count.get(&base_line).copied().unwrap_or(0);
                 insert_count.insert(base_line, offset + 1);
@@ -496,32 +465,7 @@ pub fn apply_edits(
                     }
                     Some(BlockMode::InsertAfter) => {
                         // INS.BLK.POST N: insert after the last line of the block
-                        // Apply inward landing correction: if the first payload line
-                        // is indented DEEPER than the block's closing line, the
-                        // content likely belongs inside the block, not after it.
-                        let closer_line = &lines[block_end];
-                        let closer_indent = leading_ws(closer_line);
-                        let first_payload_indent =
-                            payloads.first().map(|p| leading_ws(p)).unwrap_or(0);
-
-                        let insert_pos =
-                            if first_payload_indent > closer_indent && first_payload_indent > 0 {
-                                // Slide backward to just before the first structural closer
-                                let mut pos = block_end;
-                                for scan in (block_start + 1..=block_end).rev() {
-                                    let trimmed = lines[scan].trim();
-                                    if is_structural_closer_line(trimmed) || trimmed.is_empty() {
-                                        pos = scan;
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                pos
-                            } else {
-                                block_end + 1
-                            };
-
-                        let insert_pos = insert_pos.min(lines.len());
+                        let insert_pos = (block_end + 1).min(lines.len());
                         for (k, payload) in payloads.iter().enumerate() {
                             lines.insert(insert_pos + k, payload.clone());
                         }
