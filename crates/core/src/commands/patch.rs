@@ -450,6 +450,10 @@ pub fn apply_edits(
                         for _ in block_start..=block_end.min(lines.len().saturating_sub(1)) {
                             lines.remove(block_start);
                         }
+                        // Consume trailing blank lines after deleted block
+                        while block_start < lines.len() && lines[block_start].trim().is_empty() {
+                            lines.remove(block_start);
+                        }
                     }
                     None => {
                         // SWAP.BLK N: replace the entire block (header + body) with payload
@@ -637,6 +641,9 @@ fn find_block_from_header(
     let si = leading_ws(&entries[start].content);
     let mut end = entries.len() - 1;
     for i in (start + 1)..entries.len() {
+        if entries[i].content.trim().is_empty() {
+            continue;
+        }
         if leading_ws(&entries[i].content) <= si {
             end = i.saturating_sub(1);
             break;
@@ -745,10 +752,18 @@ mod tests {
 
     fn apply_text_ext(original: &str, patch_text: &str, ext: &str) -> String {
         let (edits, _warnings) = parse_patch(patch_text);
-        let mut lines: Vec<String> = if original.is_empty() {
-            Vec::new()
-        } else {
-            original.split('\n').map(|s| s.to_string()).collect()
+        let mut lines: Vec<String> = {
+            if original.is_empty() {
+                Vec::new()
+            } else {
+                let mut parts: Vec<&str> = original.split('\n').collect();
+                // Drop trailing empty from split when string ends with '\n',
+                // matching split_normalized in production code.
+                if original.ends_with('\n') && parts.last() == Some(&"") {
+                    parts.pop();
+                }
+                parts.iter().map(|s| s.to_string()).collect()
+            }
         };
         let path_str = format!("test.{ext}");
         let entries_with_content: Vec<crate::document::LineEntry> = lines
@@ -860,7 +875,7 @@ mod tests {
         let patch = "SWAP.BLK 1:\n+fn replaced() {\n+    // new body\n+}\n";
         let result = apply_text(original, patch);
         // The old block (6 lines) is replaced with 3 replacement lines
-        assert_eq!(result, "fn replaced() {\n    // new body\n}\n");
+        assert_eq!(result, "fn replaced() {\n    // new body\n}");
     }
 
     #[test]
@@ -872,7 +887,7 @@ mod tests {
         let result = apply_text(original, patch);
         assert_eq!(
             result,
-            "fn hello() {\n    let x = 1;\nif false {\n        // nothing\n    }\n}\n"
+            "fn hello() {\n    let x = 1;\nif false {\n        // nothing\n    }\n}"
         );
     }
 
@@ -885,13 +900,53 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_block_python_with_trailing_blank() {
+        // Python: two functions separated by a blank line
+        // DEL.BLK 1 should consume the trailing blank
+        let original = "def alpha():\n    pass\n\ndef beta():\n    pass\n";
+        let patch = "DEL.BLK 1";
+        let result = apply_text_ext(original, patch, "py");
+        assert_eq!(result, "def beta():\n    pass");
+    }
+
+    #[test]
+    fn test_delete_block_rust_with_trailing_blank() {
+        // Rust: two brace-delimited functions separated by a blank line
+        // DEL.BLK 1 should consume the trailing blank
+        let original = "fn alpha() {\n}\n\nfn beta() {\n}\n";
+        let patch = "DEL.BLK 1";
+        let result = apply_text(original, patch);
+        assert_eq!(result, "fn beta() {\n}");
+    }
+
+    #[test]
+    fn test_delete_block_at_eof_noop() {
+        // Single function at EOF — no trailing blank, just deletion.
+        // Already passes; regression guard.
+        let original = "fn alpha() {\n    let x = 1;\n}\n";
+        let patch = "DEL.BLK 1";
+        let result = apply_text(original, patch);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_delete_block_multiple_blanks_between() {
+        // Two functions separated by two blank lines.
+        // DEL.BLK 1 should consume both blanks.
+        let original = "fn alpha() {\n}\n\n\nfn beta() {\n}\n";
+        let patch = "DEL.BLK 1";
+        let result = apply_text(original, patch);
+        assert_eq!(result, "fn beta() {\n}");
+    }
+
+    #[test]
     fn test_insert_after_block_rust() {
         let original = "fn hello() {\n    let x = 1;\n}\n";
         let patch = "INS.BLK.POST 1:\n+fn world() {\n+    let y = 2;\n+}\n";
         let result = apply_text(original, patch);
         assert_eq!(
             result,
-            "fn hello() {\n    let x = 1;\n}\nfn world() {\n    let y = 2;\n}\n"
+            "fn hello() {\n    let x = 1;\n}\nfn world() {\n    let y = 2;\n}"
         );
     }
 
@@ -899,7 +954,7 @@ mod tests {
     fn test_swap_block_python() {
         let original = "def hello():\n    x = 1\n    if True:\n        print('ok')\n    return x\n";
         let result = apply_text_ext(original, "SWAP.BLK 1:\n+def hi():\n+    pass\n", "py");
-        assert_eq!(result, "def hi():\n    pass\n");
+        assert_eq!(result, "def hi():\n    pass");
     }
 
     // ---- Empty-patch detection (fixes #58) ----
