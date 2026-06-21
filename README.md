@@ -31,7 +31,7 @@ cargo install --path crates/core
 
 - Built for **Claude Code** and **AI coding agents**
 - Uses **file-level snapshot tags** to detect stale reads
-- File-level snapshot tags: `[path#1A2B]` header + `LINE|content` lines
+- File-level snapshot tags: `[path#HASH]` header + `LINE:hash|content` lines
 - Simplified command surface: `read`, `patch`, `find-block`, `serve`, `mcp`
 
 ## The Format
@@ -40,14 +40,14 @@ cargo install --path crates/core
 
 ```
 [/path/to/file#1A2B]
-1|function verifyToken(token) {
-2|  const decoded = jwt.verify(token, process.env.SECRET)
-3|  if (!decoded.exp) throw new TokenError('missing expiry')
-4|  return decoded
-5|}
+ 1:a1|function verifyToken(token) {
+ 2:b2|  const decoded = jwt.verify(token, process.env.SECRET)
+ 3:c3|  if (!decoded.exp) throw new TokenError('missing expiry')
+ 4:d4|  return decoded
+ 5:e5|}
 ```
 
-Format: `[path/file#HASH]` header followed by `LINE|content`. The 4-hex HASH
+Format: `[path/file#HASH]` header followed by `LINE:hash|content`. The 4-hex HASH
 is computed over the entire file content (xxh3-64, top 16 bits). Every `read`
 session shows the fresh hash so agents can detect when a file has been modified
 since it was last read.
