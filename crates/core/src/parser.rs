@@ -246,12 +246,15 @@ impl Executor {
         // Check for unknown operation keywords — lines like `FOO 1:` or `BAR.BAZ 5:`
         // that look like they're trying to be hunk operations but failed to parse.
         if !text.trim().is_empty() {
-            let first_word_end = text.find([' ', '.', ':'])
-                .unwrap_or(text.len());
+            let first_word_end = text.find([' ', '.', ':']).unwrap_or(text.len());
             let first_word = &text[..first_word_end];
             if first_word.len() >= 2
-                && first_word.chars().all(|c| c.is_ascii_uppercase() || c == '.')
-                && !self.warnings.contains(&format!("unknown operation `{first_word}`"))
+                && first_word
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c == '.')
+                && !self
+                    .warnings
+                    .contains(&format!("unknown operation `{first_word}`"))
             {
                 self.warnings.push(format!(
                     "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
