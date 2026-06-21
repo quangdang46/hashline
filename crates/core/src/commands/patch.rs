@@ -736,6 +736,7 @@ fn leading_ws(s: &str) -> usize {
 }
 
 /// Check if a trimmed line is a structural closer (pure braces, end keyword, etc.).
+#[allow(dead_code)]
 fn is_structural_closer_line(trimmed: &str) -> bool {
     trimmed == "}"
         || trimmed == "});"

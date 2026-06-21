@@ -498,7 +498,7 @@ mod tests {
     fn test_resolve_qualified_stale_when_hash_exists() {
         // Make file with known hashes, then resolve with wrong content at the line
         let content = "alpha\nchanged\n";
-        let fc = make_fc(&content);
+        let fc = make_fc(content);
         let entries = fc.lines_with_hashes();
         let hash = entries[1].short_hash; // real hash of "changed"
         // Use hash that matches something else in a different file scenario
