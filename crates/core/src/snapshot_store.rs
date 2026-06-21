@@ -203,10 +203,7 @@ impl SnapshotStore for InMemorySnapshotStore {
         // Scope the mutable borrow of self.versions so we can touch
         // self.access_order afterwards.
         {
-            let history = self
-                .versions
-                .entry(path.to_owned())
-                .or_default();
+            let history = self.versions.entry(path.to_owned()).or_default();
 
             // Read fusion: same content observed again.
             if let Some(pos) = history.iter().position(|s| s.hash == hash) {
