@@ -135,7 +135,7 @@ hashline mcp
 
 | Op | Syntax | Description |
 |----|--------|-------------|
-| Read | `hashline read <file>` | `[path#HASH]` header + `LINE|content` |
+| Read | `hashline read <file>` | `[path#HASH]` header + `LINE:hash|content` |
 | Read JSON | `hashline read <file> --json` | Machine-readable JSON output |
 | Guide | `hashline guide` | Interactive user guide with anchor format, patch ops, MCP setup, examples |
 | Swap (replace) | `SWAP N:` / `SWAP N..M:` + `+content` | Replace single line or range |
