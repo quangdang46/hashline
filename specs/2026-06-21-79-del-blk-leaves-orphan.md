@@ -5,8 +5,8 @@
 | Issue | [#79](https://github.com/quangdang46/hashline/issues/79) — DEL.BLK leaves orphan blank line |
 | Date | 2026-06-21 |
 | Author | Agent (hermes) |
-| Status | Draft |
-| Version | 1 |
+| Status | Implemented |
+| Version | 2 |
 
 ## Problem
 
@@ -213,3 +213,17 @@ cargo test  # Must pass all existing and new tests
 
 No config, CLI, or documentation changes needed — this is a pure behavioural
 fix that makes `DEL.BLK` match user expectations.
+
+## Implementation
+
+The fix was implemented in commit `87834a7` (PR [#82](https://github.com/quangdang46/hashline/pull/82)):
+
+| Item | Status |
+|------|--------|
+| Fix 1: blank-line skip in `find_block_from_header` | ✅ Merged in `patch.rs` |
+| Fix 2: trailing-blank cleanup after DEL.BLK | ✅ Merged in `patch.rs` |
+| `test_delete_block_python_with_trailing_blank` | ✅ Passes |
+| `test_delete_block_rust_with_trailing_blank` | ✅ Passes |
+| `test_delete_block_at_eof_noop` | ✅ Passes (regression guard) |
+| `test_delete_block_multiple_blanks_between` | ✅ Passes |
+| All existing tests (200+ total) | ✅ All pass with `cargo test` |
