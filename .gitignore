@@ -14,3 +14,6 @@ bench-results/.linehash/
 
 # Claude Code workspaces
 .claude/
+
+# rustc Internal Compiler Error dumps
+rustc-ice-*.txt

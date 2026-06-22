@@ -44,6 +44,7 @@ fn is_digit_code(c: u8) -> bool {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn is_non_zero_digit_code(c: u8) -> bool {
     c > CHAR_ZERO && c <= CHAR_NINE
 }
