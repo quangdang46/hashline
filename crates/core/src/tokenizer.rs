@@ -244,7 +244,7 @@ fn scan_header_range(
             end: Anchor { line: end_num.line },
         },
         next_index: skip_whitespace(bytes, end_num.next_index, end),
-                hash,
+        hash,
     })
 }
 
