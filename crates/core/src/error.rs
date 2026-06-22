@@ -93,8 +93,8 @@ pub enum HashlineError {
         given_file: String,
     },
 
-    #[error("explode target '{path}' already exists — use --force to overwrite it")]
-    ExplodeTargetExists { path: String },
+    #[error("target '{path}' already exists — use --force to overwrite it")]
+    TargetExists { path: String },
 
     #[error("implode directory '{path}' is missing .meta.json")]
     ImplodeMissingMeta { path: String },
@@ -249,8 +249,8 @@ impl HashlineError {
             HashlineError::DiffFileMismatch { .. } => {
                 Some("check that the diff target matches the file argument and retry")
             }
-            HashlineError::ExplodeTargetExists { .. } => {
-                Some("remove the output directory first or rerun with --force")
+            HashlineError::TargetExists { .. } => {
+                Some("use --force to overwrite the existing file")
             }
             HashlineError::ImplodeMissingMeta { .. } => Some(
                 "run `hashline explode <file> --out <dir>` first or restore the missing .meta.json",
@@ -355,7 +355,7 @@ impl HashlineError {
             | HashlineError::OutlineInputTooLarge { .. }
             | HashlineError::DiffHunkMismatch { .. }
             | HashlineError::DiffFileMismatch { .. }
-            | HashlineError::ExplodeTargetExists { .. }
+            | HashlineError::TargetExists { .. }
             | HashlineError::ImplodeMissingMeta { .. }
             | HashlineError::ImplodeInvalidMeta { .. }
             | HashlineError::ImplodeDirtyDirectory { .. }
@@ -468,7 +468,7 @@ mod tests {
                 diff_file: "a/demo.txt".into(),
                 given_file: "demo.txt".into(),
             },
-            HashlineError::ExplodeTargetExists {
+            HashlineError::TargetExists {
                 path: "out/dir".into(),
             },
             HashlineError::ImplodeMissingMeta {

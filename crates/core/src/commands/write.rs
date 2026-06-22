@@ -12,7 +12,7 @@ pub fn run<W: Write, E: Write>(
 ) -> Result<(), HashlineError> {
     // 1. Check file exists — refuse unless --force
     if cmd.file.exists() && !cmd.force {
-        return Err(HashlineError::ExplodeTargetExists {
+        return Err(HashlineError::TargetExists {
             path: cmd.file.display().to_string(),
         });
     }

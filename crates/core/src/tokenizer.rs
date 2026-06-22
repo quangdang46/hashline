@@ -173,6 +173,7 @@ pub fn parse_lid(raw: &str, line_num: usize) -> Result<Anchor, String> {
 struct RangeScan {
     range: ParsedRange,
     next_index: usize,
+    hash: Option<u8>,
 }
 
 fn scan_range_separator(bytes: &[u8], index: usize, end: usize) -> Option<usize> {
@@ -218,7 +219,8 @@ fn scan_header_range(
 ) -> Option<RangeScan> {
     let number_start = skip_whitespace(bytes, index, end);
     let start = scan_line_number(bytes, number_start, end)?;
-    let after_first = scan_range_separator(bytes, start.next_index, end);
+    let (after_hash, hash) = consume_with_hash(bytes, start.next_index, end);
+    let after_first = scan_range_separator(bytes, after_hash, end);
     let after_first = match after_first {
         Some(idx) => idx,
         None => {
@@ -230,7 +232,8 @@ fn scan_header_range(
                     start: Anchor { line: start.line },
                     end: Anchor { line: start.line },
                 },
-                next_index: skip_whitespace(bytes, start.next_index, end),
+                next_index: skip_whitespace(bytes, after_hash, end),
+                hash,
             });
         }
     };
@@ -241,6 +244,7 @@ fn scan_header_range(
             end: Anchor { line: end_num.line },
         },
         next_index: skip_whitespace(bytes, end_num.next_index, end),
+                hash,
     })
 }
 
@@ -404,9 +408,9 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // SWAP N..=M:
     if let Some(replace_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_KEYWORD) {
         let range = scan_header_range(bytes, replace_end, end, true)?;
-        let (next, hash) = consume_with_hash(bytes, range.next_index, end);
+        let (next, _) = consume_with_hash(bytes, range.next_index, end);
         return Some(TargetScan {
-            target: BlockTarget::Replace(range.range, hash),
+            target: BlockTarget::Replace(range.range, range.hash),
             next_index: next,
         });
     }
@@ -428,14 +432,14 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // DEL N..=M (no colon, but may have :HH: hash suffix)
     if let Some(delete_end) = scan_keyword(bytes, cursor, end, HL_DELETE_KEYWORD) {
         let range = scan_header_range(bytes, delete_end, end, true)?;
-        let (next, hash) = consume_with_hash(bytes, range.next_index, end);
+        let (next, _) = consume_with_hash(bytes, range.next_index, end);
         // Ensure DEL does not take a body (a colon after the optional hash
         // suffix means there's trailing content, which DEL doesn't accept).
         if next < end && bytes[next] == CHAR_COLON {
             return None;
         }
         return Some(TargetScan {
-            target: BlockTarget::Delete(range.range, hash),
+            target: BlockTarget::Delete(range.range, range.hash),
             next_index: next,
         });
     }

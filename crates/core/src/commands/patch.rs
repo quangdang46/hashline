@@ -450,6 +450,12 @@ pub fn apply_edits(
                         for _ in block_start..=block_end.min(lines.len().saturating_sub(1)) {
                             lines.remove(block_start);
                         }
+                        // Consume trailing blank line after the deleted block
+                        // so that the next block or content is flush against
+                        // the deleted block's position.
+                        if block_start < lines.len() && lines[block_start].trim().is_empty() {
+                            lines.remove(block_start);
+                        }
                     }
                     None => {
                         // SWAP.BLK N: replace the entire block (header + body) with payload

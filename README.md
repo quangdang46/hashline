@@ -32,7 +32,7 @@ cargo install --path crates/core
 - Built for **Claude Code** and **AI coding agents**
 - Uses **file-level snapshot tags** to detect stale reads
 - File-level snapshot tags: `[path#HASH]` header + `LINE:hash|content` lines
-- Simplified command surface: `read`, `patch`, `find-block`, `serve`, `mcp`
+- Simplified command surface: `read`, `patch`, `write`, `find-block`, `guide`, `serve`, `mcp`
 
 ## The Format
 
@@ -138,6 +138,7 @@ hashline mcp
 | Read | `hashline read <file>` | `[path#HASH]` header + `LINE:hash|content` |
 | Read JSON | `hashline read <file> --json` | Machine-readable JSON output |
 | Guide | `hashline guide` | Interactive user guide with anchor format, patch ops, MCP setup, examples |
+|| Write | `hashline write <file> <content>` | Write content to a new file (or overwrite with --force) |
 | Swap (replace) | `SWAP N:` / `SWAP N..M:` + `+content` | Replace single line or range |
 | Delete | `DEL N` / `DEL N..M` | Delete single line or range |
 | Insert before | `INS.PRE N:` + `+content` | Insert content before line N |
@@ -232,17 +233,20 @@ everything you need in one place.
 |---------|-------------|
 | `read` | Read a file with `[path#HASH]` header and numbered lines |
 | `patch` | Apply a hashline patch (SWAP/DEL/INS.*/SWAP.BLK/DEL.BLK/INS.BLK.POST) |
+|| `write` | Write content to a file (creates new or overwrites with --force) |
+|| `guide` | Show interactive user guide with anchor format, patch ops, MCP setup, examples |
 | `find-block` | Find the enclosing structural block around an anchor |
 | `serve` | Run as a daemon over Unix socket or HTTP |
-| `mcp` | Run as an MCP stdio server with 3 tools |
+    `mcp` | Run as an MCP stdio server with 4 tools |
 
 ## MCP server
 
-`hashline` ships with a stdio MCP server exposing 3 tools:
+`hashline` ships with a stdio MCP server exposing 4 tools:
 
 ```
 read                 — Read a file with [path#HASH] header + numbered lines
 patch                — Apply a patch (SWAP/DEL/INS.*/BLK.*)
+write                — Write content to a new file (overwrites with force=true)
 find_block           — Find enclosing syntactic block around an anchor
 
 (legacy aliases `hashline_read`, `hashline_patch`, `hashline_find_block` remain accepted)
@@ -255,6 +259,57 @@ hashline mcp
 The `install.sh` / `install.ps1` scripts auto-detect supported MCP host configs
 (claude-code, codex, cursor, windsurf, vscode, gemini, opencode, amp, droid)
 and upsert a `hashline` server entry for each.
+
+## Serve (daemon / HTTP API)
+
+\`hashline serve\` runs as a background daemon that accepts requests over a
+Unix socket (default: \`~/.hashline/daemon.sock\`) or HTTP.
+
+\`\`\`bash
+# Start daemon on HTTP port
+hashline serve --http 17300
+
+# Start daemon on Unix socket (default)
+hashline serve
+
+# Detach to background
+hashline serve --http 17300 --detach
+\`\`\`
+
+When the daemon is running, agents can use \`HASHLINE_URL\` to route \`hashline\`
+commands through it:
+
+\`\`\`bash
+export HASHLINE_URL=http://127.0.0.1:17300
+hashline read src/file
+\`\`\`
+
+For Unix socket:
+
+\`\`\`bash
+export HASHLINE_SOCKET=~/.hashline/daemon.sock
+hashline read src/file
+\`\`\`
+
+### HTTP API
+
+The HTTP server exposes a JSON-RPC endpoint at \`POST /rpc\`:
+
+\`\`\`bash
+curl -X POST http://127.0.0.1:17300/rpc \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "read",
+      "arguments": { "path": "src/file.ts" }
+    },
+    "id": 1
+  }'
+\`\`\`
+
+Available tools via JSON-RPC: \`read\`, \`patch\`, \`write\`, \`find_block\`.
 
 ## Agent Integration
 
