@@ -134,7 +134,7 @@ pub struct NumberScan {
 
 /// Scan a positive line number starting at `index` in `bytes` (slice up to `end`).
 pub fn scan_line_number(bytes: &[u8], index: usize, end: usize) -> Option<NumberScan> {
-    if index >= end || !is_non_zero_digit_code(bytes[index]) {
+    if index >= end || !is_digit_code(bytes[index]) {
         return None;
     }
     let mut line_number: usize = 0;
@@ -205,7 +205,7 @@ fn scan_range_separator(bytes: &[u8], index: usize, end: usize) -> Option<usize>
     if !consumed {
         return None;
     }
-    if cursor >= end || !is_non_zero_digit_code(bytes[cursor]) {
+    if cursor >= end || !is_digit_code(bytes[cursor]) {
         return None;
     }
     Some(cursor)

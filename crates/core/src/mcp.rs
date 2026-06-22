@@ -519,7 +519,7 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
         Ok(fc) => fc,
         Err(e) => return format!("Error: {e}"),
     };
-    let (edits, warnings) = parse_patch(patch_str);
+    let (edits, warnings, _aborted) = parse_patch(patch_str);
 
     for w in &warnings {
         eprintln!("warning: {w}");

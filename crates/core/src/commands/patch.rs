@@ -18,7 +18,7 @@ pub fn run<W: Write, E: Write>(
 
     let fc = FileContent::load(&cmd.file)?;
     let text = &fc.normalized;
-    let (edits, warnings) = parse_patch(&patch_content);
+    let (edits, warnings, aborted) = parse_patch(&patch_content);
 
     // Surface parser warnings even when no edits were produced so callers
     // can tell a syntactically-broken patch from an empty one.
@@ -27,6 +27,9 @@ pub fn run<W: Write, E: Write>(
     }
 
     if edits.is_empty() {
+        if aborted {
+            return Ok(());
+        }
         if warnings.is_empty() {
             return Err(HashlineError::EmptyPatch);
         }
@@ -750,7 +753,7 @@ mod tests {
     use super::*;
 
     fn apply_text_ext(original: &str, patch_text: &str, ext: &str) -> String {
-        let (edits, _warnings) = parse_patch(patch_text);
+        let (edits, _warnings, _aborted) = parse_patch(patch_text);
         let mut lines: Vec<String> = if original.is_empty() {
             Vec::new()
         } else {
@@ -912,7 +915,7 @@ mod tests {
 
     /// Build a synthetic `Edit::Insert` for empty-patch assertions.
     fn parse_only(text: &str) -> Vec<crate::types::Edit> {
-        let (edits, _warnings) = parse_patch(text);
+        let (edits, _warnings, _aborted) = parse_patch(text);
         edits
     }
 
@@ -982,7 +985,8 @@ mod tests {
     #[test]
     fn test_minus_row_rejected_warning() {
         // A bare `-something` line should emit MINUS_ROW_REJECTED warning
-        let (_edits, warnings) = crate::parser::parse_patch("SWAP 2:\n+-ok\n-bad\n++also_ok");
+        let (_edits, warnings, _aborted) =
+            crate::parser::parse_patch("SWAP 2:\n+-ok\n-bad\n++also_ok");
         // The `-bad` line should generate a warning at least once
         let has_minus_warning = warnings
             .iter()

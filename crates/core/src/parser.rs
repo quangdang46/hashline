@@ -96,6 +96,7 @@ pub struct Executor {
     edit_index: usize,
     pending: Option<Pending>,
     terminated: bool,
+    aborted: bool,
 }
 
 impl Default for Executor {
@@ -112,6 +113,7 @@ impl Executor {
             edit_index: 0,
             pending: None,
             terminated: false,
+            aborted: false,
         }
     }
 
@@ -126,6 +128,7 @@ impl Executor {
             }
             Token::Abort { .. } => {
                 self.terminated = true;
+                self.aborted = true;
             }
             Token::Header { .. } => {
                 self.flush_pending();
@@ -161,15 +164,17 @@ impl Executor {
         }
     }
 
-    pub fn end(&mut self) -> (Vec<Edit>, Vec<String>) {
+    pub fn end(&mut self) -> (Vec<Edit>, Vec<String>, bool) {
         self.flush_pending();
         self.validate_no_overlapping_deletes();
         let edits = std::mem::take(&mut self.edits);
         let warnings = std::mem::take(&mut self.warnings);
+        let aborted = self.aborted;
         self.edit_index = 0;
         self.pending = None;
         self.terminated = false;
-        (edits, warnings)
+        self.aborted = false;
+        (edits, warnings, aborted)
     }
 
     fn handle_literal_payload(&mut self, text: &str, line_num: usize) {
@@ -689,11 +694,12 @@ mod merge_tests {
     }
 }
 
-/// Parse a complete patch diff body into `Edit`s.
-pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>) {
+/// Parse a complete patch diff body into `Edit`s plus a flag indicating
+/// whether parsing was halted by an `*** Abort` marker.
+pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, bool) {
     let merged = match merge_same_path_sections(diff) {
         Ok(m) => m,
-        Err(e) => return (Vec::new(), vec![e]),
+        Err(e) => return (Vec::new(), vec![e], false),
     };
     let tokenizer = crate::tokenizer::Tokenizer;
     let mut executor = Executor::new();
