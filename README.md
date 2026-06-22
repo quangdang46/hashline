@@ -117,6 +117,17 @@ hashline patch src/mod.rs 'SWAP.BLK 12:
 +    // new body
 +}'
 
+# Multi-op / large patches: pipe via stdin (no intermediate file)
+hashline patch src/auth.js - <<'EOF'
+*** Begin Patch
+SWAP 5:1a2b:
++  const decoded = jwt.verify(token, env.SECRET)
+SWAP 12:c3d4:
++  return decoded
+DEL 9
+*** End Patch
+EOF
+
 hashline patch src/main.py 'SWAP.BLK 1:
 +def new_func():
 +    pass'

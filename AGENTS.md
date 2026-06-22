@@ -59,7 +59,7 @@ Example output from `hashline read`:
 |---------|---------|
 | `hashline verify <file>` | Verify file integrity |
 | `hashline stats <file>` | File statistics |
-| `hashline patch <file> <patch-file>` | Apply patch by anchors |
+| `hashline patch <file> <patch>` | Apply patch: `-` stdin, `@path` file, or literal text |
 | `hashline swap <file> <anchor1> <anchor2>` | Swap two lines |
 | `hashline move <file> <anchor> <target-anchor>` | Move line to new position |
 | `hashline indent <file> <anchor> <levels>` | Adjust indentation |
@@ -113,6 +113,43 @@ hashline edit src/main.rs 10:a1b2..15:c3d4 "new content\nspanning\nmultiple line
 hashline delete src/main.rs 20:e5f6..25:g7h8
 ```
 
+### Multi-Line Patches (USE STDIN — never create .patch files)
+
+For multi-op patches, use `hashline patch` with stdin. **Never** write a `.patch` file to disk first:
+
+```bash
+# ✅ CORRECT — stdin via heredoc, no disk I/O
+hashline patch src/main.rs - <<'EOF'
+*** Begin Patch
+SWAP 42:a3f2:
++fn process_data(input: &str) -> Result<()> {
++    todo!()
++}
+SWAP 45:1a2b:
++    Ok(())
+*** End Patch
+EOF
+
+# ❌ WRONG — creates a stale .patch file littering /tmp
+cat > /tmp/something.patch <<'EOF'
+...patch content...
+EOF
+hashline patch src/main.rs @/tmp/something.patch
+```
+
+**Why stdin wins:**
+- No intermediate file on disk (no cleanup needed, no `/tmp` litter)
+- 1 process spawn vs 1 spawn + 1 file write + 1 file read
+- ~3x faster for typical patches
+- Atomic — patch content is bound to the command, not a stale file
+
+**`hashline patch <file> <patch>` argument modes:**
+- `hashline patch file -` → read from stdin
+- `hashline patch file @/path/to/file` → read from a file (only when patch is reused or pre-existing)
+- `hashline patch file "literal text"` → use the argument as-is (no newlines in shell-safe form)
+
+When in doubt: **stdin first, `@path` only if you already have a patch file on disk for another reason**.
+
 ### Safety Features
 
 **Stale anchor detection:**
@@ -154,6 +191,7 @@ hashline edit src/main.rs 42:a3f2 "new" --json
 - **Line shifted:** Nearby edits changed line numbers → hash still works, just re-read
 - **File deleted:** Obviously fails → check file exists before editing
 - **Binary file:** Only works on text files → don't use on binaries
+- **`.patch` file litter:** If you find yourself writing `cat > /tmp/foo.patch` before `hashline patch file @foo.patch` — STOP. Use stdin (`hashline patch file - <<'EOF' ... EOF`) instead. Creating the file is ~3x slower, leaves debris in `/tmp`, and gives you a stale-file footgun if the patch drifts before apply.
 
 ### Rules for Agents (MANDATORY — Philosophy of hashline)
 
@@ -174,6 +212,7 @@ hashline is NOT str_replace. It is NOT sed. It is NOT fuzzy matching. These rule
 - **Use `--dry-run` first** when editing critical files.
 - **Use `--json` output** for parsing in scripts.
 - **Never modify a file with hashline without having called `hashline read` on it first in the same logical edit session.**
+- **For multi-line patches, ALWAYS use stdin** (`hashline patch file - <<'EOF' ... EOF`). Never write a `.patch` file to disk first — it adds ~3x latency, clutters `/tmp`, and creates stale-file risk. `@path` is only for the rare case where a patch file already exists for another reason (e.g. test fixtures, version-controlled patches).
 
 **What hashline is NOT for:**
 - **Fuzzy replacement:** That's `str_replace`. hashline is anchor-based, not content-based.
