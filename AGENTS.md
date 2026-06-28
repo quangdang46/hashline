@@ -1,4 +1,3 @@
----
 ## hashline — Hash-Anchored File Editing
 
 `hashline` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. It's designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
