@@ -80,18 +80,6 @@ pub struct WriteCmd {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
-#[command(about = "Replace old_string with new_string in file (str_replace-style)")]
-pub struct ReplaceCmd {
-    pub file: PathBuf,
-    pub old_string: String,
-    pub new_string: String,
-    #[arg(long)]
-    pub json: bool,
-    #[arg(long)]
-    pub safe: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(about = "Show interactive user guide")]
 pub struct GuideCmd {
     #[arg(long)]
