@@ -278,6 +278,7 @@ fn scan_keyword(bytes: &[u8], index: usize, end: usize, keyword: &str) -> Option
         return None;
     }
     // Case-insensitive comparison (Bug #89-5)
+    #[allow(clippy::manual_ignore_case_cmp)]
     for (i, &k) in kw.iter().enumerate() {
         let b = bytes[index + i];
         if b.to_ascii_lowercase() != k.to_ascii_lowercase() {
