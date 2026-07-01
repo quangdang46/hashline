@@ -3,5 +3,7 @@ pub mod find_block;
 pub mod guide;
 pub mod patch;
 pub mod read;
+pub mod remove;
+pub mod rename;
 pub mod serve;
 pub mod write;

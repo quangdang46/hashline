@@ -152,6 +152,29 @@ fn tool_list() -> ToolList {
                     "required": ["file", "anchor"]
                 })),
             },
+            ToolDefinition {
+                name: "remove_file".into(),
+                description: "Delete a file".into(),
+                input_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string", "description": "Path to the file to delete"}
+                    },
+                    "required": ["file"]
+                })),
+            },
+            ToolDefinition {
+                name: "rename_file".into(),
+                description: "Rename (move) a file".into(),
+                input_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "src": {"type": "string", "description": "Source file path"},
+                        "dst": {"type": "string", "description": "Destination file path"}
+                    },
+                    "required": ["src", "dst"]
+                })),
+            },
         ],
     }
 }
@@ -451,13 +474,54 @@ fn leading_ws(s: &str) -> usize {
     s.len() - s.trim_start().len()
 }
 
+fn handle_remove_file(file: &str, json: bool) -> String {
+    let path = std::path::Path::new(file);
+    if !path.exists() {
+        return format!("Error: file not found: {file}");
+    }
+    match std::fs::remove_file(path) {
+        Ok(_) => {
+            if json {
+                serde_json::json!({"success": true, "file": file}).to_string()
+            } else {
+                format!("Removed {file}")
+            }
+        }
+        Err(e) => format!("Error: {e}"),
+    }
+}
+
+fn handle_rename_file(src: &str, dst: &str, json: bool) -> String {
+    let src_path = std::path::Path::new(src);
+    let dst_path = std::path::Path::new(dst);
+    if !src_path.exists() {
+        return format!("Error: source not found: {src}");
+    }
+    if dst_path.exists() {
+        return format!("Error: destination already exists: {dst}");
+    }
+    if let Some(parent) = dst_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(src_path, dst_path) {
+        Ok(_) => {
+            if json {
+                serde_json::json!({"success": true, "src": src, "dst": dst}).to_string()
+            } else {
+                format!("Renamed {src} -> {dst}")
+            }
+        }
+        Err(e) => format!("Error: {e}"),
+    }
+}
+
 fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
         Ok(fc) => fc,
         Err(e) => return format!("Error: {e}"),
     };
-    let (edits, warnings, _aborted) = parse_patch(patch_str);
+    let (edits, warnings, _file_op, _aborted) = parse_patch(patch_str);
 
     for w in &warnings {
         eprintln!("warning: {w}");
@@ -608,6 +672,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             Ok(
                 serde_json::json!({"content": [{"type": "text", "text": handle_find_block(file, anchor)}]}),
             )
+        }
+        "remove_file" => {
+            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
+            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_remove_file(file, json)}]}))
+        }
+        "rename_file" => {
+            let src = args.get("src").and_then(|v| v.as_str()).ok_or("missing 'src'")?;
+            let dst = args.get("dst").and_then(|v| v.as_str()).ok_or("missing 'dst'")?;
+            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_rename_file(src, dst, json)}]}))
         }
         _ => Err(format!("unknown tool: {name}")),
     }

@@ -24,6 +24,8 @@ pub enum Commands {
     Guide(GuideCmd),
     Serve(ServeCmd),
     Mcp(McpCmd),
+    Remove(RemoveCmd),
+    Rename(RenameCmd),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
@@ -104,4 +106,21 @@ pub struct ServeCmd {
 pub struct McpCmd {
     #[arg(long)]
     pub proxy_to_daemon: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(about = "Delete a file")]
+pub struct RemoveCmd {
+    pub file: PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(about = "Rename (move) a file")]
+pub struct RenameCmd {
+    pub src: PathBuf,
+    pub dst: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }

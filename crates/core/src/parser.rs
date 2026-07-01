@@ -9,7 +9,7 @@ use crate::messages::{BARE_BODY_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED};
 use crate::patch_format::HL_RANGE_SEP;
 use crate::prefixes::strip_one_hashline_prefix;
 use crate::tokenizer::{BlockTarget, Token, clone_cursor};
-use crate::types::{Anchor, BlockMode, Cursor, Edit, InsertMode, ParsedRange};
+use crate::types::{Anchor, BlockMode, Cursor, Edit, FileOp, InsertMode, ParsedRange};
 
 fn validate_range_order(range: &ParsedRange, line_num: usize) -> Result<(), String> {
     if range.end.line < range.start.line {
@@ -93,6 +93,7 @@ struct Pending {
 pub struct Executor {
     edits: Vec<Edit>,
     warnings: Vec<String>,
+    file_op: Option<FileOp>,
     edit_index: usize,
     pending: Option<Pending>,
     terminated: bool,
@@ -110,6 +111,7 @@ impl Executor {
         Self {
             edits: Vec::new(),
             warnings: Vec::new(),
+            file_op: None,
             edit_index: 0,
             pending: None,
             terminated: false,
@@ -164,17 +166,18 @@ impl Executor {
         }
     }
 
-    pub fn end(&mut self) -> (Vec<Edit>, Vec<String>, bool) {
+    pub fn end(&mut self) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool) {
         self.flush_pending();
         self.validate_no_overlapping_deletes();
         let edits = std::mem::take(&mut self.edits);
         let warnings = std::mem::take(&mut self.warnings);
+        let file_op = self.file_op.take();
         let aborted = self.aborted;
         self.edit_index = 0;
         self.pending = None;
         self.terminated = false;
         self.aborted = false;
-        (edits, warnings, aborted)
+        (edits, warnings, file_op, aborted)
     }
 
     fn handle_literal_payload(&mut self, text: &str, line_num: usize) {
@@ -288,6 +291,23 @@ impl Executor {
             line_num: 0,
             bare: true,
         });
+    }
+
+    fn set_file_op(&mut self, file_op: FileOp, line_num: usize) -> Result<(), String> {
+        if self.file_op.is_some() {
+            return Err(format!(
+                "line {}: only one file-level op (`REM` or `MV`) per section. Merge them under one header.",
+                line_num
+            ));
+        }
+        if matches!(&file_op, FileOp::Remove) && !self.edits.is_empty() {
+            return Err(format!(
+                "line {}: `REM` deletes the whole file and cannot be combined with line ops.",
+                line_num
+            ));
+        }
+        self.file_op = Some(file_op);
+        Ok(())
     }
 
     fn strip_bare_prefixes_if_uniform(payloads: &mut Vec<PayloadRow>) -> bool {
@@ -509,12 +529,14 @@ impl Executor {
                 }
             }
             BlockTarget::Remove => {
-                // REM is a whole-file operation with no payload;
-                // routing via FileOp::Remove happens at a higher level.
+                if let Err(e) = self.set_file_op(FileOp::Remove, line_num) {
+                    self.warnings.push(e);
+                }
             }
-            BlockTarget::MoveTo(_dest) => {
-                // MV is a whole-file rename with no payload;
-                // routing via FileOp::Rename happens at a higher level.
+            BlockTarget::MoveTo(dest) => {
+                if let Err(e) = self.set_file_op(FileOp::Rename(dest.clone()), line_num) {
+                    self.warnings.push(e);
+                }
             }
         }
     }
@@ -719,12 +741,12 @@ mod merge_tests {
     }
 }
 
-/// Parse a complete patch diff body into `Edit`s plus a flag indicating
-/// whether parsing was halted by an `*** Abort` marker.
-pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, bool) {
+/// Parse a complete patch diff body into `Edit`s, warnings, file-level operations,
+/// and a flag indicating whether parsing was halted by an `*** Abort` marker.
+pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool) {
     let merged = match merge_same_path_sections(diff) {
         Ok(m) => m,
-        Err(e) => return (Vec::new(), vec![e], false),
+        Err(e) => return (Vec::new(), vec![e], None, false),
     };
     let tokenizer = crate::tokenizer::Tokenizer;
     let mut executor = Executor::new();

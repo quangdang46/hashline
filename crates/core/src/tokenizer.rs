@@ -404,7 +404,33 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
     None
 }
 
-fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan> {
+fn scan_mv_dest(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<String> {
+    let cursor = skip_whitespace(bytes, start, end);
+    if cursor >= end { return None; }
+    if bytes[cursor] == b'\"' || bytes[cursor] == b'\'' {
+        let quote = bytes[cursor];
+        let mut next = cursor + 1;
+        while next < end {
+            if bytes[next] == b'\\' && next + 1 < end { next += 2; continue; }
+            if bytes[next] == quote {
+                let after = skip_whitespace(bytes, next + 1, end);
+                if after == end {
+                    // Strip quotes
+                    let inner = &line[cursor + 1..next];
+                    return Some(inner.to_string());
+                }
+                return None;
+            }
+            next += 1;
+        }
+        return None;
+    }
+    // Unquoted: take remainder trimmed
+    let raw = std::str::from_utf8(&bytes[cursor..end]).unwrap_or("").trim().to_string();
+    if raw.is_empty() { None } else { Some(raw) }
+}
+
+fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<TargetScan> {
     let cursor = skip_whitespace(bytes, start, end);
 
     // SWAP.BLK N:
@@ -504,12 +530,7 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
 
     // MV path — rename/move file to destination path
     if let Some(mv_end) = scan_keyword(bytes, cursor, end, HL_MV_KEYWORD) {
-        let rest_start = skip_whitespace(bytes, mv_end, end);
-        if rest_start < end {
-            let dest = std::str::from_utf8(&bytes[rest_start..end])
-                .unwrap_or("")
-                .trim()
-                .to_string();
+        if let Some(dest) = scan_mv_dest(line, bytes, mv_end, end) {
             if !dest.is_empty() {
                 return Some(TargetScan {
                     target: BlockTarget::MoveTo(dest),
@@ -529,7 +550,7 @@ fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
     if start >= end {
         return None;
     }
-    let scan = scan_hunk_anchor(bytes, start, end)?;
+    let scan = scan_hunk_anchor(line, bytes, start, end)?;
     if scan.next_index != end {
         return None;
     }
