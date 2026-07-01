@@ -674,15 +674,28 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             )
         }
         "remove_file" => {
-            let file = args.get("file").and_then(|v| v.as_str()).ok_or("missing 'file'")?;
+            let file = args
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'file'")?;
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_remove_file(file, json)}]}))
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_remove_file(file, json)}]}),
+            )
         }
         "rename_file" => {
-            let src = args.get("src").and_then(|v| v.as_str()).ok_or("missing 'src'")?;
-            let dst = args.get("dst").and_then(|v| v.as_str()).ok_or("missing 'dst'")?;
+            let src = args
+                .get("src")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'src'")?;
+            let dst = args
+                .get("dst")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'dst'")?;
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_rename_file(src, dst, json)}]}))
+            Ok(
+                serde_json::json!({"content": [{"type": "text", "text": handle_rename_file(src, dst, json)}]}),
+            )
         }
         _ => Err(format!("unknown tool: {name}")),
     }

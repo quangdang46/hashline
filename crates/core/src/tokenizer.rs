@@ -406,12 +406,17 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
 
 fn scan_mv_dest(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<String> {
     let cursor = skip_whitespace(bytes, start, end);
-    if cursor >= end { return None; }
+    if cursor >= end {
+        return None;
+    }
     if bytes[cursor] == b'\"' || bytes[cursor] == b'\'' {
         let quote = bytes[cursor];
         let mut next = cursor + 1;
         while next < end {
-            if bytes[next] == b'\\' && next + 1 < end { next += 2; continue; }
+            if bytes[next] == b'\\' && next + 1 < end {
+                next += 2;
+                continue;
+            }
             if bytes[next] == quote {
                 let after = skip_whitespace(bytes, next + 1, end);
                 if after == end {
@@ -426,7 +431,10 @@ fn scan_mv_dest(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<St
         return None;
     }
     // Unquoted: take remainder trimmed
-    let raw = std::str::from_utf8(&bytes[cursor..end]).unwrap_or("").trim().to_string();
+    let raw = std::str::from_utf8(&bytes[cursor..end])
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if raw.is_empty() { None } else { Some(raw) }
 }
 
@@ -814,11 +822,21 @@ fn classify_line(line: &str, line_num: usize) -> Token {
     let lead = skip_whitespace(line.as_bytes(), 0, line.len());
     let trimmed = &line[lead..];
     let lower = trimmed.to_ascii_lowercase();
-    let is_hunk_lead = lower.as_bytes().starts_with(HL_REPLACE_KEYWORD.to_ascii_lowercase().as_bytes())
-        || lower.as_bytes().starts_with(HL_DELETE_KEYWORD.to_ascii_lowercase().as_bytes())
-        || lower.as_bytes().starts_with(HL_INSERT_KEYWORD.to_ascii_lowercase().as_bytes())
-        || lower.as_bytes().starts_with(HL_REM_KEYWORD.to_ascii_lowercase().as_bytes())
-        || lower.as_bytes().starts_with(HL_MV_KEYWORD.to_ascii_lowercase().as_bytes());
+    let is_hunk_lead = lower
+        .as_bytes()
+        .starts_with(HL_REPLACE_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower
+            .as_bytes()
+            .starts_with(HL_DELETE_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower
+            .as_bytes()
+            .starts_with(HL_INSERT_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower
+            .as_bytes()
+            .starts_with(HL_REM_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower
+            .as_bytes()
+            .starts_with(HL_MV_KEYWORD.to_ascii_lowercase().as_bytes());
     if is_hunk_lead {
         if let Some(target) = try_parse_hunk_header(line) {
             return Token::OpBlock { line_num, target };

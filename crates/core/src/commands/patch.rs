@@ -231,7 +231,7 @@ pub fn apply_edits(
     // ---- live-position tracking (Bug #89-1) -------------------------------
     let n = entries.len();
     let mut deleted: Vec<bool> = vec![false; n]; // 0‑indexed by original line
-    let mut shift: Vec<isize> = vec![0; n];      // cumulative offset per original line
+    let mut shift: Vec<isize> = vec![0; n]; // cumulative offset per original line
 
     // Add `delta` to the shift of every original line >= `from` (1‑based).
     fn apply_delta(shift: &mut [isize], from: usize, delta: isize) {
@@ -357,16 +357,16 @@ pub fn apply_edits(
 
                 if num_new > 0 {
                     // ---- live-index adjustment (Bug #89-1) ----
-                    let start_idx = if anchor_line >= 1 && anchor_line <= n && !deleted[anchor_line - 1] {
-                        let raw = (anchor_line as isize - 1) + shift[anchor_line - 1];
-                        if raw >= 0 { Some(raw as usize) } else { None }
-                    } else { None }.ok_or_else(|| {
-                        HashlineError::InvalidAnchor {
-                            anchor: format!(
-                                "line {anchor_line} has been deleted by a prior edit"
-                            ),
+                    let start_idx =
+                        if anchor_line >= 1 && anchor_line <= n && !deleted[anchor_line - 1] {
+                            let raw = (anchor_line as isize - 1) + shift[anchor_line - 1];
+                            if raw >= 0 { Some(raw as usize) } else { None }
+                        } else {
+                            None
                         }
-                    })?;
+                        .ok_or_else(|| HashlineError::InvalidAnchor {
+                            anchor: format!("line {anchor_line} has been deleted by a prior edit"),
+                        })?;
                     let remove_end = (start_idx + num_old).min(lines.len());
                     for _ in start_idx..remove_end {
                         lines.remove(start_idx);
@@ -383,7 +383,11 @@ pub fn apply_edits(
                     deleted[dl - 1] = true;
                 }
                 if last_del < n {
-                    apply_delta(&mut shift,last_del + 1, (num_new as isize) - (num_old as isize));
+                    apply_delta(
+                        &mut shift,
+                        last_del + 1,
+                        (num_new as isize) - (num_old as isize),
+                    );
                 }
 
                 i = j;
@@ -462,7 +466,7 @@ pub fn apply_edits(
                 let last_del = del_lines.iter().max().copied().unwrap_or(0);
                 let del_count = del_lines.len();
                 if last_del < n && del_count > 0 {
-                    apply_delta(&mut shift,last_del + 1, -(del_count as isize));
+                    apply_delta(&mut shift, last_del + 1, -(del_count as isize));
                 }
 
                 i = j;
@@ -491,18 +495,18 @@ pub fn apply_edits(
                     Cursor::BeforeAnchor(a) => {
                         // Insert before original line N → lines at N+ shift by +1
                         if a.line <= n {
-                            apply_delta(&mut shift,a.line, 1);
+                            apply_delta(&mut shift, a.line, 1);
                         }
                     }
                     Cursor::AfterAnchor(a) => {
                         // Insert after original line N → lines > N shift by +1
                         if a.line < n {
-                            apply_delta(&mut shift,a.line + 1, 1);
+                            apply_delta(&mut shift, a.line + 1, 1);
                         }
                     }
                     Cursor::Bof => {
                         if n > 0 {
-                            apply_delta(&mut shift,1, 1);
+                            apply_delta(&mut shift, 1, 1);
                         }
                     }
                     Cursor::Eof => {
@@ -537,9 +541,7 @@ pub fn apply_edits(
                 // (Bug #89-2: validate block-anchor hash just like line ops)
                 if let Some(expected) = expected_hash {
                     let anchor_idx = line_no.wrapping_sub(1);
-                    if anchor_idx < entries.len()
-                        && *expected != entries[anchor_idx].short_hash
-                    {
+                    if anchor_idx < entries.len() && *expected != entries[anchor_idx].short_hash {
                         return Err(HashlineError::StaleAnchor {
                             anchor: format!(
                                 "{}:{}",
@@ -549,10 +551,8 @@ pub fn apply_edits(
                             .into(),
                             line: line_no,
                             expected: crate::hash::format_short_hash(*expected).into(),
-                            actual: crate::hash::format_short_hash(
-                                entries[anchor_idx].short_hash,
-                            )
-                            .into(),
+                            actual: crate::hash::format_short_hash(entries[anchor_idx].short_hash)
+                                .into(),
                             path: path.display().to_string().into(),
                             relocated_suffix: String::new().into(),
                         });
@@ -579,7 +579,7 @@ pub fn apply_edits(
                         }
                         let block_len = block_end - block_start + 1;
                         if block_end + 1 < n {
-                            apply_delta(&mut shift,block_end + 2, -(block_len as isize));
+                            apply_delta(&mut shift, block_end + 2, -(block_len as isize));
                         }
                         // +1 for trailing blank consumed
                         if block_end + 1 < n
@@ -606,7 +606,8 @@ pub fn apply_edits(
                             deleted[dl - 1] = true;
                         }
                         if block_end + 1 < n {
-                            apply_delta(&mut shift,
+                            apply_delta(
+                                &mut shift,
                                 block_end + 2,
                                 (payloads.len() as isize) - (num_old as isize),
                             );
@@ -621,7 +622,7 @@ pub fn apply_edits(
 
                         // ---- update shift tracking ----
                         if block_end + 1 < n {
-                            apply_delta(&mut shift,block_end + 2, payloads.len() as isize);
+                            apply_delta(&mut shift, block_end + 2, payloads.len() as isize);
                         }
                     }
                     Some(BlockMode::InsertBefore) => {
@@ -633,7 +634,7 @@ pub fn apply_edits(
 
                         // ---- update shift tracking ----
                         if block_start < n {
-                            apply_delta(&mut shift,block_start + 1, payloads.len() as isize);
+                            apply_delta(&mut shift, block_start + 1, payloads.len() as isize);
                         }
                     }
                 }
@@ -1188,7 +1189,11 @@ mod tests {
     // =====================================================================
 
     /// Apply edits and return Result (for error-path testing).
-    fn apply_text_result(original: &str, patch_text: &str, ext: &str) -> Result<String, HashlineError> {
+    fn apply_text_result(
+        original: &str,
+        patch_text: &str,
+        ext: &str,
+    ) -> Result<String, HashlineError> {
         let (edits, _warnings, _file_op, _aborted) = parse_patch(patch_text);
         let mut lines: Vec<String> = split_normalized(original);
         let path_str = format!("test.{ext}");
@@ -1225,10 +1230,7 @@ mod tests {
         let result = apply_text_result(original, patch, "txt").unwrap();
         // After INS.POST 1: shifts everything down, SWAP 4 correctly targets
         // original line 4 (DDD), not CCC at original line 3.
-        assert_eq!(
-            result,
-            "AAA\nXXX\nBBB\nCCC\nZZZ"
-        );
+        assert_eq!(result, "AAA\nXXX\nBBB\nCCC\nZZZ");
     }
 
     #[test]
@@ -1319,10 +1321,7 @@ mod tests {
         let original = "fn hello() {\n    let x = 1;\n}\n";
         let patch = "INS.BLK 1:\n+fn world() {\n+}\n";
         let result = apply_text_result(original, patch, "rs").unwrap();
-        assert_eq!(
-            result,
-            "fn hello() {\n    let x = 1;\n}\nfn world() {\n}\n"
-        );
+        assert_eq!(result, "fn hello() {\n    let x = 1;\n}\nfn world() {\n}\n");
     }
 
     #[test]
