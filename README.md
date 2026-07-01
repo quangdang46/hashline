@@ -316,9 +316,9 @@ hashline read src/file
 
 ### HTTP API
 
-The HTTP server exposes a JSON-RPC endpoint at \`POST /rpc\`:
+The HTTP server exposes a JSON-RPC endpoint at `POST /rpc`:
 
-\`\`\`bash
+```bash
 curl -X POST http://127.0.0.1:17300/rpc \
   -H "Content-Type: application/json" \
   -d '{
@@ -330,7 +330,7 @@ curl -X POST http://127.0.0.1:17300/rpc \
     },
     "id": 1
   }'
-\`\`\`
+```
 
 Available tools via JSON-RPC: `read`, `patch`, `write`, `find_block`, `remove_file`, `rename_file`.
 
@@ -340,7 +340,7 @@ Add this block to any repository's `AGENTS.md` so coding agents know how to use 
 
     ## hashline — Hash-Anchored File Editing
 
-    \`hashline\` is a CLI for editing files using content-hashed line anchors (\`42:a3\`).
+    `hashline` is a CLI for editing files using content-hashed line anchors (`42:a3`).
     It provides drift detection, atomic writes, and block-aware operations.
 
     ### Quick Start
