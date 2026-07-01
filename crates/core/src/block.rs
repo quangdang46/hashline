@@ -66,6 +66,7 @@ pub fn resolve_block_edits(
         // Determine which concrete op this block edit corresponds to.
         let op = match mode {
             Some(BlockMode::InsertAfter) => "insert_after",
+            Some(BlockMode::InsertBefore) => "insert_before",
             None if payloads.is_empty() => "delete",
             None => "replace",
         };
@@ -99,10 +100,27 @@ pub fn resolve_block_edits(
                     continue;
                 }
 
+                // `insert_before_block N:` is similarly degraded.
+                if op == "insert_before" {
+                    for payload in payloads {
+                        resolved.push(Edit::Insert {
+                            cursor: Cursor::BeforeAnchor(Anchor { line: anchor.line }),
+                            text: payload.clone(),
+                            line_num: *line_num,
+                            index: synth_index,
+                            mode: None,
+                            block_start: None,
+                            expected_hash: None,
+                        });
+                        synth_index += 1;
+                    }
+                    continue;
+                }
+
                 // `replace_block` / `delete_block` with no resolution: fail.
                 let msg = if resolver.is_none() {
                     format!(
-                        "line {}: SWAP.BLK/DEL.BLK/INS.BLK.POST are not available here \
+                        "line {}: SWAP.BLK/DEL.BLK/INS.BLK.POST/INS.BLK.PRE are not available here \
                          (no block resolver configured). Use a concrete line range.",
                         line_num
                     )
@@ -142,6 +160,25 @@ pub fn resolve_block_edits(
                             index: synth_index,
                             mode: None,
                             block_start: Some(start),
+                            expected_hash: None,
+                        });
+                        synth_index += 1;
+                    }
+                    continue;
+                }
+
+                if op == "insert_before" {
+                    // Mirror the parser's `insert before N:` lowering: one
+                    // `before_anchor` insert per payload row, anchored on the
+                    // block's first line.
+                    for payload in payloads {
+                        resolved.push(Edit::Insert {
+                            cursor: Cursor::BeforeAnchor(Anchor { line: start }),
+                            text: payload.clone(),
+                            line_num: *line_num,
+                            index: synth_index,
+                            mode: None,
+                            block_start: None,
                             expected_hash: None,
                         });
                         synth_index += 1;

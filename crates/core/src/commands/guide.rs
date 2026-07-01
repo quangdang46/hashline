@@ -154,6 +154,8 @@ pub fn run<W: Write, E: Write>(
   hashline find-block <f> <a>   --pretty     Pretty-print JSON
   hashline write <file> <cont>              Write a new file
   hashline write <file> <cont> --force      Overwrite existing
+  hashline remove <file>                    Delete a file
+  hashline rename <src> <dst>               Rename (move) a file
 
 ──────────────────────  DAEMON MODE  ──────────────────────────
 
@@ -172,11 +174,13 @@ pub fn run<W: Write, E: Write>(
 
   hashline mcp
 
-  Runs a stdio JSON-RPC server exposing 4 tools:
+  Runs a stdio JSON-RPC server exposing 6 tools:
     • read       — read file with snapshot hash
     • patch      — apply patch (SWAP/DEL/INS.*/BLK.*)
     • write      — write content to a new file
     • find_block — find enclosing syntactic block
+    • remove_file — delete a file
+    • rename_file — rename (move) a file
 
   Configure in claude_desktop_config.json / .cursor/mcp.json:
     {

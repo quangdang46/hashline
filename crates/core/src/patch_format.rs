@@ -31,6 +31,14 @@ pub const HL_REPLACE_BLOCK_KEYWORD: &str = "SWAP.BLK";
 pub const HL_DELETE_BLOCK_KEYWORD: &str = "DEL.BLK";
 /** Hunk-header keyword: `INS.BLK.POST N:` inserts after the last line of the tree-sitter block at N. */
 pub const HL_INSERT_AFTER_BLOCK_KEYWORD: &str = "INS.BLK.POST";
+/** Hunk-header keyword: `INS.BLK.PRE N:` inserts before the first line of the tree-sitter block at N. */
+pub const HL_INSERT_BEFORE_BLOCK_KEYWORD: &str = "INS.BLK.PRE";
+/** Short alias for `INS.BLK.POST`. */
+pub const HL_INSERT_AFTER_BLOCK_SHORT: &str = "INS.BLK";
+/** Hunk-header keyword: delete the whole file named by the section header. */
+pub const HL_REM_KEYWORD: &str = "REM";
+/** Hunk-header keyword: rename the section file to DEST. */
+pub const HL_MV_KEYWORD: &str = "MV";
 pub const HL_HEADER_COLON: &str = ":";
 
 /** Separator between a hashline file path and its opaque snapshot tag. */

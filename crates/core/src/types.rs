@@ -3,6 +3,15 @@
 
 use serde::Serialize;
 
+/// A file-level operation that applies to the whole file, not individual lines.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileOp {
+    /// Delete the file entirely. No payload.
+    Remove,
+    /// Rename (move) the file to the given destination path.
+    Rename(String),
+}
+
 /// A line-number anchor (1-indexed).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Anchor {
@@ -28,6 +37,7 @@ pub enum InsertMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockMode {
     InsertAfter,
+    InsertBefore,
 }
 
 /// A single low-level edit produced by the parser and consumed by the applier.
@@ -66,6 +76,8 @@ pub enum Edit {
         line_num: usize,
         index: usize,
         mode: Option<BlockMode>,
+        /// Optional short-hash expected at the anchor line, from e.g. `SWAP.BLK 4:ff:`.
+        expected_hash: Option<u8>,
     },
 }
 
@@ -116,6 +128,7 @@ pub enum BlockOp {
     Replace,
     Delete,
     InsertAfter,
+    InsertBefore,
 }
 
 /// Request handed to a [`BlockResolver`] to resolve one block anchor.

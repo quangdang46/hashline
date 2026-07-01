@@ -11,7 +11,8 @@ use crate::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER};
 use crate::patch_format::{
     HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP,
     HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER, HL_INSERT_AFTER_BLOCK_KEYWORD,
-    HL_INSERT_BEFORE, HL_INSERT_HEAD, HL_INSERT_KEYWORD, HL_INSERT_TAIL, HL_REPLACE_BLOCK_KEYWORD,
+    HL_INSERT_AFTER_BLOCK_SHORT, HL_INSERT_BEFORE, HL_INSERT_BEFORE_BLOCK_KEYWORD, HL_INSERT_HEAD,
+    HL_INSERT_KEYWORD, HL_INSERT_TAIL, HL_MV_KEYWORD, HL_REM_KEYWORD, HL_REPLACE_BLOCK_KEYWORD,
     HL_REPLACE_KEYWORD, describe_anchor_examples,
 };
 use crate::types::{Anchor, ParsedRange};
@@ -253,14 +254,17 @@ fn scan_header_range(
 #[derive(Clone, Debug, PartialEq)]
 pub enum BlockTarget {
     Replace(ParsedRange, Option<u8>),
-    Block(Anchor),
+    Block(Anchor, Option<u8>),
     Delete(ParsedRange, Option<u8>),
-    DeleteBlock(Anchor),
+    DeleteBlock(Anchor, Option<u8>),
     InsertBefore(Anchor, Option<u8>),
     InsertAfter(Anchor, Option<u8>),
-    InsertAfterBlock(Anchor),
+    InsertAfterBlock(Anchor, Option<u8>),
+    InsertBeforeBlock(Anchor, Option<u8>),
     Bof,
     Eof,
+    Remove,
+    MoveTo(String),
 }
 
 struct TargetScan {
@@ -270,8 +274,15 @@ struct TargetScan {
 
 fn scan_keyword(bytes: &[u8], index: usize, end: usize, keyword: &str) -> Option<usize> {
     let kw = keyword.as_bytes();
-    if index + kw.len() > end || !bytes[index..].starts_with(kw) {
+    if index + kw.len() > end {
         return None;
+    }
+    // Case-insensitive comparison (Bug #89-5)
+    for (i, &k) in kw.iter().enumerate() {
+        let b = bytes[index + i];
+        if b.to_ascii_lowercase() != k.to_ascii_lowercase() {
+            return None;
+        }
     }
     let next = index + kw.len();
     if next < end {
@@ -399,9 +410,9 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // SWAP.BLK N:
     if let Some(block_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, block_end, end), end)?;
-        let (next, _hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
-            target: BlockTarget::Block(Anchor { line: anchor.line }),
+            target: BlockTarget::Block(Anchor { line: anchor.line }, hash),
             next_index: next,
         });
     }
@@ -419,13 +430,13 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // DEL.BLK N (no body, but accepts optional :HH: hash suffix)
     if let Some(del_block_end) = scan_keyword(bytes, cursor, end, HL_DELETE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, del_block_end, end), end)?;
-        let (next, _hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         // No colon after hash allowed — DEL.BLK takes no body
         if next < end && bytes[next] == CHAR_COLON {
             return None;
         }
         return Some(TargetScan {
-            target: BlockTarget::DeleteBlock(Anchor { line: anchor.line }),
+            target: BlockTarget::DeleteBlock(Anchor { line: anchor.line }, hash),
             next_index: next,
         });
     }
@@ -448,9 +459,29 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // INS.BLK.POST N:
     if let Some(iblk_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_end, end), end)?;
-        let (next, _hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
-            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }),
+            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, hash),
+            next_index: next,
+        });
+    }
+
+    // INS.BLK.PRE N:  (insert before block — Bug #89-5)
+    if let Some(iblk_pre_end) = scan_keyword(bytes, cursor, end, HL_INSERT_BEFORE_BLOCK_KEYWORD) {
+        let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_pre_end, end), end)?;
+        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        return Some(TargetScan {
+            target: BlockTarget::InsertBeforeBlock(Anchor { line: anchor.line }, hash),
+            next_index: next,
+        });
+    }
+
+    // INS.BLK N:  (bare INS.BLK alias for INS.BLK.POST — Bug #89-5)
+    if let Some(iblk_short_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER_BLOCK_SHORT) {
+        let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_short_end, end), end)?;
+        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        return Some(TargetScan {
+            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, hash),
             next_index: next,
         });
     }
@@ -458,6 +489,34 @@ fn scan_hunk_anchor(bytes: &[u8], start: usize, end: usize) -> Option<TargetScan
     // INS.xxx
     if let Some(insert_end) = scan_keyword(bytes, cursor, end, HL_INSERT_KEYWORD) {
         return scan_insert_target(bytes, insert_end, end);
+    }
+
+    // REM — delete whole file (no payload)
+    if let Some(rem_end) = scan_keyword(bytes, cursor, end, HL_REM_KEYWORD) {
+        let next = consume_optional_colon(bytes, rem_end, end);
+        if next == end {
+            return Some(TargetScan {
+                target: BlockTarget::Remove,
+                next_index: next,
+            });
+        }
+    }
+
+    // MV path — rename/move file to destination path
+    if let Some(mv_end) = scan_keyword(bytes, cursor, end, HL_MV_KEYWORD) {
+        let rest_start = skip_whitespace(bytes, mv_end, end);
+        if rest_start < end {
+            let dest = std::str::from_utf8(&bytes[rest_start..end])
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !dest.is_empty() {
+                return Some(TargetScan {
+                    target: BlockTarget::MoveTo(dest),
+                    next_index: end,
+                });
+            }
+        }
     }
 
     None
@@ -732,9 +791,13 @@ fn classify_line(line: &str, line_num: usize) -> Token {
     }
 
     let lead = skip_whitespace(line.as_bytes(), 0, line.len());
-    let is_hunk_lead = line[lead..].starts_with(HL_REPLACE_KEYWORD)
-        || line[lead..].starts_with(HL_DELETE_KEYWORD)
-        || line[lead..].starts_with(HL_INSERT_KEYWORD);
+    let trimmed = &line[lead..];
+    let lower = trimmed.to_ascii_lowercase();
+    let is_hunk_lead = lower.as_bytes().starts_with(HL_REPLACE_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower.as_bytes().starts_with(HL_DELETE_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower.as_bytes().starts_with(HL_INSERT_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower.as_bytes().starts_with(HL_REM_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower.as_bytes().starts_with(HL_MV_KEYWORD.to_ascii_lowercase().as_bytes());
     if is_hunk_lead {
         if let Some(target) = try_parse_hunk_header(line) {
             return Token::OpBlock { line_num, target };

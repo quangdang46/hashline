@@ -211,6 +211,13 @@ fn split_normalized(text: &str) -> Vec<String> {
 }
 
 /// Apply parsed edits to a mutable lines vector.
+///
+/// Each [`Edit`] references original 1-indexed line numbers from the
+/// read snapshot (`entries`).  As the live `lines` buffer is mutated by
+/// earlier edits, later edits must adjust their target position for the
+/// cumulative shift — inserts add lines, deletes remove them.  The
+/// `deleted` and `shift` arrays track this per-original-line so every
+/// op resolves to the correct live index.
 pub fn apply_edits(
     lines: &mut Vec<String>,
     entries: &[crate::document::LineEntry],
@@ -220,6 +227,19 @@ pub fn apply_edits(
     let mut i = 0;
     use std::collections::HashMap;
     let mut insert_count: HashMap<usize, usize> = HashMap::new();
+
+    // ---- live-position tracking (Bug #89-1) -------------------------------
+    let n = entries.len();
+    let mut deleted: Vec<bool> = vec![false; n]; // 0‑indexed by original line
+    let mut shift: Vec<isize> = vec![0; n];      // cumulative offset per original line
+
+    // Add `delta` to the shift of every original line >= `from` (1‑based).
+    fn apply_delta(shift: &mut [isize], from: usize, delta: isize) {
+        let start = (from.max(1) - 1).min(shift.len());
+        for j in start..shift.len() {
+            shift[j] += delta;
+        }
+    }
 
     while i < edits.len() {
         match &edits[i] {
@@ -320,7 +340,7 @@ pub fn apply_edits(
                 let num_new = replacement_texts.len();
                 let num_old = delete_lines.len();
 
-                // Boundary echo detection
+                // Boundary echo detection (against the original snapshot)
                 if num_old > 0 {
                     let start_l = anchor_line;
                     let end_l = anchor_line + num_old - 1;
@@ -336,7 +356,17 @@ pub fn apply_edits(
                 }
 
                 if num_new > 0 {
-                    let start_idx = anchor_line.wrapping_sub(1);
+                    // ---- live-index adjustment (Bug #89-1) ----
+                    let start_idx = if anchor_line >= 1 && anchor_line <= n && !deleted[anchor_line - 1] {
+                        let raw = (anchor_line as isize - 1) + shift[anchor_line - 1];
+                        if raw >= 0 { Some(raw as usize) } else { None }
+                    } else { None }.ok_or_else(|| {
+                        HashlineError::InvalidAnchor {
+                            anchor: format!(
+                                "line {anchor_line} has been deleted by a prior edit"
+                            ),
+                        }
+                    })?;
                     let remove_end = (start_idx + num_old).min(lines.len());
                     for _ in start_idx..remove_end {
                         lines.remove(start_idx);
@@ -344,6 +374,16 @@ pub fn apply_edits(
                     for (k, text) in replacement_texts.iter().enumerate() {
                         lines.insert(start_idx + k, text.clone());
                     }
+                }
+
+                // ---- update shift tracking (Bug #89-1) ----
+                let first_del = anchor_line;
+                let last_del = anchor_line + num_old.saturating_sub(1);
+                for dl in first_del..=last_del.min(n) {
+                    deleted[dl - 1] = true;
+                }
+                if last_del < n {
+                    apply_delta(&mut shift,last_del + 1, (num_new as isize) - (num_old as isize));
                 }
 
                 i = j;
@@ -400,13 +440,31 @@ pub fn apply_edits(
                         });
                     }
                 }
+                // Delete from live buffer using shift-adjusted positions
+                // Sort DESCENDING so earlier removals don't shift later ones
                 del_lines.sort_by(|a, b| b.cmp(a));
-                for line in &del_lines {
-                    let idx = line.wrapping_sub(1);
-                    if idx < lines.len() {
-                        lines.remove(idx);
+                for &orig_line in &del_lines {
+                    if orig_line >= 1 && orig_line <= n && !deleted[orig_line - 1] {
+                        let raw = (orig_line as isize - 1) + shift[orig_line - 1];
+                        let idx = if raw >= 0 { raw as usize } else { continue };
+                        if idx < lines.len() {
+                            lines.remove(idx);
+                        }
                     }
                 }
+
+                // ---- update shift tracking (Bug #89-1) ----
+                for &dl in &del_lines {
+                    if dl <= n {
+                        deleted[dl - 1] = true;
+                    }
+                }
+                let last_del = del_lines.iter().max().copied().unwrap_or(0);
+                let del_count = del_lines.len();
+                if last_del < n && del_count > 0 {
+                    apply_delta(&mut shift,last_del + 1, -(del_count as isize));
+                }
+
                 i = j;
             }
 
@@ -427,6 +485,31 @@ pub fn apply_edits(
                     lines.len()
                 };
                 lines.insert(pos, text.clone());
+
+                // ---- update shift tracking (Bug #89-1) ----
+                match cursor {
+                    Cursor::BeforeAnchor(a) => {
+                        // Insert before original line N → lines at N+ shift by +1
+                        if a.line <= n {
+                            apply_delta(&mut shift,a.line, 1);
+                        }
+                    }
+                    Cursor::AfterAnchor(a) => {
+                        // Insert after original line N → lines > N shift by +1
+                        if a.line < n {
+                            apply_delta(&mut shift,a.line + 1, 1);
+                        }
+                    }
+                    Cursor::Bof => {
+                        if n > 0 {
+                            apply_delta(&mut shift,1, 1);
+                        }
+                    }
+                    Cursor::Eof => {
+                        // Insert at end → no change to any original line's live position
+                    }
+                }
+
                 i += 1;
             }
 
@@ -435,13 +518,45 @@ pub fn apply_edits(
                 anchor,
                 payloads,
                 mode,
+                expected_hash,
                 ..
             } => {
                 let line_no = anchor.line;
+
+                if line_no > entries.len() {
+                    return Err(HashlineError::InvalidAnchor {
+                        anchor: format!(
+                            "line {line_no} not found (file has {} lines)",
+                            entries.len()
+                        ),
+                    });
+                }
                 let anchor_index = line_no.wrapping_sub(1);
-                if anchor_index >= entries.len() {
-                    i += 1;
-                    continue;
+
+                // Hash validation for block ops — thread optional hash through
+                // (Bug #89-2: validate block-anchor hash just like line ops)
+                if let Some(expected) = expected_hash {
+                    let anchor_idx = line_no.wrapping_sub(1);
+                    if anchor_idx < entries.len()
+                        && *expected != entries[anchor_idx].short_hash
+                    {
+                        return Err(HashlineError::StaleAnchor {
+                            anchor: format!(
+                                "{}:{}",
+                                line_no,
+                                crate::hash::format_short_hash(*expected)
+                            )
+                            .into(),
+                            line: line_no,
+                            expected: crate::hash::format_short_hash(*expected).into(),
+                            actual: crate::hash::format_short_hash(
+                                entries[anchor_idx].short_hash,
+                            )
+                            .into(),
+                            path: path.display().to_string().into(),
+                            relocated_suffix: String::new().into(),
+                        });
+                    }
                 }
 
                 // Resolve the syntactic block starting at line_no
@@ -454,14 +569,28 @@ pub fn apply_edits(
                             lines.remove(block_start);
                         }
                         // Consume trailing blank line after the deleted block
-                        // so that the next block or content is flush against
-                        // the deleted block's position.
                         if block_start < lines.len() && lines[block_start].trim().is_empty() {
                             lines.remove(block_start);
                         }
+
+                        // ---- update shift tracking ----
+                        for dl in (block_start + 1)..=(block_end + 1).min(n) {
+                            deleted[dl - 1] = true;
+                        }
+                        let block_len = block_end - block_start + 1;
+                        if block_end + 1 < n {
+                            apply_delta(&mut shift,block_end + 2, -(block_len as isize));
+                        }
+                        // +1 for trailing blank consumed
+                        if block_end + 1 < n
+                            && block_start < lines.len().saturating_sub(1)
+                            && lines.len() < n
+                        {
+                            // consumed-blank already shifts by −1 via the remove loop
+                        }
                     }
                     None => {
-                        // SWAP.BLK N: replace the entire block (header + body) with payload
+                        // SWAP.BLK N: replace the entire block with payload
                         let num_old = block_end - block_start + 1;
                         for _ in 0..num_old.min(lines.len()) {
                             if block_start < lines.len() {
@@ -471,12 +600,40 @@ pub fn apply_edits(
                         for (k, payload) in payloads.iter().enumerate() {
                             lines.insert(block_start + k, payload.clone());
                         }
+
+                        // ---- update shift tracking ----
+                        for dl in (block_start + 1)..=(block_end + 1).min(n) {
+                            deleted[dl - 1] = true;
+                        }
+                        if block_end + 1 < n {
+                            apply_delta(&mut shift,
+                                block_end + 2,
+                                (payloads.len() as isize) - (num_old as isize),
+                            );
+                        }
                     }
                     Some(BlockMode::InsertAfter) => {
                         // INS.BLK.POST N: insert after the last line of the block
                         let insert_pos = (block_end + 1).min(lines.len());
                         for (k, payload) in payloads.iter().enumerate() {
                             lines.insert(insert_pos + k, payload.clone());
+                        }
+
+                        // ---- update shift tracking ----
+                        if block_end + 1 < n {
+                            apply_delta(&mut shift,block_end + 2, payloads.len() as isize);
+                        }
+                    }
+                    Some(BlockMode::InsertBefore) => {
+                        // INS.BLK.PRE N: insert before the first line of the block
+                        let insert_pos = block_start.min(lines.len());
+                        for (k, payload) in payloads.iter().enumerate() {
+                            lines.insert(insert_pos + k, payload.clone());
+                        }
+
+                        // ---- update shift tracking ----
+                        if block_start < n {
+                            apply_delta(&mut shift,block_start + 1, payloads.len() as isize);
                         }
                     }
                 }
@@ -631,9 +788,26 @@ fn find_python_block(
 ) -> Result<(usize, usize), ()> {
     let anchor_indent = leading_ws(&entries[anchor_index].content);
     if anchor_indent == 0 {
+        // Anchor at a header line (def/class/if/for/with/try/…):
+        // find the block starting at that header to its dedent boundary.
         find_block_from_header(entries, anchor_index, &["#"])
     } else {
-        find_block_from_body(entries, anchor_index, &["#"])
+        // Anchor in a body line (comment, bare statement, etc):
+        // start at the anchor itself and extend to the next line with the
+        // same or lesser indent level.  This gives the smallest enclosing
+        // statement suite, not the outermost function/class.
+        let mut end = entries.len() - 1;
+        for i in (anchor_index + 1)..entries.len() {
+            let t = entries[i].content.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if leading_ws(&entries[i].content) <= anchor_indent {
+                end = i.saturating_sub(1);
+                break;
+            }
+        }
+        Ok((anchor_index, end))
     }
 }
 
@@ -1007,5 +1181,186 @@ mod tests {
             4,
             "expected 2 inserts + 2 deletes, got {edits:?}"
         );
+    }
+
+    // =====================================================================
+    // Regression tests for Issue #89
+    // =====================================================================
+
+    /// Apply edits and return Result (for error-path testing).
+    fn apply_text_result(original: &str, patch_text: &str, ext: &str) -> Result<String, HashlineError> {
+        let (edits, _warnings, _aborted) = parse_patch(patch_text);
+        let mut lines: Vec<String> = split_normalized(original);
+        let path_str = format!("test.{ext}");
+        let entries_with_content: Vec<crate::document::LineEntry> = lines
+            .iter()
+            .map(|s| crate::document::LineEntry {
+                content: s.clone(),
+                short_hash: crate::hash::short_hash_value(s),
+            })
+            .collect();
+        apply_edits(
+            &mut lines,
+            &entries_with_content,
+            std::path::Path::new(&path_str),
+            &edits,
+        )?;
+        Ok(lines.join("\n"))
+    }
+
+    // ---- Bug #89-1: multi-op hash anchor validation vs live buffer ----
+
+    #[test]
+    fn bug89_multi_op_insert_then_hash_swap_respects_shift() {
+        // INS.POST 1: inserts a line after line 1, shifting everything down.
+        // SWAP 4 should then target original line 4 (which now lives at index 3
+        // in the shifted buffer), not CCC at original line 3.
+        let original = "AAA\nBBB\nCCC\nDDD";
+        let patch = "INS.POST 1:\n+XXX\nSWAP 4:\n+ZZZ";
+        let result = apply_text_result(original, patch, "txt").unwrap();
+        // After INS.POST 1: shifts everything down, SWAP 4 correctly targets
+        // original line 4 (DDD), not CCC at original line 3.
+        assert_eq!(
+            result,
+            "AAA\nXXX\nBBB\nCCC\nZZZ"
+        );
+    }
+
+    #[test]
+    fn bug89_multi_op_hash_rejected_on_wrong_line_after_insert() {
+        // Same as above but with explicit hash on SWAP. The hash `ac` is DDD's.
+        // After the insert shifts everything, the correct original line 4 (DDD)
+        // still carries `ac`, but if the applier uses the live position it would
+        // match CCC instead.  Use the test-only helper that constructs entries
+        // from the original text so hashes are real.
+        let original = "AAA\nBBB\nCCC\nDDD";
+        let patch = "INS.POST 1:\n+XXX\nSWAP 4:ac:\n+ZZZ";
+        // Should succeed — original line 4 (DDD, hash `ac`) is the target.
+        let result = apply_text_result(original, patch, "txt").unwrap();
+        assert_eq!(result, "AAA\nXXX\nBBB\nCCC\nZZZ");
+    }
+
+    // ---- Bug #89-2: .BLK ops should validate hash anchors ----
+
+    #[test]
+    fn bug89_blk_swap_with_bad_hash_errors() {
+        // SWAP.BLK N:ff: on a line whose actual hash is not `ff` should
+        // produce a StaleAnchor error, just like a plain line op.
+        let original = "fn hello() {\n    let x = 1;\n}\n";
+        let patch = "SWAP.BLK 1:ff:\n+fn replaced() {\n+}\n";
+        let err = apply_text_result(original, patch, "rs").unwrap_err();
+        assert!(
+            err.to_string().contains("content changed since last read"),
+            "expected StaleAnchor error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn bug89_blk_del_with_bad_hash_errors() {
+        let original = "fn hello() {\n    let x = 1;\n}\n";
+        let patch = "DEL.BLK 1:ff";
+        let err = apply_text_result(original, patch, "rs").unwrap_err();
+        assert!(
+            err.to_string().contains("content changed since last read"),
+            "expected StaleAnchor error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn bug89_blk_ins_after_with_valid_hash_succeeds() {
+        // Use a hash that actually matches line 1's short hash.
+        let original = "fn hello() {\n    let x = 1;\n}\n";
+        let h = crate::hash::format_short_hash(crate::hash::short_hash_value("fn hello() {"));
+        let patch = format!("INS.BLK.POST 1:{h}:\n+fn world() {{\n+}}\n");
+        let result = apply_text_result(original, &patch, "rs").unwrap();
+        assert!(result.contains("fn world()"));
+    }
+
+    // ---- Bug #89-3: out-of-range / unresolved anchor ----
+
+    #[test]
+    fn bug89_blk_out_of_range_errors() {
+        // SWAP.BLK 999 on a 3-line file must error, not report success.
+        let original = "a\nb\nc\n";
+        let patch = "SWAP.BLK 999:\n+x\n";
+        let err = apply_text_result(original, patch, "rs").unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected InvalidAnchor error, got: {err}"
+        );
+    }
+
+    // ---- Bug #89-4: Python block over-detection ----
+
+    #[test]
+    fn bug89_python_block_at_interior_line_only_replaces_that_line() {
+        // Anchoring SWAP.BLK at an interior line (e.g. a comment) should
+        // replace only the smallest enclosing block (the line itself or its
+        // indentation group), not the whole function.
+        let original = "def hello():\n    # comment\n    x = 1\n    return x";
+        let patch = "SWAP.BLK 2:\n+    # replaced comment\n";
+        let result = apply_text_result(original, patch, "py").unwrap();
+        // Only line 2 should be replaced; the rest of the function stays.
+        assert_eq!(
+            result,
+            "def hello():\n    # replaced comment\n    x = 1\n    return x"
+        );
+    }
+
+    // ---- Bug #89-5: INS.BLK alias and INS.BLK.PRE ----
+
+    #[test]
+    fn bug89_ins_blk_alias_works() {
+        let original = "fn hello() {\n    let x = 1;\n}\n";
+        let patch = "INS.BLK 1:\n+fn world() {\n+}\n";
+        let result = apply_text_result(original, patch, "rs").unwrap();
+        assert_eq!(
+            result,
+            "fn hello() {\n    let x = 1;\n}\nfn world() {\n}\n"
+        );
+    }
+
+    #[test]
+    fn bug89_ins_blk_pre_works() {
+        let original = "fn hello() {\n    let x = 1;\n}\n";
+        let patch = "INS.BLK.PRE 1:\n+fn preamble() {\n+}\n";
+        let result = apply_text_result(original, patch, "rs").unwrap();
+        assert_eq!(
+            result,
+            "fn preamble() {\n}\nfn hello() {\n    let x = 1;\n}\n"
+        );
+    }
+
+    #[test]
+    fn bug89_case_insensitive_keywords() {
+        // `swap`, `del`, `ins.post` etc should work case-insensitively.
+        let original = "AAA\nBBB\nCCC";
+        let patch = "swap 2:\n+replaced\n";
+        let result = apply_text_result(original, patch, "txt").unwrap();
+        assert_eq!(result, "AAA\nreplaced\nCCC");
+    }
+
+    #[test]
+    fn bug89_blk_hash_on_swap_block_mismatch() {
+        // Specific example from the issue: SWAP.BLK 4:ff: should error
+        // when line 4's actual hash is not ff.
+        let original = "AAA\nBBB\nCCC\nDDD\n";
+        let patch = "SWAP.BLK 4:ff:\n+ZZZ\n";
+        let err = apply_text_result(original, patch, "txt").unwrap_err();
+        assert!(
+            err.to_string().contains("content changed since last read"),
+            "expected StaleAnchor error for BLK hash mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn bug89_blk_valid_hash_swap_block_succeeds() {
+        // Use RS extension so brace-matching is used.
+        let original = "fn a() {}\nfn b() {\n    let x = 1;\n}";
+        // Line 1: `fn a() {}` is a single-line brace block
+        let h = crate::hash::format_short_hash(crate::hash::short_hash_value("fn a() {}"));
+        let patch = format!("SWAP.BLK 1:{h}:\n+fn replaced() {{\n}}\n");
+        let result = apply_text_result(original, &patch, "rs").unwrap();
+        assert_eq!(result, "fn replaced() {\n}\nfn b() {\n    let x = 1;\n}");
     }
 }

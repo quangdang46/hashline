@@ -135,6 +135,12 @@ hashline patch src/main.py 'SWAP.BLK 1:
 # Find a structural block around a line
 hashline find-block src/auth.js 3:0e
 
+# Delete a file entirely
+hashline remove src/old-file.ts
+
+# Rename (move) a file
+hashline rename src/old.ts src/new.ts
+
 # Serve as a daemon
 hashline serve --http 17300
 
@@ -159,6 +165,8 @@ hashline mcp
 | Swap block | `SWAP.BLK N:` + `+content` | Replace entire syntactic block at N |
 | Delete block | `DEL.BLK N` | Delete entire syntactic block at N |
 | Insert after block | `INS.BLK.POST N:` + `+content` | Insert after block at N |
+| Remove file | `hashline remove <file>` | Delete a file entirely |
+| Rename file | `hashline rename <src> <dst>` | Rename (move) a file |
 | Dry run | `--dry-run` | Preview changes without writing |
 | Find block | `hashline find-block <file> <anchor>` | Find enclosing block (brace/indent/ruby) |
 
@@ -245,20 +253,24 @@ everything you need in one place.
 | `read` | Read a file with `[path#HASH]` header and numbered lines |
 | `patch` | Apply a hashline patch (SWAP/DEL/INS.*/SWAP.BLK/DEL.BLK/INS.BLK.POST) |
 || `write` | Write content to a file (creates new or overwrites with --force) |
+| `remove` | Delete a file |
+| `rename` | Rename (move) a file |
 || `guide` | Show interactive user guide with anchor format, patch ops, MCP setup, examples |
 | `find-block` | Find the enclosing structural block around an anchor |
 | `serve` | Run as a daemon over Unix socket or HTTP |
-    `mcp` | Run as an MCP stdio server with 4 tools |
+|| `mcp` | Run as an MCP stdio server with 4 tools |
 
 ## MCP server
 
-`hashline` ships with a stdio MCP server exposing 4 tools:
+`hashline` ships with a stdio MCP server exposing 6 tools:
 
 ```
 read                 — Read a file with [path#HASH] header + numbered lines
 patch                — Apply a patch (SWAP/DEL/INS.*/BLK.*)
 write                — Write content to a new file (overwrites with force=true)
 find_block           — Find enclosing syntactic block around an anchor
+remove_file          — Delete a file
+rename_file          — Rename (move) a file
 
 (legacy aliases `hashline_read`, `hashline_patch`, `hashline_find_block` remain accepted)
 ```
@@ -273,10 +285,10 @@ and upsert a `hashline` server entry for each.
 
 ## Serve (daemon / HTTP API)
 
-\`hashline serve\` runs as a background daemon that accepts requests over a
-Unix socket (default: \`~/.hashline/daemon.sock\`) or HTTP.
+`hashline serve` runs as a background daemon that accepts requests over a
+Unix socket (default: `~/.hashline/daemon.sock`) or HTTP.
 
-\`\`\`bash
+```bash
 # Start daemon on HTTP port
 hashline serve --http 17300
 
@@ -285,22 +297,22 @@ hashline serve
 
 # Detach to background
 hashline serve --http 17300 --detach
-\`\`\`
+```
 
-When the daemon is running, agents can use \`HASHLINE_URL\` to route \`hashline\`
+When the daemon is running, agents can use `HASHLINE_URL` to route `hashline`
 commands through it:
 
-\`\`\`bash
+```bash
 export HASHLINE_URL=http://127.0.0.1:17300
 hashline read src/file
-\`\`\`
+```
 
 For Unix socket:
 
-\`\`\`bash
+```bash
 export HASHLINE_SOCKET=~/.hashline/daemon.sock
 hashline read src/file
-\`\`\`
+```
 
 ### HTTP API
 
@@ -320,7 +332,7 @@ curl -X POST http://127.0.0.1:17300/rpc \
   }'
 \`\`\`
 
-Available tools via JSON-RPC: \`read\`, \`patch\`, \`write\`, \`find_block\`.
+Available tools via JSON-RPC: `read`, `patch`, `write`, `find_block`, `remove_file`, `rename_file`.
 
 ## Agent Integration
 
@@ -457,6 +469,8 @@ analysis are intentionally out of scope — companion tools like
 | `read` | Read file with snapshot hash | `hashline guide` → _Basics_ |
 | `patch` | Apply SWAP/DEL/INS/BLK edits | `hashline guide` → _Patch Operations_ |
 | `find-block` | Find enclosing syntactic block | `hashline guide` → _Workflow_ |
+| `remove` | Delete a file | |
+| `rename` | Rename (move) a file | |
 | `guide` | Show interactive user guide | built-in help |
 | `serve` | Run as daemon (HTTP/Unix socket) | `hashline guide` → _Daemon Mode_ |
 | `mcp` | Run as MCP stdio server | `hashline guide` → _MCP Mode_ |

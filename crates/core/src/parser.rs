@@ -186,7 +186,7 @@ impl Executor {
         };
         if matches!(
             pending.target,
-            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(_)
+            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(..)
         ) {
             return;
         }
@@ -213,7 +213,7 @@ impl Executor {
             if matches!(pending.target, BlockTarget::Delete(_, _)) {
                 return;
             }
-            if matches!(pending.target, BlockTarget::DeleteBlock(_)) {
+            if matches!(pending.target, BlockTarget::DeleteBlock(..)) {
                 return;
             }
             if text.trim_start().starts_with('-') {
@@ -263,7 +263,7 @@ impl Executor {
             {
                 self.warnings.push(format!(
                     "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
-                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, or INS.BLK.POST"
+                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, or INS.BLK"
                 ));
             }
         }
@@ -276,7 +276,7 @@ impl Executor {
         };
         if matches!(
             pending.target,
-            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(_)
+            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(..)
         ) {
             return;
         }
@@ -350,17 +350,18 @@ impl Executor {
                     self.edit_index += 1;
                 }
             }
-            BlockTarget::DeleteBlock(anchor) => {
+            BlockTarget::DeleteBlock(anchor, hash) => {
                 self.edits.push(Edit::Block {
                     anchor: *anchor,
                     payloads: Vec::new(),
                     line_num,
                     index: self.edit_index,
                     mode: None,
+                    expected_hash: *hash,
                 });
                 self.edit_index += 1;
             }
-            BlockTarget::Block(anchor) => {
+            BlockTarget::Block(anchor, hash) => {
                 if payload_texts.is_empty() {
                     return;
                 }
@@ -370,10 +371,11 @@ impl Executor {
                     line_num,
                     index: self.edit_index,
                     mode: None,
+                    expected_hash: *hash,
                 });
                 self.edit_index += 1;
             }
-            BlockTarget::InsertAfterBlock(anchor) => {
+            BlockTarget::InsertAfterBlock(anchor, hash) => {
                 if payload_texts.is_empty() {
                     return;
                 }
@@ -383,6 +385,21 @@ impl Executor {
                     line_num,
                     index: self.edit_index,
                     mode: Some(BlockMode::InsertAfter),
+                    expected_hash: *hash,
+                });
+                self.edit_index += 1;
+            }
+            BlockTarget::InsertBeforeBlock(anchor, hash) => {
+                if payload_texts.is_empty() {
+                    return;
+                }
+                self.edits.push(Edit::Block {
+                    anchor: *anchor,
+                    payloads: payload_texts,
+                    line_num,
+                    index: self.edit_index,
+                    mode: Some(BlockMode::InsertBefore),
+                    expected_hash: *hash,
                 });
                 self.edit_index += 1;
             }
@@ -490,6 +507,14 @@ impl Executor {
                     });
                     self.edit_index += 1;
                 }
+            }
+            BlockTarget::Remove => {
+                // REM is a whole-file operation with no payload;
+                // routing via FileOp::Remove happens at a higher level.
+            }
+            BlockTarget::MoveTo(_dest) => {
+                // MV is a whole-file rename with no payload;
+                // routing via FileOp::Rename happens at a higher level.
             }
         }
     }
