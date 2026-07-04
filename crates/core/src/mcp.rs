@@ -263,7 +263,7 @@ fn handle_find_block(file: &str, anchor_str: &str) -> String {
     let mut out = format!(
         "File: {}  ({} lines)\nLanguage: {language}\n",
         fc.path.display(),
-        entries.len()
+        fc.len()
     );
     for i in start..=end {
         let entry = &entries[i];
