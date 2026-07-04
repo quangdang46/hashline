@@ -81,7 +81,7 @@ pub fn find_block_payload(
 
     Ok(FindBlockPayload {
         file: fc.path.display().to_string(),
-        line_count: entries.len(),
+        line_count: fc.len(),
         language,
         block_lines,
     })
@@ -633,5 +633,33 @@ mod tests {
         assert_eq!(payload.language.as_deref(), Some("Go"));
         assert_eq!(payload.block_lines.len(), 3);
         assert!(payload.block_lines[0].content.contains("if true"));
+    }
+
+    /// Regression: line_count must match fc.len(), not entries.len(), so files
+    /// with a trailing newline do not report an off-by-one count (Issue #90).
+    #[test]
+    fn test_line_count_no_trailing_newline() {
+        let content = "line1\nline2\nline3";
+        let (fc, entries) = make_fc(content, "test.txt");
+        let payload = find_block_payload(&fc, &entries, &anchor_for(1, &entries)).unwrap();
+        assert!(!fc.trailing_newline);
+        assert_eq!(fc.len(), 3);
+        // When there is no trailing newline, entries and fc.len() happen to
+        // agree, but we assert the semantic field regardless.
+        assert_eq!(payload.line_count, fc.len());
+        assert_eq!(payload.line_count, 3);
+    }
+
+    #[test]
+    fn test_line_count_with_trailing_newline() {
+        let content = "line1\nline2\nline3\n";
+        let (fc, entries) = make_fc(content, "test.txt");
+        let payload = find_block_payload(&fc, &entries, &anchor_for(1, &entries)).unwrap();
+        assert!(fc.trailing_newline);
+        assert_eq!(fc.len(), 3);
+        // entries.len() would be 4 here (includes the empty split tail).
+        // The fix ensures line_count comes from fc.len().
+        assert_eq!(payload.line_count, fc.len());
+        assert_eq!(payload.line_count, 3);
     }
 }
