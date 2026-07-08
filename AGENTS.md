@@ -1,76 +1,72 @@
-## hashline — Hash-Anchored File Editing
+## hashline — Hash-Anchored File Editing (v0.8.5)
 
-`hashline` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. It's designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
+`hashline` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. Designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
 
 ### Why It's Useful
 
-- **Stable anchors:** Uses `line:hash` format that survives nearby edits—line numbers shift but hashes stay valid
+- **Stable anchors:** `line:hash` format survives nearby edits — line numbers shift but hashes stay valid
 - **Concurrent-safe:** Detects stale anchors when content changed; fails explicitly instead of guessing
-- **Audit trail:** Optional `--receipt` and `--audit-log` for tracking edit history
-- **No merge conflicts:** Each edit is independent; no patch files that conflict
+- **No merge conflicts:** Each edit is independent; no patch files needed
 - **Works with any text:** Language-agnostic; no parsing required
+- **xxh32 hashes:** 2-char short hashes from xxHash32 (seeded at 0) — deterministic, fast, collision-detected
 
 ### The Anchor Format
 
-Anchors are `line_number:content_hash` pairs like `42:a3f2`:
+Anchors are `line_number:content_hash` pairs like `3:a7`:
 
-- **line_number**: 1-based line number (for human readability)
-- **content_hash**: First 4+ chars of SHA-256 of line content (for stability)
+- **line_number**: 1-based line number (for human readability, may shift)
+- **content_hash**: 2-char short xxh32 hash (stable against nearby edits)
 
 Example output from `hashline read`:
 ```
-  1:a1b2  fn main() {
-  2:c3d4      println!("hello");
-  3:e5f6  }
+  1:9b  fn main() {
+  2:89      let name = "hashline";
+  3:a7      let version = "0.8.4";
 ```
 
 ### Command Reference
 
-**Reading:**
 | Command | Purpose |
 |---------|---------|
-| `hashline read <file>` | Show file with line:hash anchors |
-| `hashline read <file> --anchor 42:a3f2` | Show context around specific anchor |
-| `hashline read <file> --context 10` | Set context lines (default: 5) |
-| `hashline index <file>` | Show just anchors, no content |
+| `hashline read <file>` | Show file with `[path#hash]` header + `line:hash|content` lines |
+| `hashline read <file> --json` | Machine-readable JSON output |
+| `hashline patch <file> <patch>` | Apply patch operations (see below) |
+| `hashline find-block <file> <anchor>` | Find enclosing brace/indent block around anchor |
+| `hashline write <file> <content>` | Create file (overwrite with `--force`) |
+| `hashline remove <file>` | Delete a file |
+| `hashline rename <old> <new>` | Rename/move a file |
+| `hashline guide` | Interactive user guide |
+| `hashline serve` | Daemon mode over Unix socket or HTTP |
+| `hashline mcp` | MCP server over stdio |
 
-**Editing:**
-| Command | Purpose |
-|---------|---------|
-| `hashline edit <file> <anchor> <content>` | Replace line at anchor |
-| `hashline edit <file> <start>..<end> <content>` | Replace line range |
-| `hashline insert <file> <anchor> <content>` | Insert after anchor |
-| `hashline insert <file> <anchor> <content> --before` | Insert before anchor |
-| `hashline delete <file> <anchor>` | Delete line at anchor |
-| `hashline delete <file> <start>..<end>` | Delete line range |
+### Patch Operations (hashline patch)
 
-**Searching:**
-| Command | Purpose |
-|---------|---------|
-| `hashline grep <file> <pattern>` | Search with anchor output |
-| `hashline grep <file> <pattern> --case-insensitive` | Case-insensitive search |
-| `hashline annotate <file> <query>` | Find and annotate matching lines |
-| `hashline annotate <file> <regex> --regex` | Regex search |
-| `hashline find-block <file> <anchor>` | Find enclosing block (brace/indent) |
+All editing goes through `hashline patch`. The `<patch>` argument is a string with operations in the format below. Use stdin (`hashline patch file - <<'EOF'`) for multi-op patches.
 
-**Utilities:**
-| Command | Purpose |
-|---------|---------|
-| `hashline verify <file>` | Verify file integrity |
-| `hashline stats <file>` | File statistics |
-| `hashline patch <file> <patch>` | Apply patch: `-` stdin, `@path` file, or literal text |
-| `hashline swap <file> <anchor1> <anchor2>` | Swap two lines |
-| `hashline move <file> <anchor> <target-anchor>` | Move line to new position |
-| `hashline indent <file> <anchor> <levels>` | Adjust indentation |
+**Operations:**
+| Op | Syntax | What it does |
+|----|--------|-------------|
+| **SWAP** | `SWAP N:hh:` | Replace line at anchor with payload |
+| **SWAP** | `SWAP N..M:` | Replace range N..M with payload |
+| **DEL** | `DEL N:hh` | Delete single line at anchor |
+| **DEL** | `DEL N..M` | Delete range N..M |
+| **INS.POST** | `INS.POST N:hh:` | Insert payload lines **after** anchor |
+| **INS.PRE** | `INS.PRE N:hh:` | Insert payload lines **before** anchor |
+| **INS.HEAD** | `INS.HEAD:` | Insert payload lines at top of file |
+| **INS.TAIL** | `INS.TAIL:` | Append payload lines at end of file |
+| **SWAP.BLK** | `SWAP.BLK N:` | Replace the syntactic block containing N (tree-sitter based) |
+| **DEL.BLK** | `DEL.BLK N` | Delete the syntactic block containing N |
+| **INS.BLK.POST** | `INS.BLK.POST N:` | Insert payload as a new block **after** the block at N |
+| **INS.BLK.PRE** | `INS.BLK.PRE N:` | Insert payload as a new block **before** the block at N |
 
-**Advanced:**
-| Command | Purpose |
-|---------|---------|
-| `hashline from-diff <diff-file>` | Convert diff to anchor edits |
-| `hashline merge-patches <file> <patch1> <patch2>` | Merge multiple patches |
-| `hashline watch <file>` | Watch file for changes |
-| `hashline explode <file>` | Split file into per-line files |
-| `hashline implode <file>` | Reassemble from per-line files |
+**Payload format:** Each line starts with `+`:
+```
+SWAP 3:a7:
++    let version = "0.9.0";
++    println!("version: {}", version);
+INS.POST 4:6c:
++    log::info!("done");
+```
 
 ### Typical Agent Workflow
 
@@ -79,154 +75,75 @@ Example output from `hashline read`:
    hashline read src/main.rs
    ```
 
-2. **Find specific content:**
+2. **Find scope:**
    ```bash
-   hashline grep src/main.rs "fn process" --json
+   hashline find-block src/main.rs 12:2e
    ```
 
-3. **Apply targeted edit:**
+3. **Apply edit with fresh anchor:**
    ```bash
-   hashline edit src/main.rs 42:a3f2 "fn process_data(input: &str) -> Result<()> {"
+   hashline patch src/main.rs "SWAP 12:2e:
+   +fn process_data(input: &str) -> String {
+   +    let trimmed = input.trim().to_lowercase();
+   +    format!(\"processed: {}\", trimmed)
+   +}"
    ```
 
-4. **Verify change:**
+4. **Verify:**
    ```bash
-   hashline read src/main.rs --anchor 42:a3f2
+   hashline read src/main.rs
    ```
+   
+5. **If stale anchor:** read file > get fresh anchors > retry. Never force, never bypass.
 
-5. **If anchor is stale, re-read and retry:**
-   ```bash
-   hashline read src/main.rs  # Get fresh anchors
-   hashline edit src/main.rs 42:new_hash "..."
-   ```
+### Options
 
-### Range Edits
+| Flag | Available on | Effect |
+|------|-------------|--------|
+| `--dry-run` | `patch` | Show what would change without modifying file |
+| `--safe` | `patch`, `write` | Atomic temp-file + fsync (crash-safe, slower) |
+| `--json` | `read`, `patch`, `find-block`, `write`, `remove` | Machine-readable JSON output |
+| `--no-cache` | `read` | Skip snapshot cache |
+| `--pretty` | `find-block` | Formatted output (default) |
+| `--force` | `write` | Overwrite existing file |
+| `--detach` | `serve` | Fork to background as daemon |
+| `--pid-file` | `serve` | Write PID to file |
+| `--socket` | `serve` | Unix socket path (default ~/.hashline/daemon.sock) |
+| `--http` | `serve` | HTTP port instead of Unix socket |
+| `--proxy-to-daemon` | `mcp` | Proxy MCP requests to running daemon |
 
-Replace multiple lines with range syntax:
+### Error Recovery
 
-```bash
-# Replace lines 10-15
-hashline edit src/main.rs 10:a1b2..15:c3d4 "new content\nspanning\nmultiple lines"
-
-# Delete lines 20-25
-hashline delete src/main.rs 20:e5f6..25:g7h8
+```
+Error: line 3 content changed since last read in sample.rs (expected hash a7, got e7)
+Hint: re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor
 ```
 
-### Multi-Line Patches (USE STDIN — never create .patch files)
-
-For multi-op patches, use `hashline patch` with stdin. **Never** write a `.patch` file to disk first:
-
-```bash
-# ✅ CORRECT — stdin via heredoc, no disk I/O
-hashline patch src/main.rs - <<'EOF'
-*** Begin Patch
-SWAP 42:a3f2:
-+fn process_data(input: &str) -> Result<()> {
-+    todo!()
-+}
-SWAP 45:1a2b:
-+    Ok(())
-*** End Patch
-EOF
-
-# ❌ WRONG — creates a stale .patch file littering /tmp
-cat > /tmp/something.patch <<'EOF'
-...patch content...
-EOF
-hashline patch src/main.rs @/tmp/something.patch
-```
-
-**Why stdin wins:**
-- No intermediate file on disk (no cleanup needed, no `/tmp` litter)
-- 1 process spawn vs 1 spawn + 1 file write + 1 file read
-- ~3x faster for typical patches
-- Atomic — patch content is bound to the command, not a stale file
-
-**`hashline patch <file> <patch>` argument modes:**
-- `hashline patch file -` → read from stdin
-- `hashline patch file @/path/to/file` → read from a file (only when patch is reused or pre-existing)
-- `hashline patch file "literal text"` → use the argument as-is (no newlines in shell-safe form)
-
-When in doubt: **stdin first, `@path` only if you already have a patch file on disk for another reason**.
-
-### Safety Features
-
-**Stale anchor detection:**
-```
-Error: anchor 42:a3f2 is stale (line content changed)
-Hint: re-run `hashline read src/main.rs` to get fresh anchors
-```
-
-**Ambiguous anchor detection:**
-```
-Error: anchor 42:a3 matches multiple lines
-Hint: use more hash characters: 42:a3f2e1
-```
-
-**Dry-run mode:**
-```bash
-hashline edit src/main.rs 42:a3f2 "new content" --dry-run
-```
-
-**Audit logging:**
-```bash
-hashline edit src/main.rs 42:a3f2 "new content" --receipt --audit-log edits.jsonl
-```
-
-### JSON Output
-
-All commands support `--json` for machine-readable output:
-
-```bash
-hashline read src/main.rs --json
-hashline grep src/main.rs "fn " --json
-hashline edit src/main.rs 42:a3f2 "new" --json
-```
+**Fix:** `hashline read <file>` → use the new hash → retry.
 
 ### Common Pitfalls
 
 - **Stale anchor:** Content changed since last read → re-run `hashline read`
-- **Ambiguous anchor:** Hash too short → use more characters from original hash
-- **Line shifted:** Nearby edits changed line numbers → hash still works, just re-read
-- **File deleted:** Obviously fails → check file exists before editing
-- **Binary file:** Only works on text files → don't use on binaries
-- **`.patch` file litter:** If you find yourself writing `cat > /tmp/foo.patch` before `hashline patch file @foo.patch` — STOP. Use stdin (`hashline patch file - <<'EOF' ... EOF`) instead. Creating the file is ~3x slower, leaves debris in `/tmp`, and gives you a stale-file footgun if the patch drifts before apply.
+- **File doesn't exist:** `hashline patch` fails with I/O error
+- **Binary file:** hashline only works on UTF-8 text files
+- **`-` rows rejected:** hashline patch uses `+` payload syntax only (no `-` removal lines)
+- **Boundary echo:** warning when payload first line duplicates the line above the target range
 
-### Rules for Agents (MANDATORY — Philosophy of hashline)
+### JSON Output
 
-hashline is NOT str_replace. It is NOT sed. It is NOT fuzzy matching. These rules are MANDATORY — they define what hashline IS and what it IS NOT.
+`read`, `patch`, and `find-block` all support `--json`:
 
-**Core identity — the read→patch cycle is a feature, not a bug:**
-- `hashline read` provides content-hash anchors (`42:a3`). `hashline patch` targets those anchors. This cycle is what makes edits **verifiable** and **safe**.
-- **Do NOT attempt to eliminate the read→patch cycle.** Every extra round-trip is intentional safety. The 200ms read cost is negligible vs a corrupted file that takes minutes to debug.
-- **hashline's value is safety through verifiability.** If the agent wants str_replace semantics (fuzzy matching, no pre-read), it should use `str_replace` directly. hashline will not degrade itself to compete on speed.
+```bash
+hashline read sample.rs --json
+# {"hash":"3a58","lines":[{"content":"fn main() {","hash":"9b","n":1},...],"path":"sample.rs"}
+```
 
-**Stale-anchor handling:**
-- **Treat stale-anchor failures as safety signals, NEVER as errors to bypass.**
-- **Never force an edit, never auto-re-read, never fuzzy match.** The only correct response to `StaleAnchor` is: `hashline read <file>` to get fresh anchors, then retry.
-- **hashline rejects stale edits before they corrupt your file.** That is the WHOLE POINT.
+### Rules for Agents (MANDATORY)
 
-**Usage discipline:**
-- **Always `hashline read <file>` before `hashline patch <file>`**. The read must be the latest — don't use cached hashes.
-- **Use `--dry-run` first** when editing critical files.
-- **Use `--json` output** for parsing in scripts.
-- **Never modify a file with hashline without having called `hashline read` on it first in the same logical edit session.**
-- **For multi-line patches, ALWAYS use stdin** (`hashline patch file - <<'EOF' ... EOF`). Never write a `.patch` file to disk first — it adds ~3x latency, clutters `/tmp`, and creates stale-file risk. `@path` is only for the rare case where a patch file already exists for another reason (e.g. test fixtures, version-controlled patches).
-
-**What hashline is NOT for:**
-- **Fuzzy replacement:** That's `str_replace`. hashline is anchor-based, not content-based.
-- **Whole-file rewrites:** Use the `write` tool or `std::fs::write`.
-- **Binary files:** hashline only works on UTF-8 text.
-- **Complex refactors:** Use tree-sitter based tools for AST-aware changes.
-- **Bulk multi-edit optimization:** If you need to make 10 edits, call `hashline read` once, then call `hashline patch` 10 times. Each patch returns the new file hash. The next patch verifies against that hash. This is the safety model — do not try to batch or collapse it.
-
-**If you find the read→patch cycle "friction":**
-1. You are using hashline for a task better suited to another tool.
-2. Use `str_replace` or `write` for that task instead.
-3. Do not ask hashline to compromise its safety model.
-
----
-
+- **Always `hashline read <file>` before `hashline patch <file>`** — fresh anchors every time
+- **Stale-anchor errors are safety signals, never bypass them**
+- **hashline is NOT str_replace, NOT sed.** For fuzzy matching, use the `patch` tool
+- **For multi-op patches, ALWAYS use stdin** (`hashline patch file - <<'EOF'`)
 
 
 ## MCP Agent Mail — Multi-Agent Coordination

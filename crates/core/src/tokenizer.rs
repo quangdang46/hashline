@@ -359,50 +359,64 @@ fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> (usize, Option<u
 }
 
 fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetScan> {
-    if index >= end || bytes[index] != CHAR_DOT {
+    // Check for dot-based modifiers: INS.PRE, INS.POST, INS.HEAD, INS.TAIL
+    if index < end && bytes[index] == CHAR_DOT {
+        let cursor = skip_whitespace(bytes, index + 1, end);
+
+        // INS.PRE N:
+        if let Some(before_end) = scan_keyword(bytes, cursor, end, HL_INSERT_BEFORE) {
+            let anchor = scan_line_number(bytes, skip_whitespace(bytes, before_end, end), end)?;
+            let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+            return Some(TargetScan {
+                target: BlockTarget::InsertBefore(Anchor { line: anchor.line }, hash),
+                next_index: next,
+            });
+        }
+
+        // INS.POST N:
+        if let Some(after_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER) {
+            let anchor = scan_line_number(bytes, skip_whitespace(bytes, after_end, end), end)?;
+            let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+            return Some(TargetScan {
+                target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
+                next_index: next,
+            });
+        }
+
+        // INS.HEAD:
+        if let Some(head_end) = scan_keyword(bytes, cursor, end, HL_INSERT_HEAD) {
+            let next = consume_optional_colon(bytes, head_end, end);
+            return Some(TargetScan {
+                target: BlockTarget::Bof,
+                next_index: next,
+            });
+        }
+
+        // INS.TAIL:
+        if let Some(tail_end) = scan_keyword(bytes, cursor, end, HL_INSERT_TAIL) {
+            let next = consume_optional_colon(bytes, tail_end, end);
+            return Some(TargetScan {
+                target: BlockTarget::Eof,
+                next_index: next,
+            });
+        }
+
+        // Has a dot but none of the known modifiers — not a valid INS target
         return None;
     }
-    let cursor = skip_whitespace(bytes, index + 1, end);
 
-    // INS.PRE N:
-    if let Some(before_end) = scan_keyword(bytes, cursor, end, HL_INSERT_BEFORE) {
-        let anchor = scan_line_number(bytes, skip_whitespace(bytes, before_end, end), end)?;
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
-        return Some(TargetScan {
-            target: BlockTarget::InsertBefore(Anchor { line: anchor.line }, hash),
-            next_index: next,
-        });
+    // No dot — treat bare `INS <N>:` as `INS.POST <N>:` (insert after line N).
+    // This handles the common case where users write `INS N:` as shorthand.
+    let num_start = skip_whitespace(bytes, index, end);
+    if num_start >= end || !is_digit_code(bytes[num_start]) {
+        return None;
     }
-
-    // INS.POST N:
-    if let Some(after_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER) {
-        let anchor = scan_line_number(bytes, skip_whitespace(bytes, after_end, end), end)?;
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
-        return Some(TargetScan {
-            target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
-            next_index: next,
-        });
-    }
-
-    // INS.HEAD:
-    if let Some(head_end) = scan_keyword(bytes, cursor, end, HL_INSERT_HEAD) {
-        let next = consume_optional_colon(bytes, head_end, end);
-        return Some(TargetScan {
-            target: BlockTarget::Bof,
-            next_index: next,
-        });
-    }
-
-    // INS.TAIL:
-    if let Some(tail_end) = scan_keyword(bytes, cursor, end, HL_INSERT_TAIL) {
-        let next = consume_optional_colon(bytes, tail_end, end);
-        return Some(TargetScan {
-            target: BlockTarget::Eof,
-            next_index: next,
-        });
-    }
-
-    None
+    let anchor = scan_line_number(bytes, num_start, end)?;
+    let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+    Some(TargetScan {
+        target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
+        next_index: next,
+    })
 }
 
 fn scan_mv_dest(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<String> {
