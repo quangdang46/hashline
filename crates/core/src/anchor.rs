@@ -250,7 +250,10 @@ fn resolve_qualified(
         let line_no = i + 1;
         let hash = format_short_hash(entries[i].short_hash);
         let display = if entries[i].content.len() > 80 {
-            format!("{}…", &entries[i].content[..80])
+            // Truncate at the last char boundary <= 80 bytes so multi-byte
+            // UTF-8 sequences (—, 🔥, résumé) don't cause a panic.
+            let trunc = truncate_utf8_safe(&entries[i].content, 80);
+            format!("{trunc}…")
         } else {
             entries[i].content.clone()
         };
@@ -396,6 +399,23 @@ pub fn resolve_query_region(
         });
     }
     Ok(Some((start_line, end_line)))
+}
+
+/// Truncate `text` to at most `max_bytes` bytes, splitting at the last UTF-8
+/// character boundary at or before the limit.  This is the safe alternative to
+/// `&text[..max_bytes]`, which **panics** when the byte index falls inside a
+/// multi-byte sequence (—, 🔥, accented chars — any non-ASCII character
+/// encoded as 2+ bytes).
+pub fn truncate_utf8_safe(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    // Walk backwards from the limit until we hit a char boundary.
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[cfg(test)]

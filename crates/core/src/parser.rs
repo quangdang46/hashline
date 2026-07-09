@@ -56,7 +56,15 @@ fn detect_apply_patch_contamination(text: &str, _has_pending: bool) -> Option<St
         || trimmed.starts_with("*** Move to:")
     {
         let preview = if trimmed.len() > 48 {
-            format!("{}…", &trimmed[..48])
+            // Use char-boundary-safe truncation for multi-byte safety.
+            let end = trimmed
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|&i| i < 48)
+                .last()
+                .map(|i| i + 1) // end after the last char fully under 48
+                .unwrap_or(0);
+            format!("{}…", &trimmed[..end])
         } else {
             trimmed.to_owned()
         };
