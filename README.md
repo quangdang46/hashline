@@ -1,39 +1,92 @@
-<p align="center">
-  <img src="hashline_illustration.webp" alt="hashline" width="720">
-</p>
+# hashline
 
-<p align="center">
-  <b>Hash-anchored file editing for Claude Code, AI coding agents, and patch-safe automation.</b>
-</p>
+<div align="center">
+  <img src="hashline_illustration.webp" alt="hashline — Hash-anchored file editing for AI coding agents">
+</div>
 
-<p align="center">
-  <a href="#"><img src="https://img.shields.io/github/v/release/quangdang46/hashline?logo=github&label=release" alt="Release"></a>
-  <a href="#"><img src="https://img.shields.io/github/actions/workflow/status/quangdang46/hashline/ci.yml?branch=main&logo=github&label=CI" alt="CI"></a>
-  <a href="#"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
-  <a href="#"><img src="https://img.shields.io/badge/Rust-1.85+-blue?logo=rust" alt="Rust"></a>
-</p>
+<div align="center">
+
+![Release](https://img.shields.io/github/v/release/quangdang46/hashline?logo=github&label=release)
+![CI](https://img.shields.io/github/actions/workflow/status/quangdang46/hashline/ci.yml?branch=main&logo=github&label=CI)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Rust](https://img.shields.io/badge/Rust-1.85+-blue?logo=rust)
+
+</div>
+
+**Hash-anchored file editing for Claude Code, AI coding agents, and patch-safe automation.**  
+Every line gets a stable xxh32 hash (`42:a3`). Patch by anchor, not by fragile text match. Stale reads are caught and rejected before they corrupt your work.
+
+<div align="center">
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/hashline/main/install.sh?$(date +%s)" | bash
 ```
 
+</div>
+
+---
+
+## 🤖 Agent Quickstart (MCP / Robot Mode)
+
+hashline ships a 6-tool MCP server that works with Claude Code, Codex, Cursor, Windsurf, Gemini CLI, and OpenCode. The installer auto-configures it.
+
+```bash
+# MCP stdio server (auto-wired by installer)
+hashline mcp
+
+# Read a file with hashes — agents copy anchors, not lines
+hashline read src/auth.js --json
+
+# Patch by anchor — survives nearby edits
+hashline patch src/auth.js 'SWAP 2:b2:'
++  const decoded = jwt.verify(token, env.SECRET)
+
+# Dry-run before applying
+hashline patch src/auth.js 'DEL 3' --dry-run --json
+```
+
+**Output conventions**
+- stdout = data only (file content, patch result, JSON)
+- stderr = diagnostics, warnings
+- exit 0 = success, exit 1 = stale-read rejection or no-op
+
 ---
 
 ## TL;DR
 
-**The Problem** — AI coding agents (`str_replace`, `sed`, bespoke edit tools) routinely botch file edits: whitespace mismatch, stale context, broken blocks. Each failure costs 10–60 s in retry round-trips. Line numbers shift after the first edit, so targeting by number alone is fragile.
+### The Problem
 
-**The Solution** — `hashline` uses content-hashed line anchors (`42:a3`) that survive nearby edits. Read a file once, get fresh xxh32 hashes for every line. Patch using those anchors. If the file changed since your last read, `hashline` rejects the patch — no silent corruption.
+AI coding agents (`str_replace`, `sed`, bespoke edit LLM tools) routinely botch file edits. The pattern is always the same: whitespace mismatch, stale context, a `}` that was supposed to close a block but grabbed the wrong one instead. Each failure costs 10–60 seconds in retry round-trips, and after the first successful edit, every remaining line number shifts — so targeting by number alone is fragile.
 
-**Why `hashline` over `str_replace`?**
-| Capability | `str_replace` | **hashline** |
-|---|---|---|
-| Target by exact old text | ✓ | — |
-| **Target by stable anchor** | — | `42:a3` |
-| Stale-read detection | No | Content-hash mismatch |
-| Whitespace-agnostic editing | No | Line anchors don't care |
-| Block-aware ops (SWAP.BLK) | No | ✓ |
-| Atomic writes | No | ✓ |
+### The Solution
+
+`hashline` replaces fragile text-matching with content-hashed line anchors (`42:a3`). Read a file once and every line comes with a stable xxh32 hash. Patch using those anchors — insertions, deletions, swaps, and block replacements all reference hashes, not line text or numbers. If the file changed between read and apply, hashline rejects the patch with a clear error. No silent corruption, no wasted retries.
+
+### Why hashline?
+
+| Feature | What it does |
+|---------|--------------|
+| **Stable anchors** | xxh32 hashes survive nearby edits; re-targeting is one anchor change |
+| **Stale-read detection** | Hard error if file changed between read and patch |
+| **Block-aware ops** | `SWAP.BLK` / `DEL.BLK` / `INS.BLK.POST` for brace-delimited, indent-based, and Ruby `def…end` blocks |
+| **Atomic writes** | Temp file + rename. No partial writes, no torn edits |
+| **Multi-op patches** | Several SWAP/DEL/INS in one pass via stdin pipe |
+| **MCP server** | 6-tool stdio MCP for Claude Code, Codex, Cursor, and friends |
+| **Daemon mode** | Background JSON-RPC over Unix socket or HTTP |
+| **Dry-run preview** | `--dry-run` shows diff before applying |
+
+### How hashline Compares
+
+| Dimension | hashline | `str_replace` (built-in) | `sed` |
+|-----------|----------|--------------------------|-------|
+| **Stable anchors** | ✅ xxh32 hash `42:a3` | ❌ Exact text match | ❌ Fragile regex |
+| **Stale-read detection** | ✅ Hard error on mismatch | ❌ Applies blindly | ❌ Applies blindly |
+| **Block replacement** | ✅ SWAP.BLK / DEL.BLK / INS.BLK.POST | ❌ Line-granularity | ❌ Line-granularity |
+| **Atomic writes** | ✅ Temp file + rename | ✅ Temp file + rename | ❌ In-place (torn writes possible) |
+| **Multi-op batches** | ✅ stdin `*** Begin Patch` | ❌ One replacement per call | ✅ `-e` flag chaining |
+| **Dry-run preview** | ✅ `--dry-run` with diff | ❌ Not supported | ❌ Not supported |
+| **MCP server** | ✅ `hashline mcp` (6 tools) | N/A | N/A |
+| **Setup** | Single Rust binary ~280 µs anchor resolution | Built into agent | POSIX standard | |
 
 ---
 
@@ -68,19 +121,15 @@ hashline patch src/app.ts 'SWAP 3:c3:
 | **Block awareness** | Brace-delimited, indentation-based, and Ruby `def…end` block ops eliminate the "find the closing brace" problem that LLMs struggle with. |
 | **Atomic writes only** | Temp file + rename. No partial writes, no torn edits. |
 
----
+## Limitation vs Alternatives
 
-## Comparison vs Alternatives
+Why hashline is not a drop-in for `sed` or `str_replace`:
 
-| Dimension | `hashline` | `sed` | `str_replace` (built-in) |
-|---|---|---|---|
-| **Stable anchors** | ✓ (content hash) | — | — |
-| **Stale-read detection** | ✓ | — | — |
-| **Block replacement** | SWAP.BLK / DEL.BLK / INS.BLK.POST | — | — |
-| **Atomic writes** | ✓ | — | ✓ |
-| **Dry-run preview** | `--dry-run` | — | — |
-| **MCP server** | `hashline mcp` | — | — |
-| **Language** | Rust (single binary) | POSIX | Built-in |
+| Edge case | Reality |
+|-----------|---------|
+| **Text-search edits** | hashline does **not** support `sed s/old/new/g` — use `sed` when you need regex replacement across non-hashable text |
+| **Line-number targeting** | hashline accepts line-number targets as fallback, but the design is anchor-first |
+| **Interactive editing** | hashline is batch-oriented (read → patch) — for interactive editing use your editor |
 
 ---
 
@@ -192,7 +241,15 @@ Block-aware resolution by extension:
 
 ---
 
-## Troubleshooting
+## Limitations
+
+| Edge case | Reality |
+|-----------|---------|
+| **Not a sed replacement** | hashline does not support regex find-and-replace across text — use `sed` for that |
+| **Anchor-first design** | Line-number targeting works as fallback, but the tool is optimized for hash-based edits |
+| **Batch-oriented** | read → patch workflow, not interactive editing |
+| **No tree-sitter** | Block resolution is syntactic (brace depth, indent, `end`), not AST-based |
+
 
 | Error | Likely Cause | Fix |
 |---|---|---|
