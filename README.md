@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="hashline_illustration.png" alt="hashline" width="720">
+  <img src="hashline_illustration.webp" alt="hashline" width="720">
 </p>
 
 <p align="center">
