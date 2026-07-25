@@ -523,13 +523,31 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     };
     let (edits, warnings, _file_op, _aborted) = parse_patch(patch_str);
 
-    for w in &warnings {
-        eprintln!("warning: {w}");
+    // Surface warnings in the tool result so MCP clients see them
+    // (Issue #93 — warnings are not just debug info for the terminal).
+    // The first line of the response carries the outcome; warnings follow
+    // as indented notes that are visible in both CLI and agent output.
+    let mut warning_line = String::new();
+    if !warnings.is_empty() {
+        warning_line = format!(
+            "\n  warnings:\n{}",
+            warnings
+                .iter()
+                .map(|w| format!("    - {w}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     if edits.is_empty() {
-        return "Error: patch produced no edits — input was empty or all operations were rejected"
-            .to_string();
+        let base = if warnings.is_empty() {
+            "Error: patch produced no edits — input was empty or all operations were rejected"
+                .to_string()
+        } else {
+            let reason = &warnings[0];
+            format!("Error: patch produced no edits — {reason}")
+        };
+        return format!("{base}{warning_line}");
     }
 
     let (mut lines, _) = split_text(&fc.normalized);
@@ -548,10 +566,10 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     };
 
     if dry_run {
-        format!("Dry-run result:\n{}", final_text)
+        format!("Dry-run result:\n{final_text}")
     } else {
         match crate::commands::common::fast_write(path, final_text.as_bytes()) {
-            Ok(_) => format!("Patch applied.\n{}", handle_read(file, false)),
+            Ok(_) => format!("Patch applied.{warning_line}\n{}", handle_read(file, false)),
             Err(e) => format!("Error writing file: {e}"),
         }
     }

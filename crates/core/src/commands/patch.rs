@@ -1165,7 +1165,7 @@ mod tests {
         // The `-bad` line should generate a warning at least once
         let has_minus_warning = warnings
             .iter()
-            .any(|w| w.contains("`-` rows are not valid"));
+            .any(|w| w.contains("`-` rows accepted as content"));
         assert!(
             has_minus_warning,
             "expected MINUS_ROW_REJECTED warning, got warnings: {warnings:?}"
@@ -1366,5 +1366,49 @@ mod tests {
         let patch = format!("SWAP.BLK 1:{h}:\n+fn replaced() {{\n}}\n");
         let result = apply_text_result(original, &patch, "rs").unwrap();
         assert_eq!(result, "fn replaced() {\n}\nfn b() {\n    let x = 1;\n}");
+    }
+
+    // =====================================================================
+    // Regression tests for Issue #93 — content-loss bugs
+    // =====================================================================
+
+    #[test]
+    fn bug93_interior_blank_lines_in_ins_post() {
+        // Problem A: blank lines inside an inserted block must survive
+        let result = apply_text(
+            "Intro line.\nAnchor paragraph.\nTrailing line.",
+            "INS.POST 2:\n+First paragraph.\n\n+Second paragraph.",
+        );
+        assert_eq!(
+            result,
+            "Intro line.\nAnchor paragraph.\nFirst paragraph.\n\nSecond paragraph.\nTrailing line."
+        );
+    }
+
+    #[test]
+    fn bug93_bare_minus_lines_preserved() {
+        // Problem B: bare `-` lines must be preserved as content (with warning)
+        let result = apply_text(
+            "Intro line.\nAnchor paragraph.\nTrailing line.",
+            "INS.POST 2:\n+Here is a list:\n- first item\n- second item\n+Done.",
+        );
+        assert_eq!(
+            result,
+            "Intro line.\nAnchor paragraph.\nHere is a list:\n- first item\n- second item\nDone.\nTrailing line."
+        );
+    }
+
+    #[test]
+    fn bug93_trailing_blanks_still_stripped() {
+        // Trailing blank lines at the end of a payload block should still be dropped
+        let result = apply_text("AAA\nBBB\nCCC", "INS.POST 2:\n+XXX\n+YYY\n");
+        assert_eq!(result, "AAA\nBBB\nXXX\nYYY\nCCC");
+    }
+
+    #[test]
+    fn bug93_interior_and_trailing_blanks() {
+        // Interior blank preserved, trailing blanks dropped
+        let result = apply_text("AAA\nBBB\nCCC", "INS.POST 2:\n+XXX\n\n+YYY\n");
+        assert_eq!(result, "AAA\nBBB\nXXX\n\nYYY\nCCC");
     }
 }

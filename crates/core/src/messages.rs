@@ -11,8 +11,7 @@ pub const ABORT_MARKER: &str = "*** Abort";
 
 pub const BARE_BODY_AUTO_PIPED_WARNING: &str =
     "bare body auto-piped (no `+` prefix) — model should prefix body rows with `+` to be explicit";
-pub const MINUS_ROW_REJECTED: &str =
-    "`-` rows are not valid in hashline; only `+TEXT` payload lines are accepted";
+pub const MINUS_ROW_REJECTED: &str = "`-` rows accepted as content but should use `+-` prefix (e.g. `+- list item`) for explicit neutral payload; bare `-` is reserved for future diff syntax";
 /// Warning when a raw line looks like it's trying to be a hunk operation
 /// but uses an unknown keyword. Example: `FOO 1:` or `BAR.BAZ 5:`.
 pub const UNKNOWN_OP_ROW: &str = "unknown operation";

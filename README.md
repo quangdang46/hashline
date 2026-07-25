@@ -241,6 +241,26 @@ Block-aware resolution by extension:
 
 ---
 
+## Payload Escapes
+
+Payload lines starting with `+` have the `+` prefix consumed as a sigil marker. To produce a literal leading `+` or `-`, use the escapes:
+
+| Input | Output | When to use |
+|-------|--------|-------------|
+| `++text` | `+text` | Content that literally starts with a `+` sign |
+| `+-text` | `-text` | Content that literally starts with a `-` (e.g. Markdown list items). Without the escape, bare `-` lines emit a warning but are still preserved. |
+
+A blank line inside a payload block is written as a bare empty line (no `+` prefix):
+
+```
+INS.POST 2:
++First paragraph.
+
++Second paragraph.
+```
+
+---
+
 ## Limitations
 
 | Edge case | Reality |

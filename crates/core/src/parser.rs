@@ -202,7 +202,13 @@ impl Executor {
             return;
         }
         let pending_mut = self.pending.as_mut().unwrap();
-        pending_mut.deferred_blanks.clear();
+        // Flush deferred blanks into payloads before appending the new
+        // payload line, so interior blank lines survive (Issue #93-A).
+        // Trailing blanks that remain deferred at flush_pending are
+        // still dropped, preserving the trailing-blank trimming behavior.
+        pending_mut
+            .payloads
+            .append(&mut pending_mut.deferred_blanks);
         pending_mut.payloads.push(PayloadRow {
             text: text.to_owned(),
             line_num,
@@ -231,6 +237,18 @@ impl Executor {
                 if !self.warnings.contains(&MINUS_ROW_REJECTED.to_string()) {
                     self.warnings.push(MINUS_ROW_REJECTED.to_owned());
                 }
+                // Preserve `-` content in output while still warning
+                // (Issue #93-B). Mark as bare:false so prefix-stripping
+                // doesn't eat the leading `-`.
+                let pending_mut = self.pending.as_mut().unwrap();
+                pending_mut
+                    .payloads
+                    .append(&mut pending_mut.deferred_blanks);
+                pending_mut.payloads.push(PayloadRow {
+                    text: text.to_owned(),
+                    line_num,
+                    bare: false,
+                });
                 return;
             }
             if !self
@@ -240,7 +258,11 @@ impl Executor {
                 self.warnings.push(BARE_BODY_AUTO_PIPED_WARNING.to_owned());
             }
             let pending_mut = self.pending.as_mut().unwrap();
-            pending_mut.deferred_blanks.clear();
+            // Flush deferred blanks into payloads before appending the new
+            // payload line, so interior blank lines survive (Issue #93-A).
+            pending_mut
+                .payloads
+                .append(&mut pending_mut.deferred_blanks);
             pending_mut.payloads.push(PayloadRow {
                 text: text.to_owned(),
                 line_num,

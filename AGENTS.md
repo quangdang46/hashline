@@ -126,7 +126,8 @@ Hint: re-read the file with `hashline read <file>`; if the hash moved, use the r
 - **Stale anchor:** Content changed since last read → re-run `hashline read`
 - **File doesn't exist:** `hashline patch` fails with I/O error
 - **Binary file:** hashline only works on UTF-8 text files
-- **`-` rows rejected:** hashline patch uses `+` payload syntax only (no `-` removal lines)
+- **`-` rows generate a warning and are still preserved as content:** hashline patch uses `+` payload syntax; bare `-` items (e.g. Markdown list items) produce a warning but are preserved. Use the `+-` escape to suppress the warning: `+- list item` → `- list item`
+- **Leading sigil is consumed:** The `+` payload prefix is stripped; if you need a literal leading `+`, double it: `++plus` → `+plus`. Same for bare body (no `+`) lines — they're treated as body content but may trigger a warning about missing `+` prefix
 - **Boundary echo:** warning when payload first line duplicates the line above the target range
 
 ### JSON Output
