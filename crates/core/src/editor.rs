@@ -332,6 +332,92 @@ impl Editor {
             dry_run,
         })
     }
+    // ------------------------------------------------------------------
+    // In-memory apply (no disk I/O)
+    // ------------------------------------------------------------------
+
+    /// Apply a hashline patch to an in-memory text buffer.
+    ///
+    /// Unlike [`Editor::patch`], this method does **not**:
+    /// - Read or write to disk
+    /// - Record or invalidate snapshots
+    /// - Detect stale anchors (no prior snapshot context)
+    ///
+    /// It parses the patch, resolves block edits, applies them to the text,
+    /// and returns the resulting text with metadata. Perfect for consumers
+    /// like next-code that manage their own file I/O, snapshot stores, and
+    /// bus events.
+    ///
+    /// `path` is a display name passed through to block resolution (language
+    /// detection by extension). It does not need to point to an existing file.
+    pub fn apply_to_text(
+        &mut self,
+        text: &str,
+        patch_str: &str,
+        path: &str,
+    ) -> Result<PatchResult, HashlineError> {
+        let (edits, warnings, _file_op, aborted) = parse_patch(patch_str);
+
+        if edits.is_empty() {
+            if aborted {
+                let hash = hash::compute_file_hash(text);
+                return Ok(PatchResult {
+                    applied_edits: 0,
+                    hash,
+                    warnings,
+                    text: text.to_string(),
+                    dry_run: false,
+                });
+            }
+            return if warnings.is_empty() {
+                Err(HashlineError::EmptyPatch)
+            } else {
+                Err(HashlineError::EmptyPatchWithReason {
+                    reason: warnings[0].clone().into_boxed_str(),
+                })
+            };
+        }
+
+        // Resolve block edits
+        let resolved = resolve_block_edits(&edits, text, path, self.block_resolver.as_deref())
+            .map_err(|msg| HashlineError::BlockUnresolved {
+                line: 0,
+                message: msg,
+            })?;
+
+        // Build fake FileContent-like data for apply_edits
+        let entries: Vec<crate::document::LineEntry> = text
+            .split('\n')
+            .map(|s| crate::document::LineEntry {
+                content: s.to_string(),
+                short_hash: hash::short_hash_value(s),
+            })
+            .collect();
+
+        let mut lines: Vec<String> = split_normalized(text);
+        let had_trailing_newline = text.ends_with('\n');
+        let path_obj = std::path::Path::new(path);
+
+        crate::commands::patch::apply_edits(&mut lines, &entries, path_obj, &resolved)?;
+
+        let result = if had_trailing_newline && !lines.is_empty() {
+            lines.join("\n") + "\n"
+        } else if lines.is_empty() {
+            String::new()
+        } else {
+            lines.join("\n")
+        };
+
+        let new_hash = hash::compute_file_hash(&result);
+
+        Ok(PatchResult {
+            applied_edits: resolved.len(),
+            hash: new_hash,
+            warnings,
+            text: result,
+            dry_run: false,
+        })
+    }
 
     // ------------------------------------------------------------------
     // Write
