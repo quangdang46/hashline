@@ -8,7 +8,10 @@
 pub mod anchor;
 pub mod apply;
 pub mod block;
+pub mod builtin_resolver;
+pub mod config;
 pub mod document;
+pub mod editor;
 pub mod error;
 pub mod hash;
 pub mod merge;
@@ -37,3 +40,9 @@ pub mod mcp;
 pub mod orchestration;
 #[doc(hidden)]
 pub mod output;
+
+// Re-exports: the public API surface for library consumers
+pub use config::HashlineConfig;
+pub use editor::{Editor, FindBlockResult, LineWithHash, PatchResult, ReadResult, WriteResult};
+pub use snapshot_store::SnapshotStore;
+pub use types::BlockResolver;

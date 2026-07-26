@@ -6,6 +6,49 @@
 //! (no external LRU crate).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+/// A [`SnapshotStore`] that records nothing and returns nothing.
+///
+/// Use this when you want hashline to operate without any snapshot caching
+/// whatsoever — no memory overhead, no state tracking. Every patch is
+/// applied blind (no stale-anchor detection against a prior snapshot;
+/// anchors are still validated against the file on disk).
+///
+/// This is the equivalent of `enable_snapshots: false` in
+/// [`HashlineConfig`](crate::config::HashlineConfig).
+pub struct NoopSnapshotStore;
+
+impl NoopSnapshotStore {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for NoopSnapshotStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SnapshotStore for NoopSnapshotStore {
+    fn head(&self, _path: &str) -> Option<Snapshot> {
+        None
+    }
+
+    fn by_hash(&self, _path: &str, _hash: &str) -> Option<Snapshot> {
+        None
+    }
+
+    fn record(&mut self, _path: &str, full_text: &str, _seen_lines: Option<&[usize]>) -> String {
+        crate::hash::compute_file_hash(full_text)
+    }
+
+    fn record_seen_lines(&mut self, _path: &str, _hash: &str, _lines: &[usize]) {}
+
+    fn invalidate(&mut self, _path: &str) {}
+
+    fn clear(&mut self) {}
+}
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One full-file version observed at a point in time. The tag the model sees is
