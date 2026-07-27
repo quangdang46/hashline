@@ -419,6 +419,61 @@ impl Editor {
         })
     }
 
+    /// Apply pre-parsed edits to an in-memory text buffer.
+    ///
+    /// Unlike [`Editor::apply_to_text`], this method takes already-parsed
+    /// [`Edit`](crate::types::Edit) items rather than a patch string.
+    /// Useful when the consumer has already called `parse_patch` and wants
+    /// to apply the same edits to multiple versions of a file (e.g. recovery).
+    ///
+    /// Like `apply_to_text`, it does **not** touch disk or snapshots.
+    /// Block edits are resolved via the configured block resolver.
+    pub fn apply_edits(
+        &mut self,
+        text: &str,
+        edits: &[crate::types::Edit],
+        path: &str,
+    ) -> Result<PatchResult, HashlineError> {
+        // Resolve block edits
+        let resolved = resolve_block_edits(edits, text, path, self.block_resolver.as_deref())
+            .map_err(|msg| HashlineError::BlockUnresolved {
+                line: 0,
+                message: msg,
+            })?;
+
+        let entries: Vec<crate::document::LineEntry> = text
+            .split('\n')
+            .map(|s| crate::document::LineEntry {
+                content: s.to_string(),
+                short_hash: hash::short_hash_value(s),
+            })
+            .collect();
+
+        let mut lines: Vec<String> = split_normalized(text);
+        let had_trailing_newline = text.ends_with('\n');
+        let path_obj = std::path::Path::new(path);
+
+        crate::commands::patch::apply_edits(&mut lines, &entries, path_obj, &resolved)?;
+
+        let result = if had_trailing_newline && !lines.is_empty() {
+            lines.join("\n") + "\n"
+        } else if lines.is_empty() {
+            String::new()
+        } else {
+            lines.join("\n")
+        };
+
+        let new_hash = hash::compute_file_hash(&result);
+
+        Ok(PatchResult {
+            applied_edits: resolved.len(),
+            hash: new_hash,
+            warnings: Vec::new(),
+            text: result,
+            dry_run: false,
+        })
+    }
+
     // ------------------------------------------------------------------
     // Write
     // ------------------------------------------------------------------
