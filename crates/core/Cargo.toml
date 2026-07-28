@@ -14,8 +14,7 @@ categories = ["command-line-utilities", "text-editors", "development-tools"]
 include = [
     "src/**/*.rs",
     "Cargo.toml",
-    "LICENSE-MIT",
-    "LICENSE-APACHE",
+    "MIT",
     "../../README.md",
 ]
 autobenches = false
