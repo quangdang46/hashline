@@ -1369,6 +1369,86 @@ mod tests {
     }
 
     // =====================================================================
+    // Regression tests for Issue #95 — SWAP.BLK / DEL.BLK range format
+    // =====================================================================
+
+    #[test]
+    fn bug95_swap_blk_range_replaces_concrete_lines() {
+        // SWAP.BLK N M with two anchors must be treated as a concrete range,
+        // not a block to resolve.
+        let result = apply_text("line1\nline2\nline3\nline4\nline5", "SWAP.BLK 2 4:\n+x\n+y\n+z");
+        assert_eq!(result, "line1\nx\ny\nz\nline5");
+    }
+
+    #[test]
+    fn bug95_swap_blk_range_with_hash() {
+        // SWAP.BLK N:HH M:HH with hashes on both anchors
+        let original = "line1\nline2\nline3\nline4\nline5";
+        let h2 = crate::hash::format_short_hash(crate::hash::short_hash_value("line2"));
+        let h4 = crate::hash::format_short_hash(crate::hash::short_hash_value("line4"));
+        let patch = format!("SWAP.BLK 2:{h2} 4:{h4}:\n+x\n+y\n+z");
+        let result = apply_text(original, &patch);
+        assert_eq!(result, "line1\nx\ny\nz\nline5");
+    }
+
+    #[test]
+    fn bug95_del_blk_range_deletes_concrete_lines() {
+        // DEL.BLK N M with two anchors must delete the concrete range
+        let result = apply_text("line1\nline2\nline3\nline4\nline5", "DEL.BLK 2 4");
+        assert_eq!(result, "line1\nline5");
+    }
+
+    #[test]
+    fn bug95_swap_blk_range_after_swap_no_corruption() {
+        // SWAP then SWAP.BLK range in sequence — the corruption scenario
+        let result = apply_text("line1\nline2\nline3\nline4\nline5", "SWAP 1:\n+updated1\nSWAP.BLK 3 4:\n+x\n+y");
+        assert_eq!(result, "updated1\nline2\nx\ny\nline5");
+    }
+
+    #[test]
+    fn bug95_swap_blk_single_anchor_still_resolves_block() {
+        // SWAP.BLK N: single-anchor format must still resolve via built-in resolver
+        let original = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let patch = "SWAP.BLK 1:\n+fn replaced() {\n+    // new body\n+}\n";
+        let result = apply_text(original, patch);
+        // The old block (6 lines) is replaced with 3 replacement lines
+        assert_eq!(result, "fn replaced() {\n    // new body\n}\n");
+    }
+
+    #[test]
+    fn bug95_del_blk_single_anchor_still_resolves_block() {
+        // DEL.BLK N single-anchor format must still resolve via built-in resolver
+        let original = "fn hello() {\n    let x = 1;\n}\n";
+        let patch = "DEL.BLK 1";
+        let result = apply_text(original, patch);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn bug95_swap_blk_range_followed_by_insert() {
+        // SWAP.BLK range then INS in the same patch
+        let result = apply_text("line1\nline2\nline3\nline4\nline5", "SWAP.BLK 2 3:\n+x\n+y\nINS.TAIL:\n+z");
+        assert_eq!(result, "line1\nx\ny\nline4\nline5\nz");
+    }
+
+    #[test]
+    fn bug95_del_blk_range_followed_by_insert() {
+        // DEL.BLK range then INS in the same patch
+        let result = apply_text("line1\nline2\nline3\nline4\nline5", "DEL.BLK 2 4\nINS.HEAD:\n+prefix");
+        assert_eq!(result, "prefix\nline1\nline5");
+    }
+
+    #[test]
+    fn bug95_swap_blk_range_no_hash_on_second_anchor() {
+        // First anchor has hash, second doesn't
+        let original = "line1\nline2\nline3\nline4\nline5";
+        let h2 = crate::hash::format_short_hash(crate::hash::short_hash_value("line2"));
+        let patch = format!("SWAP.BLK 2:{h2} 4:\n+x\n+y\n+z");
+        let result = apply_text(original, &patch);
+        assert_eq!(result, "line1\nx\ny\nz\nline5");
+    }
+
+    // =====================================================================
     // Regression tests for Issue #93 — content-loss bugs
     // =====================================================================
 

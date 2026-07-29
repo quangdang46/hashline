@@ -160,7 +160,9 @@ impl Executor {
                     BlockTarget::Replace(_, _) | BlockTarget::Delete(_, _)
                 ) {
                     if let BlockTarget::Replace(r, _) | BlockTarget::Delete(r, _) = &target {
-                        let _ = validate_range_order(r, line_num);
+                        if let Err(e) = validate_range_order(r, line_num) {
+                            self.warnings.push(e);
+                        }
                     }
                 }
                 self.flush_pending();

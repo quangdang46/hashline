@@ -456,10 +456,29 @@ fn scan_mv_dest(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<St
 fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Option<TargetScan> {
     let cursor = skip_whitespace(bytes, start, end);
 
-    // SWAP.BLK N:
+    // SWAP.BLK N:  or SWAP.BLK N:HH M:HH (two-anchor → concrete range)
     if let Some(block_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, block_end, end), end)?;
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        // Check for two-anchor format: SWAP.BLK N:HH M:HH → treat as concrete Replace range
+        if next < end {
+            let after_ws = skip_whitespace(bytes, next, end);
+            if let Some(second) = scan_line_number(bytes, after_ws, end) {
+                let (second_next, _) = consume_with_hash(bytes, second.next_index, end);
+                if skip_whitespace(bytes, second_next, end) == end {
+                    return Some(TargetScan {
+                        target: BlockTarget::Replace(
+                            ParsedRange {
+                                start: Anchor { line: anchor.line },
+                                end: Anchor { line: second.line },
+                            },
+                            hash,
+                        ),
+                        next_index: end,
+                    });
+                }
+            }
+        }
         return Some(TargetScan {
             target: BlockTarget::Block(Anchor { line: anchor.line }, hash),
             next_index: next,
@@ -476,13 +495,33 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         });
     }
 
-    // DEL.BLK N (no body, but accepts optional :HH: hash suffix)
+    // DEL.BLK N  or DEL.BLK N:HH M:HH (two-anchor → concrete range)
     if let Some(del_block_end) = scan_keyword(bytes, cursor, end, HL_DELETE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, del_block_end, end), end)?;
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
-        // No colon after hash allowed — DEL.BLK takes no body
-        if next < end && bytes[next] == CHAR_COLON {
-            return None;
+        // Check for two-anchor format: DEL.BLK N:HH M:HH → treat as concrete Delete range
+        if next < end {
+            let after_ws = skip_whitespace(bytes, next, end);
+            if let Some(second) = scan_line_number(bytes, after_ws, end) {
+                let (second_next, _) = consume_with_hash(bytes, second.next_index, end);
+                if skip_whitespace(bytes, second_next, end) == end {
+                    return Some(TargetScan {
+                        target: BlockTarget::Delete(
+                            ParsedRange {
+                                start: Anchor { line: anchor.line },
+                                end: Anchor { line: second.line },
+                            },
+                            hash,
+                        ),
+                        next_index: end,
+                    });
+                }
+            }
+            // Two-anchor parse failed; before rejecting, check for colon
+            // which blocks fall-through to raw classification
+            if next < end && bytes[next] == CHAR_COLON {
+                return None;
+            }
         }
         return Some(TargetScan {
             target: BlockTarget::DeleteBlock(Anchor { line: anchor.line }, hash),
