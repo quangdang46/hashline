@@ -1376,7 +1376,10 @@ mod tests {
     fn bug95_swap_blk_range_replaces_concrete_lines() {
         // SWAP.BLK N M with two anchors must be treated as a concrete range,
         // not a block to resolve.
-        let result = apply_text("line1\nline2\nline3\nline4\nline5", "SWAP.BLK 2 4:\n+x\n+y\n+z");
+        let result = apply_text(
+            "line1\nline2\nline3\nline4\nline5",
+            "SWAP.BLK 2 4:\n+x\n+y\n+z",
+        );
         assert_eq!(result, "line1\nx\ny\nz\nline5");
     }
 
@@ -1401,14 +1404,18 @@ mod tests {
     #[test]
     fn bug95_swap_blk_range_after_swap_no_corruption() {
         // SWAP then SWAP.BLK range in sequence — the corruption scenario
-        let result = apply_text("line1\nline2\nline3\nline4\nline5", "SWAP 1:\n+updated1\nSWAP.BLK 3 4:\n+x\n+y");
+        let result = apply_text(
+            "line1\nline2\nline3\nline4\nline5",
+            "SWAP 1:\n+updated1\nSWAP.BLK 3 4:\n+x\n+y",
+        );
         assert_eq!(result, "updated1\nline2\nx\ny\nline5");
     }
 
     #[test]
     fn bug95_swap_blk_single_anchor_still_resolves_block() {
         // SWAP.BLK N: single-anchor format must still resolve via built-in resolver
-        let original = "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
+        let original =
+            "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let patch = "SWAP.BLK 1:\n+fn replaced() {\n+    // new body\n+}\n";
         let result = apply_text(original, patch);
         // The old block (6 lines) is replaced with 3 replacement lines
@@ -1427,14 +1434,20 @@ mod tests {
     #[test]
     fn bug95_swap_blk_range_followed_by_insert() {
         // SWAP.BLK range then INS in the same patch
-        let result = apply_text("line1\nline2\nline3\nline4\nline5", "SWAP.BLK 2 3:\n+x\n+y\nINS.TAIL:\n+z");
+        let result = apply_text(
+            "line1\nline2\nline3\nline4\nline5",
+            "SWAP.BLK 2 3:\n+x\n+y\nINS.TAIL:\n+z",
+        );
         assert_eq!(result, "line1\nx\ny\nline4\nline5\nz");
     }
 
     #[test]
     fn bug95_del_blk_range_followed_by_insert() {
         // DEL.BLK range then INS in the same patch
-        let result = apply_text("line1\nline2\nline3\nline4\nline5", "DEL.BLK 2 4\nINS.HEAD:\n+prefix");
+        let result = apply_text(
+            "line1\nline2\nline3\nline4\nline5",
+            "DEL.BLK 2 4\nINS.HEAD:\n+prefix",
+        );
         assert_eq!(result, "prefix\nline1\nline5");
     }
 
