@@ -123,4 +123,6 @@ pub struct RenameCmd {
     pub dst: PathBuf,
     #[arg(long)]
     pub json: bool,
+    #[arg(long, help = "Overwrite destination file if it already exists")]
+    pub force: bool,
 }

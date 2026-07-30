@@ -128,7 +128,7 @@ impl Executor {
     }
 
     pub fn feed(&mut self, token: Token) {
-        if self.terminated {
+        if self.terminated || self.aborted {
             return;
         }
         match token {
@@ -177,6 +177,19 @@ impl Executor {
     }
 
     pub fn end(&mut self) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool) {
+        if self.aborted {
+            // *** Abort was encountered — discard all pending and accumulated
+            // edits so the abort truly cancels the entire patch (Bug #97).
+            self.edits.clear();
+            self.warnings.clear();
+            self.file_op = None;
+            self.pending = None;
+            let aborted = true;
+            self.edit_index = 0;
+            self.terminated = false;
+            self.aborted = false;
+            return (Vec::new(), Vec::new(), None, aborted);
+        }
         self.flush_pending();
         self.validate_no_overlapping_deletes();
         let edits = std::mem::take(&mut self.edits);

@@ -54,6 +54,15 @@ pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
         });
     }
 
+    // Bare line number — treat as BlockAnchor (usable by find-block).
+    if normalized.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(line) = normalized.parse::<usize>() {
+            if line > 0 {
+                return Ok(Anchor::BlockAnchor { line });
+            }
+        }
+    }
+
     if let Some((line, short)) = normalized.split_once(':') {
         let line = parse_line_number(line, s)?;
         let short = parse_short_hash(short, s)?;

@@ -15,11 +15,15 @@ pub fn run<W: Write, E: Write>(
         });
     }
 
-    // 2. Check destination does not already exist
+    // 2. Check destination does not already exist (unless --force)
     if cmd.dst.exists() {
-        return Err(HashlineError::TargetExists {
-            path: cmd.dst.display().to_string(),
-        });
+        if cmd.force {
+            std::fs::remove_file(&cmd.dst)?;
+        } else {
+            return Err(HashlineError::TargetExists {
+                path: cmd.dst.display().to_string(),
+            });
+        }
     }
 
     // 3. Create parent directories for destination if needed

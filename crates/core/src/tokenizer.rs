@@ -202,6 +202,12 @@ fn scan_range_separator(bytes: &[u8], index: usize, end: usize) -> Option<usize>
             consumed = true;
             continue;
         }
+        // Support ".=" as a range separator (oh-my-pi compatible syntax).
+        if c == CHAR_DOT && cursor + 1 < end && bytes[cursor + 1] == CHAR_EQUALS {
+            cursor += 2;
+            consumed = true;
+            continue;
+        }
         break;
     }
     if !consumed {
