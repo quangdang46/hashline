@@ -372,6 +372,9 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
         // INS.PRE N:
         if let Some(before_end) = scan_keyword(bytes, cursor, end, HL_INSERT_BEFORE) {
             let anchor = scan_line_number(bytes, skip_whitespace(bytes, before_end, end), end)?;
+            if anchor.line == 0 {
+                return None;
+            }
             let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
             return Some(TargetScan {
                 target: BlockTarget::InsertBefore(Anchor { line: anchor.line }, hash),
@@ -382,6 +385,9 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
         // INS.POST N:
         if let Some(after_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER) {
             let anchor = scan_line_number(bytes, skip_whitespace(bytes, after_end, end), end)?;
+            if anchor.line == 0 {
+                return None;
+            }
             let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
             return Some(TargetScan {
                 target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
@@ -418,6 +424,9 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
         return None;
     }
     let anchor = scan_line_number(bytes, num_start, end)?;
+    if anchor.line == 0 {
+        return None;
+    }
     let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
     Some(TargetScan {
         target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
@@ -465,11 +474,17 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // SWAP.BLK N:  or SWAP.BLK N:HH M:HH (two-anchor → concrete range)
     if let Some(block_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, block_end, end), end)?;
+        if anchor.line == 0 {
+            return None;
+        }
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         // Check for two-anchor format: SWAP.BLK N:HH M:HH → treat as concrete Replace range
         if next < end {
             let after_ws = skip_whitespace(bytes, next, end);
             if let Some(second) = scan_line_number(bytes, after_ws, end) {
+                if second.line == 0 {
+                    return None;
+                }
                 let (second_next, _) = consume_with_hash(bytes, second.next_index, end);
                 if skip_whitespace(bytes, second_next, end) == end {
                     return Some(TargetScan {
@@ -494,6 +509,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // SWAP N..=M:
     if let Some(replace_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_KEYWORD) {
         let range = scan_header_range(bytes, replace_end, end, true)?;
+        if range.range.start.line == 0 {
+            return None;
+        }
         let (next, _) = consume_with_hash(bytes, range.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::Replace(range.range, range.hash),
@@ -504,11 +522,17 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // DEL.BLK N  or DEL.BLK N:HH M:HH (two-anchor → concrete range)
     if let Some(del_block_end) = scan_keyword(bytes, cursor, end, HL_DELETE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, del_block_end, end), end)?;
+        if anchor.line == 0 {
+            return None;
+        }
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         // Check for two-anchor format: DEL.BLK N:HH M:HH → treat as concrete Delete range
         if next < end {
             let after_ws = skip_whitespace(bytes, next, end);
             if let Some(second) = scan_line_number(bytes, after_ws, end) {
+                if second.line == 0 {
+                    return None;
+                }
                 let (second_next, _) = consume_with_hash(bytes, second.next_index, end);
                 if skip_whitespace(bytes, second_next, end) == end {
                     return Some(TargetScan {
@@ -538,6 +562,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // DEL N..=M (no colon, but may have :HH: hash suffix)
     if let Some(delete_end) = scan_keyword(bytes, cursor, end, HL_DELETE_KEYWORD) {
         let range = scan_header_range(bytes, delete_end, end, true)?;
+        if range.range.start.line == 0 {
+            return None;
+        }
         let (next, _) = consume_with_hash(bytes, range.next_index, end);
         // Ensure DEL does not take a body (a colon after the optional hash
         // suffix means there's trailing content, which DEL doesn't accept).
@@ -553,6 +580,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // INS.BLK.POST N:
     if let Some(iblk_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_end, end), end)?;
+        if anchor.line == 0 {
+            return None;
+        }
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, hash),
@@ -563,6 +593,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // INS.BLK.PRE N:  (insert before block — Bug #89-5)
     if let Some(iblk_pre_end) = scan_keyword(bytes, cursor, end, HL_INSERT_BEFORE_BLOCK_KEYWORD) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_pre_end, end), end)?;
+        if anchor.line == 0 {
+            return None;
+        }
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::InsertBeforeBlock(Anchor { line: anchor.line }, hash),
@@ -573,6 +606,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // INS.BLK N:  (bare INS.BLK alias for INS.BLK.POST — Bug #89-5)
     if let Some(iblk_short_end) = scan_keyword(bytes, cursor, end, HL_INSERT_AFTER_BLOCK_SHORT) {
         let anchor = scan_line_number(bytes, skip_whitespace(bytes, iblk_short_end, end), end)?;
+        if anchor.line == 0 {
+            return None;
+        }
         let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
         return Some(TargetScan {
             target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, hash),

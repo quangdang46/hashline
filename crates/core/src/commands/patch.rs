@@ -59,13 +59,20 @@ pub fn run<W: Write, E: Write>(
     let final_text = if line_ending == LineEnding::Crlf {
         restore_line_endings(&result, line_ending)
     } else {
-        result
+        result.clone()
     };
 
     if cmd.dry_run {
+        // Use LF-only result for diff comparison so CRLF files don't show
+        // spurious \r characters in the output (Bug #101).
+        let diff_text = if line_ending == LineEnding::Crlf {
+            &result
+        } else {
+            &final_text
+        };
         if cmd.json {
             // Return JSON diff info instead of text diff
-            let diff_lines = format_diff(&fc.normalized, &final_text);
+            let diff_lines = format_diff(&fc.normalized, diff_text);
             let payload = serde_json::json!({
                 "success": true,
                 "file": cmd.file.display().to_string(),
@@ -77,7 +84,7 @@ pub fn run<W: Write, E: Write>(
         } else {
             // Show a unified-diff-alike snippet instead of the entire file.
             let original_text = &fc.normalized;
-            let diff_lines = format_diff(original_text, &final_text);
+            let diff_lines = format_diff(original_text, diff_text);
             for dl in &diff_lines {
                 writeln!(ctx.stdout(), "{dl}")?;
             }
@@ -224,6 +231,18 @@ pub fn apply_edits(
     path: &Path,
     edits: &[Edit],
 ) -> Result<(), HashlineError> {
+    // entries may include a trailing empty line (from split('\n') on files
+    // with trailing newlines) that is not displayed by `read`.  We use the
+    // visible line count for anchor validation so that users cannot target
+    // invisible lines (Bug #102).
+    let visible_lines = {
+        let n = entries.len();
+        if n > 0 && entries[n - 1].content.is_empty() {
+            n - 1
+        } else {
+            n
+        }
+    };
     let mut i = 0;
     use std::collections::HashMap;
     let mut insert_count: HashMap<usize, usize> = HashMap::new();
@@ -251,11 +270,10 @@ pub fn apply_edits(
                 ..
             } => {
                 let anchor_line = start_anchor.line;
-                if anchor_line > entries.len() {
+                if anchor_line > visible_lines {
                     return Err(HashlineError::InvalidAnchor {
                         anchor: format!(
-                            "line {anchor_line} not found (file has {} lines)",
-                            entries.len()
+                            "line {anchor_line} not found (file has {visible_lines} lines)",
                         ),
                     });
                 }
@@ -435,11 +453,10 @@ pub fn apply_edits(
                 }
                 // Validate all delete lines are in bounds
                 for line in &del_lines {
-                    if *line > entries.len() {
+                    if *line > visible_lines {
                         return Err(HashlineError::InvalidAnchor {
                             anchor: format!(
-                                "line {line} not found (file has {} lines)",
-                                entries.len()
+                                "line {line} not found (file has {visible_lines} lines)",
                             ),
                         });
                     }
@@ -527,11 +544,10 @@ pub fn apply_edits(
             } => {
                 let line_no = anchor.line;
 
-                if line_no > entries.len() {
+                if line_no > visible_lines {
                     return Err(HashlineError::InvalidAnchor {
                         anchor: format!(
-                            "line {line_no} not found (file has {} lines)",
-                            entries.len()
+                            "line {line_no} not found (file has {visible_lines} lines)",
                         ),
                     });
                 }
