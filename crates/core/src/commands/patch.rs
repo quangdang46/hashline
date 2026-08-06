@@ -302,6 +302,13 @@ pub fn apply_edits(
 
                 let mut replacement_texts: Vec<String> = Vec::new();
                 let mut j = i;
+                // Collect the `+` payload rows of this SWAP. All inserts of one
+                // parsed op share its `line_num`, so that is the ownership key
+                // used below (Bug #104).
+                let op_line_num = match &edits[i] {
+                    Edit::Insert { line_num, .. } => *line_num,
+                    _ => unreachable!("match arm is Edit::Insert"),
+                };
                 while j < edits.len() {
                     match &edits[j] {
                         Edit::Insert {
@@ -317,14 +324,21 @@ pub fn apply_edits(
                     }
                 }
 
+                // Consume the `Delete` edits that belong to *this* SWAP (the
+                // rows it removed). Only deletes emitted by the same parsed op
+                // — same `line_num` — are owned by this SWAP. A `DEL` written
+                // right after the SWAP's body is a separate operation and must
+                // fall through to the `Edit::Delete` arm below, which resolves
+                // its anchor correctly (Bug #104).
                 let mut delete_lines: Vec<usize> = Vec::new();
                 while j < edits.len() {
                     match &edits[j] {
                         Edit::Delete {
                             anchor,
                             expected_hash,
+                            line_num,
                             ..
-                        } => {
+                        } if *line_num == op_line_num => {
                             if let Some(expected) = expected_hash {
                                 let anchor_index = anchor.line.wrapping_sub(1);
                                 if anchor_index < entries.len()
@@ -1519,5 +1533,85 @@ mod tests {
         // Interior blank preserved, trailing blanks dropped
         let result = apply_text("AAA\nBBB\nCCC", "INS.POST 2:\n+XXX\n\n+YYY\n");
         assert_eq!(result, "AAA\nBBB\nXXX\n\nYYY\nCCC");
+    }
+
+    // =====================================================================
+    // Regression tests for Issue #104 — DEL after a bodied SWAP must not be
+    // swallowed into the SWAP's removal range (the delete's count was added
+    // to the SWAP while its anchor was discarded, silently deleting the
+    // wrong lines).
+    // =====================================================================
+
+    const L12: &str = "L01\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nL10\nL11\nL12";
+
+    #[test]
+    fn bug104_del_after_swap_non_adjacent_targets() {
+        // Case 1: DEL 5 after SWAP 10 — L05 removed, L10→S10, L11 intact.
+        let result = apply_text(L12, "SWAP 10:\n+S10\nDEL 5");
+        assert_eq!(
+            result,
+            "L01\nL02\nL03\nL04\nL06\nL07\nL08\nL09\nS10\nL11\nL12"
+        );
+    }
+
+    #[test]
+    fn bug104_del_range_after_swap() {
+        // Case 2: DEL 5..7 after SWAP 10 — L05..L07 removed, not L10..L12.
+        let result = apply_text(L12, "SWAP 10:\n+S10\nDEL 5..7");
+        assert_eq!(result, "L01\nL02\nL03\nL04\nL08\nL09\nS10\nL11\nL12");
+    }
+
+    #[test]
+    fn bug104_del_after_multi_line_swap() {
+        // Case 3: DEL 5 after a two-line SWAP body.
+        let result = apply_text(L12, "SWAP 10:\n+S10a\n+S10b\nDEL 5");
+        assert_eq!(
+            result,
+            "L01\nL02\nL03\nL04\nL06\nL07\nL08\nL09\nS10a\nS10b\nL11\nL12"
+        );
+    }
+
+    #[test]
+    fn bug104_del_after_swap_range() {
+        // Case 4: DEL 5 after SWAP 9..10 — range length and delete count
+        // must not sum; L09..L10 → S9 and L05 removed.
+        let result = apply_text(L12, "SWAP 9..10:\n+S9\nDEL 5");
+        assert_eq!(result, "L01\nL02\nL03\nL04\nL06\nL07\nL08\nS9\nL11\nL12");
+    }
+
+    #[test]
+    fn bug104_del_after_interleaved_swaps() {
+        // Case 5: SWAP 12, SWAP 10, then DEL 5 — both SWAPs apply, L05
+        // removed, L11 intact (L11 must not be consumed by the last SWAP).
+        let result = apply_text(L12, "SWAP 12:\n+S12\nSWAP 10:\n+S10\nDEL 5");
+        assert_eq!(
+            result,
+            "L01\nL02\nL03\nL04\nL06\nL07\nL08\nL09\nS10\nL11\nS12"
+        );
+    }
+
+    #[test]
+    fn bug104_two_dels_after_one_swap() {
+        // Case 6: DEL 5 and DEL 3 after one SWAP — both must land.
+        let result = apply_text(L12, "SWAP 10:\n+S10\nDEL 5\nDEL 3");
+        assert_eq!(result, "L01\nL02\nL04\nL06\nL07\nL08\nL09\nS10\nL11\nL12");
+    }
+
+    #[test]
+    fn bug104_del_blk_two_anchor_after_swap() {
+        // Case 7: DEL.BLK 5 7 (two-anchor → concrete range) after SWAP 10.
+        let result = apply_text(L12, "SWAP 10:\n+S10\nDEL.BLK 5 7");
+        assert_eq!(result, "L01\nL02\nL03\nL04\nL08\nL09\nS10\nL11\nL12");
+    }
+
+    #[test]
+    fn bug104_del_after_swap_wrong_hash_guard() {
+        // Case 8: validation and mutation must resolve the same line — a
+        // stale hash on the DEL anchor errors on line 5 and mutates nothing.
+        let err = apply_text_result(L12, "SWAP 10:\n+S10\nDEL 5:AA", "md").unwrap_err();
+        assert!(
+            err.to_string().contains("content changed since last read"),
+            "expected StaleAnchor error, got: {err}"
+        );
     }
 }
