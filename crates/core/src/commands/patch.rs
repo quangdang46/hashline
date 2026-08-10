@@ -217,6 +217,48 @@ fn split_normalized(text: &str) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
+/// Pure adapter: apply `edits` to `text` and return an [`ApplyResult`].
+///
+/// This is the bridge the snapshot-based recovery (Phase 3) needs — it turns
+/// the mutable `Vec<String>` applier into a pure `text → ApplyResult`
+/// function, so edits anchored to a snapshot can be replayed against that
+/// snapshot's text (whose hashes match) and then 3-way-merged onto live
+/// content. The normal patch path continues to use [`apply_edits`] directly.
+///
+/// `path` is used only for block resolution / diagnostics.
+pub fn apply_edits_pure(
+    text: &str,
+    edits: &[Edit],
+    path: &Path,
+) -> Result<crate::types::ApplyResult, HashlineError> {
+    let mut lines: Vec<String> = split_normalized(text);
+    let entries: Vec<crate::document::LineEntry> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, s)| crate::document::LineEntry {
+            content: s.clone(),
+            short_hash: crate::hash::short_hash_value_indexed(s, i + 1),
+        })
+        .collect();
+
+    apply_edits(&mut lines, &entries, path, edits)?;
+
+    let result = if text.ends_with('\n') && !lines.is_empty() {
+        lines.join("\n") + "\n"
+    } else if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n")
+    };
+
+    Ok(crate::types::ApplyResult {
+        text: result,
+        first_changed_line: None,
+        warnings: Vec::new(),
+        block_resolutions: Vec::new(),
+    })
+}
+
 /// Apply parsed edits to a mutable lines vector.
 ///
 /// Each [`Edit`] references original 1-indexed line numbers from the

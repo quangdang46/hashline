@@ -38,7 +38,7 @@ use crate::hash;
 use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
 use crate::snapshot_store::SnapshotStore;
-use crate::types::BlockResolver as BlockResolverTrait;
+use crate::types::{BlockResolver as BlockResolverTrait, Edit};
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -291,12 +291,54 @@ impl Editor {
             message: msg,
         })?;
 
-        // Apply edits to in-memory lines
+        // Apply edits to in-memory lines. On a stale anchor, attempt
+        // snapshot-based recovery (Phase 3): replay the edits against the
+        // cached snapshot whose hashes match, then 3-way-merge onto the live
+        // content. Fail-closed — if recovery is unavailable or ambiguous, the
+        // original StaleAnchor error is surfaced.
         let mut lines: Vec<String> = split_normalized(text);
         let entries = fc.lines_with_hashes();
         let had_trailing_newline = fc.trailing_newline;
 
-        crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved)?;
+        let apply_result = crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved);
+        if let Err(HashlineError::StaleAnchor { .. }) = apply_result {
+            if self.config.enable_snapshots {
+                let recovery = crate::recovery::Recovery::new(&*self.snapshot_store);
+                // The anchor came from the most-recently-read snapshot of this
+                // path, not the current (drifted) file. `try_recover` looks the
+                // snapshot up by its tag; use the head snapshot's hash.
+                let snapshot_hash = self
+                    .snapshot_store
+                    .head(&path.to_string_lossy())
+                    .map(|s| s.hash)
+                    .unwrap_or_else(|| fc.hash.clone());
+                let args = crate::recovery::RecoveryArgs {
+                    path: path.to_string_lossy().into_owned(),
+                    current_text: text.clone(),
+                    file_hash: snapshot_hash,
+                    edits: resolved.clone(),
+                };
+                let apply_fn = |snapshot_text: &str, edits: &[Edit]| {
+                    crate::commands::patch::apply_edits_pure(snapshot_text, edits, path)
+                        .map_err(|e| e.to_string())
+                };
+                if let Some(recovered) = recovery.try_recover(&args, apply_fn) {
+                    for w in &recovered.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    // Rejoin the recovered text (LF-normalized already).
+                    lines = split_normalized(&recovered.text);
+                    let _ = had_trailing_newline;
+                } else {
+                    // Recovery failed — surface the original stale error.
+                    apply_result?;
+                }
+            } else {
+                apply_result?;
+            }
+        } else {
+            apply_result?;
+        }
 
         // Rejoin
         let result = if had_trailing_newline && !lines.is_empty() {
@@ -730,6 +772,31 @@ mod tests {
         );
         let readback = fs::read_to_string(&path).unwrap();
         assert_eq!(readback, "line1\nreplaced\nline3\n");
+    }
+
+    #[test]
+    fn test_phase3_recovery_on_external_shift() {
+        // Phase 3: read records a snapshot; an external edit shifts the target
+        // line; a patch anchored to the OLD snapshot's hashes should recover
+        // via 3-way merge instead of failing stale.
+        let (_d, path) = temp_file("alpha\nbeta\ngamma\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        // Read → records snapshot (hash of "beta" at line 2).
+        let read = ed.read(&path).unwrap();
+        let beta_hash = &read.lines[1].hash; // line 2 = "beta"
+
+        // External edit: insert a line above "beta" (now "beta" is line 3).
+        fs::write(&path, "alpha\ninserted\nbeta\ngamma\n").unwrap();
+
+        // Patch anchored to the OLD hash (line 2, but content now at line 3).
+        // The anchor hash no longer matches line 2 → recovery should kick in.
+        let patch = format!("SWAP 2:{beta_hash}:\n+replaced");
+        let result = ed.patch(&path, &patch).unwrap();
+        assert!(result.text.contains("replaced"), "recovery should apply the swap");
+        let readback = fs::read_to_string(&path).unwrap();
+        assert_eq!(readback, "alpha\ninserted\nreplaced\ngamma\n");
     }
 
     #[test]
