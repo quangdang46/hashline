@@ -37,3 +37,20 @@ Run `cargo bench --bench accuracy_bench` before and after each phase. Compare th
 - `adjacent_collision_rate` should fall after Phase 3 (context)
 - `symbol_only_distinctness` should jump from 3 → 5000 after Phase 2
 - `stale_detection_cost` should stay flat (no format change)
+
+## Post-implementation status (branch `feat/low-breakage-accuracy`, 2026-08-10)
+
+Implemented & committed (all 274 tests green):
+
+| Phase | Change | Measured effect |
+|---|---|---|
+| P0 | accuracy_bench baseline | baseline above |
+| P1 | snapshot collision resolution (fusion = tag + full-text; by_content; tag-collision → most-recent) | prevents seen-line corruption on 16-bit tag collision |
+| P1 | no-op loop guard (3 identical no-ops → `NOOP_LOOP`) | stops agent retry loops |
+| P1 | structured JSON error `kind` (`STALE_ANCHOR`, `NOOP_LOOP`, ...) | agents branch on cause, not message text |
+| P2 | position-seeded symbol-only hashes | symbol_only_distinctness: **3 → ~256** (uniform, not systematic) |
+| P3 | snapshot recovery wired into `Editor::patch_inner` | external line-shift + old-hash patch recovers via 3-way merge |
+| P7 | conservative boundary-echo auto-repair (exact-text only) | two-sided + closer-echo repaired; no parser, no delimiter-semantic repair |
+
+Not implemented (deferred per low-breakage plan): V2 anchor format, nibble alphabet,
+adaptive hash length, parallel hashing, named registers, grep subcommand (stays in ffs repo).
