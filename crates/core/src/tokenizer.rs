@@ -9,13 +9,14 @@
 
 use crate::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER};
 use crate::patch_format::{
-    HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH, HL_FILE_HASH_SEP,
-    HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER, HL_INSERT_AFTER_BLOCK_KEYWORD,
-    HL_INSERT_AFTER_BLOCK_SHORT, HL_INSERT_BEFORE, HL_INSERT_BEFORE_BLOCK_KEYWORD, HL_INSERT_HEAD,
-    HL_INSERT_KEYWORD, HL_INSERT_TAIL, HL_MV_KEYWORD, HL_REM_KEYWORD, HL_REPLACE_BLOCK_KEYWORD,
-    HL_REPLACE_KEYWORD, describe_anchor_examples,
+    HL_CUT_KEYWORD, HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH,
+    HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER,
+    HL_INSERT_AFTER_BLOCK_KEYWORD, HL_INSERT_AFTER_BLOCK_SHORT, HL_INSERT_BEFORE,
+    HL_INSERT_BEFORE_BLOCK_KEYWORD, HL_INSERT_HEAD, HL_INSERT_KEYWORD, HL_INSERT_TAIL,
+    HL_MV_KEYWORD, HL_PUT_KEYWORD, HL_REM_KEYWORD,
+    HL_REPLACE_BLOCK_KEYWORD, HL_REPLACE_KEYWORD, describe_anchor_examples,
 };
-use crate::types::{Anchor, ParsedRange};
+use crate::types::{Anchor, Cursor, ParsedRange};
 
 const CHAR_LINE_FEED: u8 = b'\n';
 const CHAR_CARRIAGE_RETURN: u8 = b'\r';
@@ -35,6 +36,8 @@ const CHAR_LOWER_F: u8 = b'f';
 const CHAR_COLON: u8 = b':';
 const CHAR_ASTERISK: u8 = b'*';
 const CHAR_PAYLOAD_REPLACE: u8 = b'+';
+const CHAR_AT: u8 = b'@';
+const CHAR_LT: u8 = b'<';
 
 const FILE_PREFIX_LEN: usize = HL_FILE_PREFIX.len();
 const FILE_SUFFIX_LEN: usize = HL_FILE_SUFFIX.len();
@@ -267,6 +270,8 @@ pub enum BlockTarget {
     InsertAfter(Anchor, Option<u8>),
     InsertAfterBlock(Anchor, Option<u8>),
     InsertBeforeBlock(Anchor, Option<u8>),
+    Cut(ParsedRange, Option<u8>, Option<String>),
+    Paste(Cursor, Option<String>),
     Bof,
     Eof,
     Remove,
@@ -362,6 +367,40 @@ fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> (usize, Option<u
     } else {
         (cursor, None)
     }
+}
+
+/// Scan an optional `@name` register reference starting at `index`.
+///
+/// Returns `(Option<name>, Option<next_index>)`:
+/// - `(Some(name), Some(next))` — a valid `@name` was consumed.
+/// - `(None, None)` — no `@` sigil at `index` (caller decides whether that
+///   is allowed, e.g. the anonymous register on `CUT`).
+///
+/// A `@` sigil followed by a non-empty name is required for `PUT`.
+fn scan_register_name(bytes: &[u8], index: usize, end: usize) -> (Option<String>, Option<usize>) {
+    let cursor = skip_whitespace(bytes, index, end);
+    if cursor >= end || bytes[cursor] != CHAR_AT {
+        return (None, None);
+    }
+    let name_start = cursor + 1;
+    if name_start >= end {
+        return (None, None);
+    }
+    let mut name_end = name_start;
+    while name_end < end {
+        let c = bytes[name_end];
+        if is_whitespace_code(c) || c == CHAR_COLON {
+            break;
+        }
+        name_end += 1;
+    }
+    if name_end == name_start {
+        return (None, None);
+    }
+    let name = std::str::from_utf8(&bytes[name_start..name_end])
+        .ok()
+        .map(str::to_owned);
+    (name, Some(name_end))
 }
 
 fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetScan> {
@@ -619,6 +658,66 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     // INS.xxx
     if let Some(insert_end) = scan_keyword(bytes, cursor, end, HL_INSERT_KEYWORD) {
         return scan_insert_target(bytes, insert_end, end);
+    }
+
+    // CUT N..=M @name — capture original lines into a register and delete.
+    if let Some(cut_end) = scan_keyword(bytes, cursor, end, HL_CUT_KEYWORD) {
+        let range = scan_header_range(bytes, cut_end, end, true)?;
+        if range.range.start.line == 0 {
+            return None;
+        }
+        let (next, _) = consume_with_hash(bytes, range.next_index, end);
+        let register = scan_register_name(bytes, next, end);
+        // Named register: `CUT 5..9 @fn` — the name must consume to end.
+        if let Some(reg_end) = register.1 {
+            if skip_whitespace(bytes, reg_end, end) == end {
+                return Some(TargetScan {
+                    target: BlockTarget::Cut(range.range, range.hash, register.0),
+                    next_index: end,
+                });
+            }
+            return None;
+        }
+        // No `@` sigil — anonymous register. Everything must be consumed.
+        if next == end {
+            return Some(TargetScan {
+                target: BlockTarget::Cut(range.range, range.hash, None),
+                next_index: end,
+            });
+        }
+        return None;
+    }
+
+    // PUT [@name] <N: — insert a captured register before line N.
+    if let Some(put_end) = scan_keyword(bytes, cursor, end, HL_PUT_KEYWORD) {
+        let register = scan_register_name(bytes, put_end, end);
+        // `@name` is optional: a bare `PUT <N` pastes the anonymous register.
+        // Cursor: `<N:` inserts before line N; bare `PUT [@name]` defaults to
+        // file head (before line 1).
+        let after = match register.1 {
+            Some(reg_end) => skip_whitespace(bytes, reg_end, end),
+            None => skip_whitespace(bytes, put_end, end),
+        };
+        let cursor_target = if after < end && bytes[after] == CHAR_LT {
+            let num_start = skip_whitespace(bytes, after + 1, end);
+            let anchor = scan_line_number(bytes, num_start, end)?;
+            if anchor.line == 0 {
+                return None;
+            }
+            let (next, _) = consume_with_hash(bytes, anchor.next_index, end);
+            if next != end {
+                return None;
+            }
+            Cursor::BeforeAnchor(Anchor { line: anchor.line })
+        } else if after == end {
+            Cursor::Bof
+        } else {
+            return None;
+        };
+        return Some(TargetScan {
+            target: BlockTarget::Paste(cursor_target, register.0),
+            next_index: end,
+        });
     }
 
     // REM — delete whole file (no payload)
@@ -932,7 +1031,13 @@ fn classify_line(line: &str, line_num: usize) -> Token {
             .starts_with(HL_REM_KEYWORD.to_ascii_lowercase().as_bytes())
         || lower
             .as_bytes()
-            .starts_with(HL_MV_KEYWORD.to_ascii_lowercase().as_bytes());
+            .starts_with(HL_MV_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower
+            .as_bytes()
+            .starts_with(HL_CUT_KEYWORD.to_ascii_lowercase().as_bytes())
+        || lower
+            .as_bytes()
+            .starts_with(HL_PUT_KEYWORD.to_ascii_lowercase().as_bytes());
     if is_hunk_lead {
         if let Some(target) = try_parse_hunk_header(line) {
             return Token::OpBlock { line_num, target };
@@ -1148,5 +1253,98 @@ mod tests {
         assert!(tokenizer.is_header("[Delete File:baz.rs]"));
         // Clean headers still work
         assert!(tokenizer.is_header("[clean.ts#1A2B]"));
+    }
+
+    // ---- P9: CUT / PUT tokenization ----
+
+    fn classify_op(line: &str) -> BlockTarget {
+        match classify_line(line, 1) {
+            Token::OpBlock { target, .. } => target,
+            other => panic!("expected OpBlock token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cut_named_register() {
+        match classify_op("CUT 5..9 @fn") {
+            BlockTarget::Cut(range, hash, register) => {
+                assert_eq!(range.start.line, 5);
+                assert_eq!(range.end.line, 9);
+                assert_eq!(hash, None);
+                assert_eq!(register.as_deref(), Some("fn"));
+            }
+            other => panic!("expected Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cut_anonymous_register() {
+        match classify_op("CUT 5..9") {
+            BlockTarget::Cut(range, _, register) => {
+                assert_eq!(range.start.line, 5);
+                assert_eq!(range.end.line, 9);
+                assert_eq!(register, None);
+            }
+            other => panic!("expected Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cut_single_line_with_hash() {
+        match classify_op("CUT 2:ab @fn") {
+            BlockTarget::Cut(range, hash, register) => {
+                assert_eq!(range.start.line, 2);
+                assert_eq!(range.end.line, 2);
+                assert_eq!(hash, Some(0xab));
+                assert_eq!(register.as_deref(), Some("fn"));
+            }
+            other => panic!("expected Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_put_before_anchor_named() {
+        match classify_op("PUT @fn <20") {
+            BlockTarget::Paste(Cursor::BeforeAnchor(a), register) => {
+                assert_eq!(a.line, 20);
+                assert_eq!(register.as_deref(), Some("fn"));
+            }
+            other => panic!("expected Paste before-anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_put_bare_defaults_to_bof() {
+        match classify_op("PUT @fn") {
+            BlockTarget::Paste(Cursor::Bof, register) => {
+                assert_eq!(register.as_deref(), Some("fn"));
+            }
+            other => panic!("expected Paste Bof, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_put_anonymous_before_anchor() {
+        match classify_op("PUT <4") {
+            BlockTarget::Paste(Cursor::BeforeAnchor(a), register) => {
+                assert_eq!(a.line, 4);
+                assert_eq!(register, None);
+            }
+            other => panic!("expected Paste before-anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_put_malformed_rejected() {
+        // PUT with a trailing colon is not a valid register paste.
+        let t = classify_line("PUT @fn:", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }));
+    }
+
+    #[test]
+    fn test_put_after_anchor_not_supported() {
+        // v1 supports only the before-line cursor; `PUT @fn >N` is rejected.
+        let t = classify_line("PUT @fn >5", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }));
     }
 }

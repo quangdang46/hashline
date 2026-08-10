@@ -1,6 +1,8 @@
 //! Pure data types shared across the hashline parser, applier, and patcher.
 //! Nothing in this file references a filesystem — keep it that way.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 /// A file-level operation that applies to the whole file, not individual lines.
@@ -79,6 +81,28 @@ pub enum Edit {
         /// Optional short-hash expected at the anchor line, from e.g. `SWAP.BLK 4:ff:`.
         expected_hash: Option<u8>,
     },
+    /// `CUT N..=M @name` — capture original lines N..=M into a named
+    /// register (or the anonymous register when `register` is `None`) and
+    /// delete them from the file. Captured text is stored in the
+    /// per-patch clipboard at apply time, keyed by the register name.
+    Cut {
+        anchor: Anchor,
+        end: Anchor,
+        line_num: usize,
+        index: usize,
+        register: Option<String>,
+        /// Optional short-hash expected at the first anchor line, from e.g. `CUT 5:aa..9:`.
+        expected_hash: Option<u8>,
+    },
+    /// `PUT @name <N:` — insert the lines captured earlier in the same
+    /// patch into a named (or anonymous) register before line `N`.
+    /// A register that was never captured is a hard error at apply time.
+    Paste {
+        cursor: Cursor,
+        line_num: usize,
+        index: usize,
+        register: Option<String>,
+    },
 }
 
 /// Result of applying a parsed set of edits to a text body.
@@ -129,6 +153,17 @@ pub enum BlockOp {
     Delete,
     InsertAfter,
     InsertBefore,
+}
+
+/// Per-patch clipboard carrying lines captured by `CUT` ops so later `PUT`
+/// ops in the same patch can paste them. Lives for the duration of a single
+/// patch application and does not persist across patch calls.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Clipboard {
+    /// Named registers, keyed by `@name`.
+    pub named: HashMap<String, Vec<String>>,
+    /// Anonymous register, filled by a `CUT` without `@name`.
+    pub anon: Option<Vec<String>>,
 }
 
 /// Request handed to a [`BlockResolver`] to resolve one block anchor.

@@ -7,7 +7,7 @@ use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
-use crate::types::{BlockMode, Cursor, Edit, InsertMode};
+use crate::types::{BlockMode, Clipboard, Cursor, Edit, InsertMode};
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
@@ -272,6 +272,20 @@ pub fn apply_edits(
     entries: &[crate::document::LineEntry],
     path: &Path,
     edits: &[Edit],
+) -> Result<(), HashlineError> {
+    apply_edits_with_clipboard(lines, entries, path, edits, &mut Clipboard::default())
+}
+
+/// `apply_edits` plus a caller-owned per-patch clipboard. `CUT` ops write
+/// captured lines into `clipboard` (keyed by register name); `PUT` ops read
+/// them back out. A `PUT` referencing a register that was never captured is
+/// a hard error. The clipboard lives only as long as this call.
+pub fn apply_edits_with_clipboard(
+    lines: &mut Vec<String>,
+    entries: &[crate::document::LineEntry],
+    path: &Path,
+    edits: &[Edit],
+    clipboard: &mut Clipboard,
 ) -> Result<(), HashlineError> {
     // entries may include a trailing empty line (from split('\n') on files
     // with trailing newlines) that is not displayed by `read`.  We use the
@@ -598,6 +612,174 @@ pub fn apply_edits(
                     Cursor::Eof => {
                         // Insert at end → no change to any original line's live position
                     }
+                }
+
+                i += 1;
+            }
+
+            // ---- CUT N..=M @name -------------------------------------------
+            Edit::Cut {
+                anchor,
+                end,
+                register,
+                expected_hash,
+                ..
+            } => {
+                let start_line = anchor.line;
+                let end_line = end.line;
+
+                // Hash validation on the first anchor line, like DEL.
+                if let Some(expected) = expected_hash {
+                    let anchor_index = start_line.wrapping_sub(1);
+                    if anchor_index < entries.len()
+                        && *expected != entries[anchor_index].short_hash
+                    {
+                        return Err(HashlineError::StaleAnchor {
+                            anchor: format!(
+                                "{}:{}",
+                                start_line,
+                                crate::hash::format_short_hash(*expected)
+                            )
+                            .into(),
+                            line: start_line,
+                            expected: crate::hash::format_short_hash(*expected).into(),
+                            actual: crate::hash::format_short_hash(entries[anchor_index].short_hash)
+                                .into(),
+                            path: path.display().to_string().into(),
+                            relocated_suffix: String::new().into(),
+                        });
+                    }
+                }
+                // Validate the range is in bounds.
+                for line in start_line..=end_line {
+                    if line > visible_lines {
+                        return Err(HashlineError::InvalidAnchor {
+                            anchor: format!(
+                                "line {line} not found (file has {visible_lines} lines)",
+                            ),
+                        });
+                    }
+                }
+
+                // Capture the ORIGINAL lines from the pre-edit snapshot.
+                let mut captured: Vec<String> = Vec::new();
+                for line in start_line..=end_line {
+                    if line >= 1 && line <= n {
+                        captured.push(entries[line - 1].content.clone());
+                    }
+                }
+                if let Some(name) = register {
+                    clipboard.named.insert(name.clone(), captured);
+                } else {
+                    clipboard.anon = Some(captured);
+                }
+
+                // Delete from the live buffer using shift-adjusted positions
+                // (same as DEL: sort descending so earlier removals don't
+                // shift later ones).
+                let mut del_lines: Vec<usize> = (start_line..=end_line).collect();
+                del_lines.sort_by(|a, b| b.cmp(a));
+                for &orig_line in &del_lines {
+                    if orig_line >= 1 && orig_line <= n && !deleted[orig_line - 1] {
+                        let raw = (orig_line as isize - 1) + shift[orig_line - 1];
+                        let idx = if raw >= 0 { raw as usize } else { continue };
+                        if idx < lines.len() {
+                            lines.remove(idx);
+                        }
+                    }
+                }
+
+                // ---- update shift tracking (Bug #89-1) ----
+                for &dl in &del_lines {
+                    if dl <= n {
+                        deleted[dl - 1] = true;
+                    }
+                }
+                let last_del = del_lines.iter().max().copied().unwrap_or(0);
+                let del_count = del_lines.len();
+                if last_del < n && del_count > 0 {
+                    apply_delta(&mut shift, last_del + 1, -(del_count as isize));
+                }
+
+                i += 1;
+            }
+
+            // ---- PUT @name <N: ----------------------------------------------
+            Edit::Paste {
+                cursor,
+                register,
+                ..
+            } => {
+                let captured: Vec<String> = match register {
+                    Some(name) => clipboard
+                        .named
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| HashlineError::ClipboardMissingRegister {
+                            register: name.clone(),
+                        })?,
+                    None => clipboard
+                        .anon
+                        .clone()
+                        .ok_or(HashlineError::ClipboardEmptyAnon)?,
+                };
+                if captured.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                let num_lines = captured.len();
+
+                // Resolve the live insertion index, shift-adjusted so a CUT
+                // earlier in the same patch is accounted for.
+                let pos = match cursor {
+                    Cursor::BeforeAnchor(a) => {
+                        if a.line > visible_lines {
+                            return Err(HashlineError::InvalidAnchor {
+                                anchor: format!(
+                                    "line {} not found (file has {visible_lines} lines)",
+                                    a.line,
+                                ),
+                            });
+                        }
+                        if a.line >= 1 && a.line <= n && !deleted[a.line - 1] {
+                            let raw = (a.line as isize - 1) + shift[a.line - 1];
+                            if raw >= 0 { raw as usize } else { 0 }
+                        } else {
+                            a.line.wrapping_sub(1)
+                        }
+                    }
+                    Cursor::Bof => 0,
+                    _ => {
+                        return Err(HashlineError::InvalidAnchor {
+                            anchor: format!("PUT target must be before a line"),
+                        });
+                    }
+                };
+
+                let offset = insert_count.get(&pos).copied().unwrap_or(0);
+                insert_count.insert(pos, offset + num_lines);
+                let insert_pos = if pos + offset <= lines.len() {
+                    pos + offset
+                } else {
+                    lines.len()
+                };
+                for (k, text) in captured.iter().enumerate() {
+                    lines.insert(insert_pos + k, text.clone());
+                }
+
+                // ---- update shift tracking (Bug #89-1) ----
+                match cursor {
+                    Cursor::BeforeAnchor(a) => {
+                        if a.line <= n {
+                            apply_delta(&mut shift, a.line, num_lines as isize);
+                        }
+                    }
+                    Cursor::Bof => {
+                        if n > 0 {
+                            apply_delta(&mut shift, 1, num_lines as isize);
+                        }
+                    }
+                    _ => {}
                 }
 
                 i += 1;
@@ -1668,5 +1850,144 @@ mod tests {
             err.to_string().contains("content changed since last read"),
             "expected StaleAnchor error, got: {err}"
         );
+    }
+
+    // =====================================================================
+    // P9: named-register clipboard ops (CUT @name / PUT @name)
+    // =====================================================================
+
+    #[test]
+    fn p9_cut_then_put_moves_range_to_new_position() {
+        // CUT 2..3 @fn captures lines 2..3 and deletes them; PUT @fn <5
+        // re-inserts them before original line 5.
+        let result = apply_text(
+            "L01\nL02\nL03\nL04\nL05\nL06",
+            "CUT 2..3 @fn\nPUT @fn <5",
+        );
+        assert_eq!(result, "L01\nL04\nL02\nL03\nL05\nL06");
+    }
+
+    #[test]
+    fn p9_cut_then_put_moves_range_to_file_head() {
+        // Bare `PUT @fn` (no cursor) defaults to file head.
+        let result = apply_text("L01\nL02\nL03\nL04", "CUT 3 @fn\nPUT @fn");
+        assert_eq!(result, "L03\nL01\nL02\nL04");
+    }
+
+    #[test]
+    fn p9_cut_without_put_deletes() {
+        // CUT is a DEL that stores the removed content; with no matching PUT
+        // the lines are gone.
+        let result = apply_text("L01\nL02\nL03\nL04", "CUT 2..3 @fn");
+        assert_eq!(result, "L01\nL04");
+    }
+
+    #[test]
+    fn p9_cut_anonymous_register_paste() {
+        // CUT without @name fills the anonymous register; an unlabeled PUT
+        // pastes it back before original line 5.
+        let result = apply_text("L01\nL02\nL03\nL04\nL05", "CUT 2..3\nPUT <5");
+        assert_eq!(result, "L01\nL04\nL02\nL03\nL05");
+    }
+
+    #[test]
+    fn p9_put_never_captured_register_errors() {
+        // PUT referencing a register that was never captured in the same
+        // patch must hard-error (fail-closed).
+        let err = apply_text_result("L01\nL02\nL03\nL04", "PUT @nosuch <2", "txt").unwrap_err();
+        assert!(
+            err.to_string().contains("never captured"),
+            "expected ClipboardMissingRegister error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn p9_anonymous_put_without_any_cut_errors() {
+        let err = apply_text_result("L01\nL02\nL03\nL04", "PUT <2", "txt").unwrap_err();
+        assert!(
+            err.to_string().contains("anonymous register is empty"),
+            "expected ClipboardEmptyAnon error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn p9_cut_validates_anchor_hash() {
+        // Wrong hash on the CUT anchor → StaleAnchor, like DEL.
+        let err = apply_text_result("L01\nL02\nL03\nL04", "CUT 2:FF..3 @fn", "txt").unwrap_err();
+        assert!(
+            err.to_string().contains("content changed since last read"),
+            "expected StaleAnchor error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn p9_cut_with_valid_anchor_hash_succeeds() {
+        let h = crate::hash::format_short_hash(crate::hash::short_hash_value("L02"));
+        let result = apply_text("L01\nL02\nL03\nL04", &format!("CUT 2:{h} @fn\nPUT @fn <4"));
+        assert_eq!(result, "L01\nL03\nL02\nL04");
+    }
+
+    #[test]
+    fn p9_cut_out_of_range_errors() {
+        let err = apply_text_result("L01\nL02\nL03", "CUT 5..6 @fn", "txt").unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected InvalidAnchor error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn p9_put_out_of_range_anchor_errors() {
+        let err = apply_text_result(
+            "L01\nL02\nL03",
+            "CUT 1 @fn\nPUT @fn <99",
+            "txt",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected InvalidAnchor error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn p9_cut_then_put_then_swap_sequencing() {
+        // CUT shifts the buffer; a later SWAP must resolve its anchor against
+        // the shifted state.
+        let result = apply_text(
+            "L01\nL02\nL03\nL04\nL05",
+            "CUT 2..3 @fn\nPUT @fn <5\nSWAP 5:\n+S5",
+        );
+        assert_eq!(result, "L01\nL04\nL02\nL03\nS5");
+    }
+
+    #[test]
+    fn p9_cut_after_swap_captures_original_lines() {
+        // SWAP 10 rewrites L10, then CUT 10 captures the ORIGINAL L10 content
+        // (from the snapshot), not the replacement. The CUT's delete of
+        // original line 10 is a no-op because the SWAP already consumed it
+        // (same `!deleted` guard as DEL); the captured L10 is pasted at the
+        // head, and the SWAP's S10 survives in place.
+        let result = apply_text(
+            L12,
+            "SWAP 10:\n+S10\nCUT 10 @fn\nPUT @fn <2",
+        );
+        assert_eq!(
+            result,
+            "L01\nL10\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nS10\nL11\nL12"
+        );
+    }
+
+    #[test]
+    fn p9_cut_after_swap_does_not_delete_swap_anchor() {
+        // CUT 10 after SWAP 10 must not delete the line the SWAP just
+        // rewrote — the `!deleted` guard skips it, and the captured lines
+        // are the ORIGINAL ones. L10 stays (rewritten to S10), only L11
+        // is deleted by the CUT.
+        let result = apply_text(
+            L12,
+            "SWAP 10:\n+S10\nCUT 11 @fn\nPUT @fn <2",
+        );
+        assert_eq!(result, "L01\nL11\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nS10\nL12");
     }
 }

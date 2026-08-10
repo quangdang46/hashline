@@ -35,6 +35,12 @@ pub const HL_INSERT_AFTER_BLOCK_KEYWORD: &str = "INS.BLK.POST";
 pub const HL_INSERT_BEFORE_BLOCK_KEYWORD: &str = "INS.BLK.PRE";
 /** Short alias for `INS.BLK.POST`. */
 pub const HL_INSERT_AFTER_BLOCK_SHORT: &str = "INS.BLK";
+/** Hunk-header keyword: `CUT N..=M @name` deletes lines N..=M and captures them into a register. */
+pub const HL_CUT_KEYWORD: &str = "CUT";
+/** Hunk-header keyword: `PUT @name <N:` inserts a captured register's lines before line N. */
+pub const HL_PUT_KEYWORD: &str = "PUT";
+/** Register sigil: `@name` selects a named clipboard register on `CUT`/`PUT`. */
+pub const HL_REGISTER_SIGIL: &str = "@";
 /** Hunk-header keyword: delete the whole file named by the section header. */
 pub const HL_REM_KEYWORD: &str = "REM";
 /** Hunk-header keyword: rename the section file to DEST. */

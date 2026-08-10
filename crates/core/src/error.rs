@@ -195,6 +195,12 @@ pub enum HashlineError {
 
     #[error("no block resolver configured")]
     NoBlockResolver,
+
+    #[error("register '{register}' was never captured — a `PUT @{register}` needs a `CUT ... @{register}` earlier in the same patch")]
+    ClipboardMissingRegister { register: String },
+
+    #[error("anonymous register is empty — a `PUT` without `@name` needs a `CUT` earlier in the same patch")]
+    ClipboardEmptyAnon,
 }
 
 impl HashlineError {
@@ -332,6 +338,12 @@ impl HashlineError {
             HashlineError::NoBlockResolver => {
                 Some("configure a block resolver before using block-based operations")
             }
+            HashlineError::ClipboardMissingRegister { .. } => {
+                Some("add a `CUT ... @name` earlier in the same patch before pasting `@name`")
+            }
+            HashlineError::ClipboardEmptyAnon => {
+                Some("add a `CUT` earlier in the same patch before an unlabeled `PUT`")
+            }
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => Some(
                 "use the `sha256_window` module to recompute the expected hash from current content",
@@ -347,6 +359,9 @@ impl HashlineError {
             HashlineError::StaleAnchor { .. } | HashlineError::StaleHash { .. } => "STALE_ANCHOR",
             HashlineError::StaleFile { .. } => "STALE_FILE",
             HashlineError::NoopLoop { .. } => "NOOP_LOOP",
+            HashlineError::ClipboardMissingRegister { .. } | HashlineError::ClipboardEmptyAnon => {
+                "CLIPBOARD"
+            }
             HashlineError::EmptyPatch | HashlineError::EmptyPatchWithReason { .. } => "EMPTY_PATCH",
             HashlineError::AmbiguousHash { .. } => "AMBIGUOUS_HASH",
             HashlineError::HashNotFound { .. } => "HASH_NOT_FOUND",
@@ -418,7 +433,9 @@ impl HashlineError {
             | HashlineError::CannotRecover { .. }
             | HashlineError::BlockUnresolved { .. }
             | HashlineError::MissingSnapshotTag { .. }
-            | HashlineError::NoBlockResolver => None,
+            | HashlineError::NoBlockResolver
+            | HashlineError::ClipboardMissingRegister { .. }
+            | HashlineError::ClipboardEmptyAnon => None,
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => None,
         }
@@ -607,6 +624,10 @@ mod tests {
                 path: "snapshot.txt".into(),
             },
             HashlineError::NoBlockResolver,
+            HashlineError::ClipboardMissingRegister {
+                register: "fn".into(),
+            },
+            HashlineError::ClipboardEmptyAnon,
         ];
 
         for error in errors {
