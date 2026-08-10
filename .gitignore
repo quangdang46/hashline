@@ -12,6 +12,15 @@ bench-results/.linehash/
 *.lhidx
 .tmp*
 
+# Integration packages (pi-hashline, opencode-plugin) — re-include under integration/
+!integration/
+integration/*
+!integration/**/
+!integration/**/*.md
+!integration/**/*.json
+!integration/**/*.ts
+!integration/**/*.txt
+
 # Claude Code workspaces
 .claude/
 

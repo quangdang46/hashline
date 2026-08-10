@@ -1,0 +1,1 @@
+{"hash":"5db5","lines":[{"content":"fn main() {","hash":"9b","n":1},{"content":"    let x = 1;","hash":"f8","n":2},{"content":"    println!(\"ok\");","hash":"d2","n":3},{"content":"}","hash":"88","n":4}],"path":"C:/Users/ADMIN/AppData/Local/Temp/golden.rs"}

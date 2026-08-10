@@ -1,0 +1,5 @@
+[C:/Users/ADMIN/AppData/Local/Temp/golden.rs#5db5]
+1:9b|fn main() {
+2:f8|    let x = 1;
+3:d2|    println!("ok");
+4:88|}

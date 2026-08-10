@@ -1,0 +1,1 @@
+{"file":"C:/Users/ADMIN/AppData/Local/Temp/golden2.rs","line_count":6,"language":"Rust","block_lines":[{"n":1,"hash":"9b","content":"fn main() {"},{"n":2,"hash":"f8","content":"    let x = 1;"},{"n":3,"hash":"40","content":"    if true {"},{"n":4,"hash":"b0","content":"        println!(\"y\");"},{"n":5,"hash":"e9","content":"    }"},{"n":6,"hash":"c4","content":"}"}]}

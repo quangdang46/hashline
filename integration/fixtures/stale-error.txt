@@ -1,0 +1,2 @@
+Error: line 2 content changed since last read in C:/Users/ADMIN/AppData/Local/Temp/stale2.rs (expected hash 5b, got 38)
+Hint: re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor
