@@ -147,25 +147,25 @@ pub fn repair_boundary_echo(
 
     // Single-sided echo on a structural closer (no parser needed — the closer
     // is proven by exact text equality and is delimiter-neutral).
-    if leading > 0 && trailing == 0 && leading < payload.len() {
-        if is_structural_closer(payload[0].trim()) {
-            let repaired: Vec<String> = payload[1..].to_vec();
-            let warning = format!(
-                "Auto-repaired a boundary echo at line {start_line}: dropped 1 leading payload line \
-                 identical to the surviving structural closer above the range."
-            );
-            return Some((repaired, warning));
-        }
+    if leading > 0 && trailing == 0 && leading < payload.len()
+        && is_structural_closer(payload[0].trim())
+    {
+        let repaired: Vec<String> = payload[1..].to_vec();
+        let warning = format!(
+            "Auto-repaired a boundary echo at line {start_line}: dropped 1 leading payload line \
+             identical to the surviving structural closer above the range."
+        );
+        return Some((repaired, warning));
     }
-    if trailing > 0 && leading == 0 && trailing < payload.len() {
-        if is_structural_closer(payload[payload.len() - 1].trim()) {
-            let repaired: Vec<String> = payload[..payload.len() - trailing].to_vec();
-            let warning = format!(
-                "Auto-repaired a boundary echo at line {start_line}: dropped 1 trailing payload line \
-                 identical to the surviving structural closer below the range."
-            );
-            return Some((repaired, warning));
-        }
+    if trailing > 0 && leading == 0 && trailing < payload.len()
+        && is_structural_closer(payload[payload.len() - 1].trim())
+    {
+        let repaired: Vec<String> = payload[..payload.len() - trailing].to_vec();
+        let warning = format!(
+            "Auto-repaired a boundary echo at line {start_line}: dropped 1 trailing payload line \
+             identical to the surviving structural closer below the range."
+        );
+        return Some((repaired, warning));
     }
 
     None

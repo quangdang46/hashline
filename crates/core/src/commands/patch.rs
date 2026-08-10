@@ -751,7 +751,7 @@ pub fn apply_edits_with_clipboard(
                     Cursor::Bof => 0,
                     _ => {
                         return Err(HashlineError::InvalidAnchor {
-                            anchor: format!("PUT target must be before a line"),
+                            anchor: "PUT target must be before a line".to_string(),
                         });
                     }
                 };
@@ -774,10 +774,8 @@ pub fn apply_edits_with_clipboard(
                             apply_delta(&mut shift, a.line, num_lines as isize);
                         }
                     }
-                    Cursor::Bof => {
-                        if n > 0 {
-                            apply_delta(&mut shift, 1, num_lines as isize);
-                        }
+                    Cursor::Bof if n > 0 => {
+                        apply_delta(&mut shift, 1, num_lines as isize);
                     }
                     _ => {}
                 }
