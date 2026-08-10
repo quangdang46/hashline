@@ -408,11 +408,9 @@ async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 - `grep` → gate `registerGrepTool`.
 - `replaceText` → if we later add the `replace_text` dialect folding, gate it here.
 
-### B.9 Grep tool — `src/grep.ts` (optional, opt-in)
+### B.9 Grep tool — `src/grep.ts` (optional, DEFERRED by default)
 
-The binary has **no grep subcommand** (verified: cli.rs has read/patch/write/find-block/guide/serve/mcp/remove/rename only). The grep surface uses the sibling **`ffs` (fast_file_search)** binary installed pinned to a rev — see C.7 and D.4:
-- Spawn `ffs grep <needle> --json`, then for matched files run `hashline read <file> --json` and map match line numbers → `N:hh` via the JSON lines (hashes from the binary, never computed in TS). Emit `file` headers + `N:hh|content` match lines. `ffs` already provides limit/case/word/group/regex-vs-literal flags and parallel scanning.
-- `ffs` is installed from `https://github.com/quangdang46/fast_file_search` pinned to a rev (e.g. `#v0.10.1`); `HASHLINE_GREP_BIN` overrides discovery.
+**Deferred for v0.1.0.** The hashline binary has no grep subcommand (verified: cli.rs has read/patch/write/find-block/guide/serve/mcp/remove/rename only), and grep is intentionally out of hashline's scope (owned by the sibling `ffs` repo). If a `hashline grep` tool is wanted later, it spawns `ffs grep --json` and re-hashes matched lines via `hashline read --json` — see C.7 and D.4. Do not implement search inside hashline.
 
 ### B.10 Testing — vitest + mocked spawn
 
@@ -611,41 +609,16 @@ hashline_edit: tool({
 - **Mismatch rendering:** do NOT reimplement the `±2 context / >>> marker` renderer from `.tmp/hashline-edit-opencode/src/lib/hashline-errors.ts`. The binary's stderr already contains the formatted `Error:`/`Hint:` (pretty mode) with the expected/actual hashes. Return it verbatim plus a retry hint; if a future binary `--json` error carries a `remaps` map (see the Go binary in `.tmp/hashline/types.go:90-97` for the concept), surface the suggested `pos: "N:ACT"` — **[VERIFY] the Rust binary does not currently emit remaps** (error.rs StaleAnchor only has expected/actual; open D.6).
 - File-level ops (delete/move) live in the plugin layer (fs `unlink`/`rename`), not the binary — port paulp-o's `delete: boolean` / `move: string` args if you want them (`.tmp/hashline-edit-opencode/src/index.ts:284-291,317-361`); the binary's `REM`/`MV` ops also exist inside a patch string, so either is possible. v0.1.0: expose `delete`/`move` via patch `REM`/`MV` strings rather than fs, keeping everything on the binary.
 
-### C.7 `hashline_grep` (opt-in / uses fast_file_search)
+### C.7 `hashline_grep` (OPTIONAL / DEFERRED — grep is NOT hashline's job)
 
-**Decision: use the sibling [fast_file_search](https://github.com/quangdang46/fast_file_search) (`ffs`) binary as the grep backend, NOT `rg` and NOT an in-TS search.** Rationale: ffs is a sibling repo by the same author with a mature, fast grep command (`crates/ffs-cli/src/commands/grep.rs`, ~25KB) that already has parallel rayon scanning, a bigram prefilter index, binary-file skip, per-line dedup, a global hit limit, cooperative early exit, and stable JSON output. No second grep implementation to maintain.
+**Decision: the hashline Rust binary adds NO grep subcommand and NO ffs dependency.** Grep/search is owned by the sibling [fast_file_search](https://github.com/quangdang46/fast_file_search) (`ffs`) repo; adding it to hashline would exceed scope. Wrappers that want a `hashline_grep` tool spawn the `ffs` binary and re-hash matches via `hashline read --json`; otherwise the tool is deferred (recommended for v0.1.0).
 
-Install ffs pinned to a release rev (installed once at setup, like hashline itself):
+If a wrapper implements it:
+1. Spawn `ffs grep <needle> --json [--root <dir>] [--limit N]` (ffs installed pinned to a rev; `HASHLINE_GREP_BIN` override).
+2. Parse `{hits:[{path,line,text}],...}`; map each `line` → `N:hh` via `hashline read <file> --json` (hashes from the binary, never in TS).
+3. Render `file` header + `N:hh: content`, usable directly in `hashline_edit`.
 
-```bash
-# via cargo (pinned to a tag)
-cargo install ffs --git https://github.com/quangdang46/fast_file_search --rev v0.10.1
-# or via the repo's own install script if one exists
-```
-
-(The exact install command should match how hashline is distributed; `HASHLINE_GREP_BIN` env override is honored like `HASHLINE_BIN`.)
-
-**ffs grep contract** (from `crates/ffs-cli/src/commands/grep.rs`):
-- `ffs grep <needle> [--regex|--fixed-strings] [--case-sensitive] [--word-regexp] [--limit N] [--max-count N] [-l|--files-with-matches] [--group] [--root PATH]`
-- Auto-detects regex vs literal by metacharacters (`looks_like_regex`), smart-case, `--json` output:
-```json
-{ "needle": "TODO", "hits": [{"path":"src/a.ts","line":123,"text":"const foo = ..."}],
-  "total_files_searched": 42, "mode":"literal", "schema":"v1" }
-```
-
-**Wrapper flow (`hashline_grep`):**
-1. Resolve `ffs` binary (`HASHLINE_GREP_BIN` → PATH). Missing → `binary_not_found` error with install hint.
-2. Spawn `ffs grep <needle> --json [--root <dir>] [--limit N]` (no shell; args via argv).
-3. Parse `hits[]`. For each hit, look up the line's hash **from the binary**: run `hashline read <file> --json` once per file and map `hits[i].line` → `N:hh` via the JSON `lines` (hashes come from the binary, NEVER computed in TS — this is the same rule as the rest of the plan).
-4. Render anchors directly usable in `hashline_edit`:
-```
-src/a.ts
-123:4c: const foo = ...
-  124:      ...continuation (indented 2, context)
-```
-5. Respect `--limit` (ffs already caps hits); emit a footer `(N matches across M files)`.
-
-**Fallback if ffs is absent:** defer the tool (document it), rather than falling back to `rg` — keeps a single source of truth for both the search AND the anchors. The Rust binary itself gains no `grep` subcommand in v0.1.0; this wrapper IS the grep surface.
+Defer if `ffs` is absent — never fall back to `rg` inside hashline.
 
 ### C.8 System-prompt hook + opencode.json config
 
@@ -712,7 +685,7 @@ Implementation: `formatHashlineError(stderr: string, exitCode: number): { text: 
 | `patch` (all ops) | Yes | consume |
 | `write` / `remove` / `rename` / `find-block` | Yes | consume (pi edit may map `delete`→`REM`/`DEL`) |
 | `read --limit/--offset` | **No** (cli.rs:33-39) | wrapper slices in TS; optional future Rust flag |
-| `grep` / `hashline ripgrep` | **No** | wrapper spawns **`ffs` (fast_file_search) `grep --json`** and re-hashes matched lines via `hashline read --json` (hashes from the binary, never in TS). `ffs` installed pinned to a rev (`git+https://github.com/quangdang46/fast_file_search#v0.10.1`). See C.7. |
+| `grep` / `hashline ripgrep` | **No — not in scope** | grep is owned by the sibling `ffs` repo; hashline adds no grep subcommand and no ffs dependency. A wrapper `hashline_grep` (optional, deferred) spawns `ffs grep --json` and re-hashes via `hashline read --json`. See C.7. |
 | MCP `find_block` JSON output | MCP `find_block` returns text only (no `json` arg in schema) | CLI `find-block --json` has the structured payload; wrappers use the CLI, not MCP |
 | Machine-readable stale-anchor structured error (e.g. `remaps`) | Exit 1 + text/JSON on stderr; **no `remaps` map** | surface text; [VERIFY] optional future: emit `{"error","hint","remaps":{expected:actual}}` on stderr in `--json` mode |
 
