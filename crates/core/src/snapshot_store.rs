@@ -39,6 +39,10 @@ impl SnapshotStore for NoopSnapshotStore {
         None
     }
 
+    fn by_content(&self, _path: &str, _full_text: &str) -> Option<Snapshot> {
+        None
+    }
+
     fn record(&mut self, _path: &str, full_text: &str, _seen_lines: Option<&[usize]>) -> String {
         crate::hash::compute_file_hash(full_text)
     }
@@ -78,6 +82,12 @@ pub trait SnapshotStore: Send + Sync {
 
     /// Recorded version for `path` whose tag equals `hash`, or `None`.
     fn by_hash(&self, path: &str, hash: &str) -> Option<Snapshot>;
+
+    /// Recorded version for `path` whose text equals `full_text`, or `None`.
+    /// The patcher uses it on the no-drift path to attach seen-line provenance
+    /// to the exact text the model read, and to disambiguate two texts that
+    /// collide on a 16-bit tag.
+    fn by_content(&self, path: &str, full_text: &str) -> Option<Snapshot>;
 
     /// Record the full normalized text of `path` and return its content tag.
     /// `seen_lines` (optional) are the 1-indexed lines the producer displayed;
@@ -232,10 +242,19 @@ impl SnapshotStore for InMemorySnapshotStore {
     }
 
     fn by_hash(&self, path: &str, hash: &str) -> Option<Snapshot> {
+        // History is stored most-recent-first, so the first version whose tag
+        // matches IS the most recent. Resolving a 16-bit tag collision to the
+        // most-recent version (rather than rejecting) is the oh-my-pi 16.3.3
+        // behavior; recovery still requires the anchors/context to remap
+        // unambiguously, so a stale collision fails closed downstream.
+        self.versions.get(path)?.iter().find(|s| s.hash == hash).cloned()
+    }
+
+    fn by_content(&self, path: &str, full_text: &str) -> Option<Snapshot> {
         self.versions
             .get(path)?
             .iter()
-            .find(|s| s.hash == hash)
+            .find(|s| s.text == full_text)
             .cloned()
     }
 
@@ -248,8 +267,16 @@ impl SnapshotStore for InMemorySnapshotStore {
         {
             let history = self.versions.entry(path.to_owned()).or_default();
 
-            // Read fusion: same content observed again.
-            if let Some(pos) = history.iter().position(|s| s.hash == hash) {
+            // Read fusion: same content observed again. Fusion requires BOTH
+            // the 16-bit tag AND full-text equality — two distinct texts that
+            // happen to share the short tag are DIFFERENT snapshots. Fusing on
+            // tag alone would attach seen-lines from text B onto stored text A
+            // and let the patcher misresolve the snapshot during recovery /
+            // seen-line validation (oh-my-pi issue #4075 analog).
+            if let Some(pos) = history
+                .iter()
+                .position(|s| s.hash == hash && s.text == full_text)
+            {
                 let snapshot = &mut history[pos];
                 snapshot.recorded_at = now();
                 merge_seen_lines(snapshot, seen_lines);
@@ -300,6 +327,10 @@ impl SnapshotStore for InMemorySnapshotStore {
         let Some(history) = self.versions.get_mut(path) else {
             return;
         };
+        // Only the most-recently-recorded version with this tag may receive
+        // seen-lines. When two distinct texts collide on a 16-bit tag, the
+        // producer just recorded the head (most recent) — attaching lines to an
+        // older colliding snapshot would corrupt its provenance (oh-my-pi #4075).
         let Some(snapshot) = history.iter_mut().find(|s| s.hash == hash) else {
             return;
         };
@@ -518,5 +549,80 @@ mod tests {
         // small.txt should be evicted.
         assert!(store.head("/tmp/small.txt").is_none());
         assert_eq!(store.total_byte_count(), 10);
+    }
+
+    // =====================================================================
+    // 16-bit tag collision resolution (oh-my-pi #4075 analog)
+    // =====================================================================
+
+    /// Find two distinct texts that share the same 16-bit file tag (top 16
+    /// bits of xxh3-64). Used to exercise the collision path deterministically.
+    fn find_tag_collision_pair() -> (String, String) {
+        use std::collections::HashMap;
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for i in 0..50_000 {
+            let candidate = format!("collision-snapshot-{i}\npayload-{i}\n");
+            let tag = crate::hash::compute_file_hash(&candidate);
+            if let Some(existing) = seen.insert(tag, candidate.clone()) {
+                if existing != candidate {
+                    return (existing, candidate);
+                }
+            }
+        }
+        panic!("failed to find a 16-bit file-tag collision in search space");
+    }
+
+    #[test]
+    fn test_read_fusion_requires_full_text_equality() {
+        // Two distinct texts sharing a 16-bit tag must NOT fuse: they are
+        // different snapshots. Fusing on tag alone would attach seen-lines
+        // from text B onto stored text A and misresolve recovery.
+        let (text_a, text_b) = find_tag_collision_pair();
+        assert_ne!(text_a, text_b);
+        assert_eq!(
+            crate::hash::compute_file_hash(&text_a),
+            crate::hash::compute_file_hash(&text_b),
+            "fixture requires a genuine tag collision"
+        );
+
+        let mut store = InMemorySnapshotStore::new();
+        let tag_a = store.record("/tmp/collide.txt", &text_a, Some(&[1, 2]));
+        let tag_b = store.record("/tmp/collide.txt", &text_b, Some(&[3, 4]));
+
+        assert_eq!(tag_a, tag_b, "both texts share the same tag");
+        let history = store.versions.get("/tmp/collide.txt").unwrap();
+        assert_eq!(history.len(), 2, "colliding texts must be kept separate");
+        assert_eq!(history[0].text, text_b, "most recent first");
+        assert_eq!(history[1].text, text_a);
+
+        // by_hash resolves the collision to the most-recent matching version.
+        let resolved = store.by_hash("/tmp/collide.txt", &tag_a).unwrap();
+        assert_eq!(resolved.text, text_b, "collision resolves to most-recent version");
+
+        // by_content must find each distinct text.
+        let a = store.by_content("/tmp/collide.txt", &text_a).unwrap();
+        assert_eq!(a.text, text_a);
+        let b = store.by_content("/tmp/collide.txt", &text_b).unwrap();
+        assert_eq!(b.text, text_b);
+    }
+
+    #[test]
+    fn test_record_seen_lines_targets_head_only() {
+        // record_seen_lines attaches to the MOST-RECENT version with the tag
+        // (the one just recorded). After a colliding text B becomes head,
+        // attaching more lines by A's tag lands on B (head), never on the
+        // older A — so provenance never corrupts A.
+        let (text_a, _text_b) = find_tag_collision_pair();
+        let tag = crate::hash::compute_file_hash(&text_a);
+
+        let mut store = InMemorySnapshotStore::new();
+        store.record("/tmp/c2.txt", &text_a, Some(&[10]));
+        // Text A is head: attaching lines lands on A.
+        store.record_seen_lines("/tmp/c2.txt", &tag, &[11]);
+        let a = store.by_content("/tmp/c2.txt", &text_a).unwrap();
+        let a_seen = a.seen_lines.as_ref().unwrap();
+        assert!(a_seen.contains(&10));
+        assert!(a_seen.contains(&11));
+        assert_eq!(a_seen.len(), 2);
     }
 }
