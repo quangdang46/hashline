@@ -133,6 +133,12 @@ Why hashline is not a drop-in for `sed` or `str_replace`:
 
 ---
 
+## Credit
+
+hashline is developed based on the idea of hash-anchored line editing. Thanks to [can1357](https://github.com/can1357) for the original [oh-my-pi](https://github.com/can1357/oh-my-pi).
+
+---
+
 ## Installation
 
 ```bash
