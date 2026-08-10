@@ -116,6 +116,7 @@ pub struct Editor {
     snapshot_store: Box<dyn SnapshotStore>,
     block_resolver: Option<Box<dyn BlockResolverTrait>>,
     config: HashlineConfig,
+    noop_guard: crate::noop_guard::NoopGuard,
 }
 
 impl Editor {
@@ -125,6 +126,9 @@ impl Editor {
             snapshot_store: Box::new(store),
             block_resolver: None,
             config: HashlineConfig::default(),
+            noop_guard: crate::noop_guard::NoopGuard::new(
+                HashlineConfig::default().noop_guard_limit,
+            ),
         }
     }
 
@@ -133,20 +137,23 @@ impl Editor {
         Self {
             snapshot_store: Box::new(store),
             block_resolver: None,
-            config,
+            config: config.clone(),
+            noop_guard: crate::noop_guard::NoopGuard::new(config.noop_guard_limit),
         }
     }
 
     /// Convenience: create an `Editor` with no snapshot caching
     /// (equivalent to `NoopSnapshotStore`).
     pub fn without_snapshots() -> Self {
+        let config = HashlineConfig {
+            enable_snapshots: false,
+            ..HashlineConfig::default()
+        };
         Self {
             snapshot_store: Box::new(crate::snapshot_store::NoopSnapshotStore),
             block_resolver: None,
-            config: HashlineConfig {
-                enable_snapshots: false,
-                ..HashlineConfig::default()
-            },
+            noop_guard: crate::noop_guard::NoopGuard::new(config.noop_guard_limit),
+            config,
         }
     }
 
@@ -308,6 +315,25 @@ impl Editor {
         };
 
         let new_hash = hash::compute_file_hash(&final_text);
+
+        // No-op loop guard: a patch that produces no net content change on the
+        // same path with the same text, repeated `noop_guard_limit` times, is a
+        // loop — surface a hard error so the agent re-reads and re-anchors
+        // instead of spinning.
+        let was_noop = final_text == *text;
+        if !dry_run && self.config.noop_guard_enabled {
+            let fp = crate::noop_guard::fingerprint(patch_str);
+            let path_str = path.to_string_lossy();
+            if let Err(streak) = self.noop_guard.record(&path_str, fp, was_noop) {
+                return Err(HashlineError::NoopLoop {
+                    path: path.to_string_lossy().into_owned().into_boxed_str(),
+                    attempts: streak,
+                });
+            }
+            if !was_noop {
+                // A real change resets the streak; nothing more to do.
+            }
+        }
 
         if !dry_run {
             crate::commands::common::fast_write(path, final_text.as_bytes())?;
@@ -660,6 +686,50 @@ mod tests {
 
         let unchanged = fs::read_to_string(&path).unwrap();
         assert_eq!(unchanged, original);
+    }
+
+    #[test]
+    fn test_noop_loop_guard_fires_after_limit() {
+        // A patch that targets a line whose content is already the payload
+        // produces no net change. Repeating the SAME patch 3x must surface
+        // NoopLoop, not silently succeed.
+        let (_d, path) = temp_file("line1\nline2\nline3\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        // SWAP 2 to the same content — net no-op.
+        let noop_patch = "SWAP 2:\n+line2";
+        ed.patch(&path, noop_patch).unwrap();
+        ed.patch(&path, noop_patch).unwrap();
+        let err = ed.patch(&path, noop_patch).unwrap_err();
+        assert!(
+            err.to_string().contains("no-op loop"),
+            "expected NoopLoop error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_noop_guard_does_not_block_real_edits() {
+        let (_d, path) = temp_file("line1\nline2\nline3\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        // Same patch that DOES change content, applied repeatedly: first apply
+        // changes, the rest are no-ops relative to the new content but the
+        // guard fires only on identical repeated no-ops of the SAME text.
+        // The first apply is a real change (resets streak).
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        // Re-applying the same patch to the already-replaced file is a no-op:
+        // streak 1, then 2 (both Ok), then 3 → NoopLoop.
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        let err = ed.patch(&path, "SWAP 2:\n+replaced").unwrap_err();
+        assert!(
+            err.to_string().contains("no-op loop"),
+            "expected NoopLoop on 3rd identical no-op, got: {err}"
+        );
+        let readback = fs::read_to_string(&path).unwrap();
+        assert_eq!(readback, "line1\nreplaced\nline3\n");
     }
 
     #[test]

@@ -120,6 +120,11 @@ pub enum HashlineError {
     #[error("patch produced no edits: {reason}")]
     EmptyPatchWithReason { reason: Box<str> },
 
+    #[error(
+        "no-op loop detected: {attempts} consecutive identical no-op patches on '{path}' — re-read the file and re-anchor, or change the patch"
+    )]
+    NoopLoop { path: Box<str>, attempts: usize },
+
     #[error("multi-line content is only supported for range edits")]
     MultiLineContentUnsupported,
 
@@ -195,6 +200,9 @@ pub enum HashlineError {
 impl HashlineError {
     pub fn hint(&self) -> Option<&'static str> {
         match self {
+            HashlineError::NoopLoop { .. } => {
+                Some("re-read the file with `hashline read <file>` and re-anchor, or change the patch")
+            }
             HashlineError::NotImplemented { .. } => {
                 Some("continue with the next planned implementation bead")
             }
@@ -364,6 +372,7 @@ impl HashlineError {
             | HashlineError::PatchFailed { .. }
             | HashlineError::EmptyPatch
             | HashlineError::EmptyPatchWithReason { .. }
+            | HashlineError::NoopLoop { .. }
             | HashlineError::MultiLineContentUnsupported
             | HashlineError::MutationIndexOutOfBounds { .. }
             | HashlineError::InvalidMutationRange { .. }

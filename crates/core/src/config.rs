@@ -25,6 +25,14 @@ pub struct HashlineConfig {
 
     /// Global ceiling on retained snapshot text across all paths (default 64 MiB).
     pub max_snapshot_bytes: usize,
+
+    /// Whether the no-op loop guard is enabled (default true).
+    pub noop_guard_enabled: bool,
+
+    /// Consecutive identical no-op patches before the guard fires (default 3).
+    /// A no-op is a patch that produces no net content change on the same path
+    /// with the same patch text.
+    pub noop_guard_limit: usize,
 }
 
 /// Hash algorithm for anchor generation and file fingerprints.
@@ -45,6 +53,8 @@ impl Default for HashlineConfig {
             max_snapshots_per_file: 4,
             max_snapshot_paths: 30,
             max_snapshot_bytes: 64 * 1024 * 1024,
+            noop_guard_enabled: true,
+            noop_guard_limit: crate::noop_guard::DEFAULT_NOOP_LIMIT,
         }
     }
 }
@@ -61,6 +71,8 @@ mod tests {
         assert_eq!(cfg.max_snapshots_per_file, 4);
         assert_eq!(cfg.max_snapshot_paths, 30);
         assert_eq!(cfg.max_snapshot_bytes, 64 * 1024 * 1024);
+        assert!(cfg.noop_guard_enabled);
+        assert_eq!(cfg.noop_guard_limit, crate::noop_guard::DEFAULT_NOOP_LIMIT);
     }
 
     #[test]
