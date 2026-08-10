@@ -106,8 +106,12 @@ fn bench_symbol_only_distinctness(c: &mut Criterion) {
     }
     let distinct_rate = distinct.len() as f64 / entries.len() as f64;
 
+    // After position-seeding (Phase 2): distinctness should jump from 3 (all
+    // symbol-only lines share a hash) toward the 256-value ceiling. With 5000
+    // lines the rate is capped by the 2-char hash space; the improvement is
+    // systematic→uniform collision, not zero collision.
     eprintln!(
-        "accuracy[symbol]: {} identical symbol-only lines → only {} distinct hashes ({:.1}% distinct)",
+        "accuracy[symbol]: {} identical symbol-only lines → {} distinct hashes ({:.1}% distinct; 2-char ceiling = 256)",
         entries.len(),
         distinct.len(),
         distinct_rate * 100.0,

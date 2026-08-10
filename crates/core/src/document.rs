@@ -99,9 +99,13 @@ impl FileContent {
         let lines = self.lines();
         lines
             .iter()
-            .map(|line| LineEntry {
+            .enumerate()
+            .map(|(i, line)| LineEntry {
                 content: line.to_string(),
-                short_hash: hash::short_hash_value(line),
+                // Position-seeded for symbol-only lines so identical `}` etc.
+                // disambiguate; content lines keep the plain hash. 1-based line
+                // number matches the read/patch anchor convention.
+                short_hash: hash::short_hash_value_indexed(line, i + 1),
             })
             .collect()
     }
