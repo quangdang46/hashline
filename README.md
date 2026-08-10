@@ -156,6 +156,23 @@ The installers auto-detect your platform, fetch the matching binary from GitHub 
 
 ---
 
+## Agent Host Integrations
+
+Beyond the MCP server, hashline ships thin-wrapper packages for agent hosts that
+prefer **native read/edit tools** over MCP. Both shell out to the `hashline` binary —
+they never reimplement hashing, staleness detection, or merge recovery in TypeScript.
+
+| Package | Host | Tools | Install |
+|---|---|---|---|
+| [`integration/pi-hashline`](integration/pi-hashline) | pi-coding-agent | overrides built-in `read`/`edit` | `pi install git:github.com/quangdang46/hashline#<path>` (see package README) |
+| [`integration/opencode-plugin`](integration/opencode-plugin) | OpenCode | `hashline_read`, `hashline_edit` | `opencode.json` `plugin: ["@scope/hashline-opencode-plugin"]` + disable native `edit` |
+
+Both require the `hashline` binary on `PATH` (or `HASHLINE_BIN`). See each package's
+`README.md` and [`integration/CONTRACT.md`](integration/CONTRACT.md) for the exact CLI
+contract and setup.
+
+---
+
 ## Quick Start
 
 ```bash
