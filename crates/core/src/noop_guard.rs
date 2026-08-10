@@ -41,19 +41,17 @@ impl NoopGuard {
     /// Returns `Ok(streak)` when the guard is satisfied (streak < limit), and
     /// `Err(streak)` when `streak >= limit` — the caller should surface a
     /// hard no-op-loop error.
-    pub fn record(
-        &mut self,
-        path: &str,
-        fingerprint: u64,
-        was_noop: bool,
-    ) -> Result<usize, usize> {
+    pub fn record(&mut self, path: &str, fingerprint: u64, was_noop: bool) -> Result<usize, usize> {
         if !was_noop {
             // A real change (or an empty/no edits path) resets the streak.
             self.state.remove(path);
             return Ok(0);
         }
 
-        let entry = self.state.entry(path.to_owned()).or_insert((fingerprint, 0));
+        let entry = self
+            .state
+            .entry(path.to_owned())
+            .or_insert((fingerprint, 0));
         if entry.0 != fingerprint {
             // Different patch text → new attempt, not a loop.
             *entry = (fingerprint, 1);

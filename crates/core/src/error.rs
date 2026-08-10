@@ -196,19 +196,23 @@ pub enum HashlineError {
     #[error("no block resolver configured")]
     NoBlockResolver,
 
-    #[error("register '{register}' was never captured — a `PUT @{register}` needs a `CUT ... @{register}` earlier in the same patch")]
+    #[error(
+        "register '{register}' was never captured — a `PUT @{register}` needs a `CUT ... @{register}` earlier in the same patch"
+    )]
     ClipboardMissingRegister { register: String },
 
-    #[error("anonymous register is empty — a `PUT` without `@name` needs a `CUT` earlier in the same patch")]
+    #[error(
+        "anonymous register is empty — a `PUT` without `@name` needs a `CUT` earlier in the same patch"
+    )]
     ClipboardEmptyAnon,
 }
 
 impl HashlineError {
     pub fn hint(&self) -> Option<&'static str> {
         match self {
-            HashlineError::NoopLoop { .. } => {
-                Some("re-read the file with `hashline read <file>` and re-anchor, or change the patch")
-            }
+            HashlineError::NoopLoop { .. } => Some(
+                "re-read the file with `hashline read <file>` and re-anchor, or change the patch",
+            ),
             HashlineError::NotImplemented { .. } => {
                 Some("continue with the next planned implementation bead")
             }

@@ -836,7 +836,10 @@ mod cut_put_tests {
     #[test]
     fn cut_parses_to_cut_edit() {
         let (edits, warnings, _file_op, _aborted) = parse_patch("CUT 5..9 @fn");
-        assert!(warnings.is_empty(), "expected no warnings, got {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got {warnings:?}"
+        );
         assert_eq!(edits.len(), 1);
         match &edits[0] {
             Edit::Cut {
@@ -870,9 +873,7 @@ mod cut_put_tests {
         assert_eq!(edits.len(), 1);
         match &edits[0] {
             Edit::Paste {
-                cursor,
-                register,
-                ..
+                cursor, register, ..
             } => {
                 assert!(matches!(cursor, Cursor::BeforeAnchor(a) if a.line == 20));
                 assert_eq!(register.as_deref(), Some("fn"));
@@ -883,9 +884,11 @@ mod cut_put_tests {
 
     #[test]
     fn cut_and_put_parse_in_one_patch() {
-        let (edits, warnings, _file_op, _aborted) =
-            parse_patch("CUT 5..9 @fn\nPUT @fn <20");
-        assert!(warnings.is_empty(), "expected no warnings, got {warnings:?}");
+        let (edits, warnings, _file_op, _aborted) = parse_patch("CUT 5..9 @fn\nPUT @fn <20");
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got {warnings:?}"
+        );
         assert_eq!(edits.len(), 2);
         assert!(matches!(&edits[0], Edit::Cut { .. }));
         assert!(matches!(&edits[1], Edit::Paste { .. }));

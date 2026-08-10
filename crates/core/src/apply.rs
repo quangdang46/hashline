@@ -112,11 +112,7 @@ pub fn repair_boundary_echo(
     // Detect leading edge duplicate (payload[0] == line above range).
     let leading = if start_line > 1 && start_line <= entries_len {
         let line_above = &entries[start_line - 2].content;
-        if payload[0] == *line_above {
-            1
-        } else {
-            0
-        }
+        if payload[0] == *line_above { 1 } else { 0 }
     } else {
         0
     };
@@ -147,7 +143,9 @@ pub fn repair_boundary_echo(
 
     // Single-sided echo on a structural closer (no parser needed — the closer
     // is proven by exact text equality and is delimiter-neutral).
-    if leading > 0 && trailing == 0 && leading < payload.len()
+    if leading > 0
+        && trailing == 0
+        && leading < payload.len()
         && is_structural_closer(payload[0].trim())
     {
         let repaired: Vec<String> = payload[1..].to_vec();
@@ -157,7 +155,9 @@ pub fn repair_boundary_echo(
         );
         return Some((repaired, warning));
     }
-    if trailing > 0 && leading == 0 && trailing < payload.len()
+    if trailing > 0
+        && leading == 0
+        && trailing < payload.len()
         && is_structural_closer(payload[payload.len() - 1].trim())
     {
         let repaired: Vec<String> = payload[..payload.len() - trailing].to_vec();

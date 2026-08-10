@@ -25,8 +25,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 
 mod support;
 
-use hashline::hash;
 use hashline::document::FileContent;
+use hashline::hash;
 
 fn bench_collision_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("collision_rates");
@@ -63,19 +63,31 @@ fn bench_collision_rates(c: &mut Criterion) {
         let amb_rate = ambiguous as f64 / seen.len().max(1) as f64;
 
         group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::new("collision_rate", size), &coll_rate, |b, r| {
-            b.iter(|| black_box(*r))
-        });
-        group.bench_with_input(BenchmarkId::new("adjacent_collision_rate", size), &adj_rate, |b, r| {
-            b.iter(|| black_box(*r))
-        });
-        group.bench_with_input(BenchmarkId::new("ambiguous_anchor_rate", size), &amb_rate, |b, r| {
-            b.iter(|| black_box(*r))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("collision_rate", size),
+            &coll_rate,
+            |b, r| b.iter(|| black_box(*r)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("adjacent_collision_rate", size),
+            &adj_rate,
+            |b, r| b.iter(|| black_box(*r)),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("ambiguous_anchor_rate", size),
+            &amb_rate,
+            |b, r| b.iter(|| black_box(*r)),
+        );
 
         eprintln!(
             "accuracy[{}]: lines={} collisions={} ({:.4}%) adjacent_collisions={} ({:.4}%) ambiguous_hashes={}",
-            size, n, collisions, coll_rate * 100.0, adjacent_collisions, adj_rate * 100.0, ambiguous,
+            size,
+            n,
+            collisions,
+            coll_rate * 100.0,
+            adjacent_collisions,
+            adj_rate * 100.0,
+            ambiguous,
         );
     }
     group.finish();

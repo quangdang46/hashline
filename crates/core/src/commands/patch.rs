@@ -631,8 +631,7 @@ pub fn apply_edits_with_clipboard(
                 // Hash validation on the first anchor line, like DEL.
                 if let Some(expected) = expected_hash {
                     let anchor_index = start_line.wrapping_sub(1);
-                    if anchor_index < entries.len()
-                        && *expected != entries[anchor_index].short_hash
+                    if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
                     {
                         return Err(HashlineError::StaleAnchor {
                             anchor: format!(
@@ -643,8 +642,10 @@ pub fn apply_edits_with_clipboard(
                             .into(),
                             line: start_line,
                             expected: crate::hash::format_short_hash(*expected).into(),
-                            actual: crate::hash::format_short_hash(entries[anchor_index].short_hash)
-                                .into(),
+                            actual: crate::hash::format_short_hash(
+                                entries[anchor_index].short_hash,
+                            )
+                            .into(),
                             path: path.display().to_string().into(),
                             relocated_suffix: String::new().into(),
                         });
@@ -706,18 +707,14 @@ pub fn apply_edits_with_clipboard(
 
             // ---- PUT @name <N: ----------------------------------------------
             Edit::Paste {
-                cursor,
-                register,
-                ..
+                cursor, register, ..
             } => {
                 let captured: Vec<String> = match register {
-                    Some(name) => clipboard
-                        .named
-                        .get(name)
-                        .cloned()
-                        .ok_or_else(|| HashlineError::ClipboardMissingRegister {
+                    Some(name) => clipboard.named.get(name).cloned().ok_or_else(|| {
+                        HashlineError::ClipboardMissingRegister {
                             register: name.clone(),
-                        })?,
+                        }
+                    })?,
                     None => clipboard
                         .anon
                         .clone()
@@ -1858,10 +1855,7 @@ mod tests {
     fn p9_cut_then_put_moves_range_to_new_position() {
         // CUT 2..3 @fn captures lines 2..3 and deletes them; PUT @fn <5
         // re-inserts them before original line 5.
-        let result = apply_text(
-            "L01\nL02\nL03\nL04\nL05\nL06",
-            "CUT 2..3 @fn\nPUT @fn <5",
-        );
+        let result = apply_text("L01\nL02\nL03\nL04\nL05\nL06", "CUT 2..3 @fn\nPUT @fn <5");
         assert_eq!(result, "L01\nL04\nL02\nL03\nL05\nL06");
     }
 
@@ -1936,12 +1930,7 @@ mod tests {
 
     #[test]
     fn p9_put_out_of_range_anchor_errors() {
-        let err = apply_text_result(
-            "L01\nL02\nL03",
-            "CUT 1 @fn\nPUT @fn <99",
-            "txt",
-        )
-        .unwrap_err();
+        let err = apply_text_result("L01\nL02\nL03", "CUT 1 @fn\nPUT @fn <99", "txt").unwrap_err();
         assert!(
             err.to_string().contains("not found"),
             "expected InvalidAnchor error, got: {err}"
@@ -1966,10 +1955,7 @@ mod tests {
         // original line 10 is a no-op because the SWAP already consumed it
         // (same `!deleted` guard as DEL); the captured L10 is pasted at the
         // head, and the SWAP's S10 survives in place.
-        let result = apply_text(
-            L12,
-            "SWAP 10:\n+S10\nCUT 10 @fn\nPUT @fn <2",
-        );
+        let result = apply_text(L12, "SWAP 10:\n+S10\nCUT 10 @fn\nPUT @fn <2");
         assert_eq!(
             result,
             "L01\nL10\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nS10\nL11\nL12"
@@ -1982,10 +1968,10 @@ mod tests {
         // rewrote — the `!deleted` guard skips it, and the captured lines
         // are the ORIGINAL ones. L10 stays (rewritten to S10), only L11
         // is deleted by the CUT.
-        let result = apply_text(
-            L12,
-            "SWAP 10:\n+S10\nCUT 11 @fn\nPUT @fn <2",
+        let result = apply_text(L12, "SWAP 10:\n+S10\nCUT 11 @fn\nPUT @fn <2");
+        assert_eq!(
+            result,
+            "L01\nL11\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nS10\nL12"
         );
-        assert_eq!(result, "L01\nL11\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nS10\nL12");
     }
 }

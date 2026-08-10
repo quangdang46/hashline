@@ -300,7 +300,8 @@ impl Editor {
         let entries = fc.lines_with_hashes();
         let had_trailing_newline = fc.trailing_newline;
 
-        let apply_result = crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved);
+        let apply_result =
+            crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved);
         if let Err(HashlineError::StaleAnchor { .. }) = apply_result {
             if self.config.enable_snapshots {
                 let recovery = crate::recovery::Recovery::new(&*self.snapshot_store);
@@ -794,7 +795,10 @@ mod tests {
         // The anchor hash no longer matches line 2 → recovery should kick in.
         let patch = format!("SWAP 2:{beta_hash}:\n+replaced");
         let result = ed.patch(&path, &patch).unwrap();
-        assert!(result.text.contains("replaced"), "recovery should apply the swap");
+        assert!(
+            result.text.contains("replaced"),
+            "recovery should apply the swap"
+        );
         let readback = fs::read_to_string(&path).unwrap();
         assert_eq!(readback, "alpha\ninserted\nreplaced\ngamma\n");
     }

@@ -110,8 +110,8 @@ pub fn collides(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        collides, format_short_hash, full_hash, full_hash_bytes, is_symbol_only,
-        short_from_full, short_hash, short_hash_value, short_hash_value_indexed,
+        collides, format_short_hash, full_hash, full_hash_bytes, is_symbol_only, short_from_full,
+        short_hash, short_hash_value, short_hash_value_indexed,
     };
     use std::collections::HashMap;
     use xxhash_rust::xxh32::xxh32;

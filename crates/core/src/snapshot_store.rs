@@ -247,7 +247,11 @@ impl SnapshotStore for InMemorySnapshotStore {
         // most-recent version (rather than rejecting) is the oh-my-pi 16.3.3
         // behavior; recovery still requires the anchors/context to remap
         // unambiguously, so a stale collision fails closed downstream.
-        self.versions.get(path)?.iter().find(|s| s.hash == hash).cloned()
+        self.versions
+            .get(path)?
+            .iter()
+            .find(|s| s.hash == hash)
+            .cloned()
     }
 
     fn by_content(&self, path: &str, full_text: &str) -> Option<Snapshot> {
@@ -597,7 +601,10 @@ mod tests {
 
         // by_hash resolves the collision to the most-recent matching version.
         let resolved = store.by_hash("/tmp/collide.txt", &tag_a).unwrap();
-        assert_eq!(resolved.text, text_b, "collision resolves to most-recent version");
+        assert_eq!(
+            resolved.text, text_b,
+            "collision resolves to most-recent version"
+        );
 
         // by_content must find each distinct text.
         let a = store.by_content("/tmp/collide.txt", &text_a).unwrap();
