@@ -19,7 +19,7 @@
     "extensions": [
       "./index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/<owner>/hashline/main/integration/pi-hashline/docs/demo.png"
+    "image": "https://raw.githubusercontent.com/quangdang46/hashline/main/integration/pi-hashline/docs/demo.png"
   },
   "scripts": {
     "test": "npm run typecheck && npm run contract && npm run lint",

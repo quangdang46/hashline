@@ -1,4 +1,4 @@
-# @scope/hashline-opencode-plugin
+# @hashline/hashline-opencode-plugin
 
 Hashline plugin for [OpenCode](https://opencode.ai) — a **thin wrapper** that
 shells out to the [hashline](https://github.com/quangdang46/hashline) binary.
@@ -28,7 +28,7 @@ the built-in `edit` tool so the model is forced through `hashline_edit`:
 
 ```jsonc
 {
-  "plugin": ["@scope/hashline-opencode-plugin"],
+  "plugin": ["@hashline/hashline-opencode-plugin"],
   "agent": {
     "build": {
       "tools": { "edit": false },
@@ -42,7 +42,7 @@ Local development (instead of publishing under a real scope):
 
 ```jsonc
 {
-  "plugin": ["./.opencode/node_modules/@scope/hashline-opencode-plugin/dist/index.js"],
+  "plugin": ["./.opencode/node_modules/@hashline/hashline-opencode-plugin/dist/index.js"],
   "agent": {
     "build": {
       "tools": { "edit": false }

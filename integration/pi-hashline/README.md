@@ -14,8 +14,11 @@ Prerequisite: the `hashline` binary (>= 0.9.1) on PATH, or pointed at by config.
 
 ```bash
 cargo install hashline            # or build from this repo: cargo build -p hashline --release
-pi install <abs path to integration/pi-hashline>   # local path
-# or, once published:
+# Install the extension from this repo (github path)
+pi install git:github.com/quangdang46/hashline#main:integration/pi-hashline
+# or, from a local checkout:
+pi install /path/to/hashline/integration/pi-hashline
+# or, once published to npm:
 pi install npm:hashline-pi
 ```
 

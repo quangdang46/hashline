@@ -1,5 +1,5 @@
 {
-  "name": "@scope/hashline-opencode-plugin",
+  "name": "@hashline/hashline-opencode-plugin",
   "version": "0.1.0",
   "description": "Hashline plugin for OpenCode — thin wrapper that shells out to the hashline binary",
   "type": "module",
