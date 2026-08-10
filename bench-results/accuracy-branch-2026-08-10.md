@@ -46,3 +46,27 @@ cargo bench --bench accuracy_bench   # prints accuracy[...] lines to stderr
 ```
 Compare `accuracy[symbol]` (P2 win), collision/adjacent rates (flat until V2 hash), and
 `stale_detection_cost` (flat — no format change).
+
+## Additions on this branch (P8/P9, commit `9b1c073`)
+
+### P8 — parallel line hashing (`document.rs`)
+`lines_with_hashes` fans out per-line xxh32 across `std::thread::scope` workers
+(no rayon). Below 4096 lines the exact original serial path is kept. Result is
+bit-for-bit identical to serial (asserted in tests; `accuracy_bench` numbers
+unchanged). Measured with `cargo bench --bench hash_bench`:
+
+| Path | Serial | Parallel | Speedup |
+|---|---:|---:|---:|
+| 100k-line hash throughput | ~590 MiB/s | **~2.14 GiB/s** | **~3.6×** |
+| long-lines fixture | ~0.4 GiB/s | **~1.6 GiB/s** | **~3.6×** |
+
+### P9 — named registers (`CUT N..M [@name]` / `PUT [@name] <N`)
+Moves code across positions in one patch; per-patch clipboard; fail-closed on
+missing register. Verified end-to-end via CLI. No hash-cost impact.
+
+### P4/P5 — format reader / adaptive length: **DEFER** (data-driven)
+Measured ambiguity by hash width (2/3/4 hex) on the accuracy fixtures. Longer
+hashes make UNQUALIFIED resolution worse at scale (e.g. 100K lines: 2-char has
+256 ambiguous values; 3-char has 4096). Qualified `LINE:HASH` anchors are
+already collision-free. Recommendation: keep 2-char emission + LINE:HASH +
+ambiguous-hash error; revisit only with real-world evidence of a wrong edit.
