@@ -76,7 +76,10 @@ export function parseStderr(stderr: string): ErrorPayload | null {
  * Format an exit-1 stderr stream into the model-facing message plus a kind.
  * Always appends a re-read teaching line for stale-anchor/ambiguous cases.
  */
-export function formatHashlineError(stderr: string, exitCode: number): FormattedHashlineError {
+export function formatHashlineError(
+  stderr: string,
+  exitCode: number,
+): FormattedHashlineError {
   const trimmed = stderr.trim();
 
   // Structured JSON error (binary invoked with --json).

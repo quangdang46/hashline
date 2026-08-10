@@ -45,9 +45,14 @@ maybe("e2e against the hashline binary", () => {
     const patchText = buildPatchText([
       { op: "replace", pos: `2:${line2.hash}`, lines: ["    let x = 42;"] },
     ]);
-    const patched = await runHashline(["patch", file, "-"], patchText, undefined, {
-      cwd: dir,
-    });
+    const patched = await runHashline(
+      ["patch", file, "-"],
+      patchText,
+      undefined,
+      {
+        cwd: dir,
+      },
+    );
     expect(patched.exitCode).toBe(0);
 
     const verify = await runHashline(["read", file, "--json"]);
@@ -67,7 +72,9 @@ maybe("e2e against the hashline binary", () => {
     const patchText = buildPatchText([
       { op: "replace", pos: "2:ff", lines: ["bad"] },
     ]);
-    const res = await runHashline(["patch", file, "-"], patchText, undefined, { cwd: dir });
+    const res = await runHashline(["patch", file, "-"], patchText, undefined, {
+      cwd: dir,
+    });
     expect(res.exitCode).toBe(1);
     const fmt = formatHashlineError(res.stderr, res.exitCode);
     expect(fmt.kind).toBe("stale_anchor");

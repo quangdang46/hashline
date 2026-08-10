@@ -20,7 +20,15 @@ import { parseReadJson } from "../hashline-core";
 import { formatHashlineError, mapErrorKind } from "../hashline-errors";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const fixturesRoot = join(here, "..", "..", "..", "..", "integration", "fixtures");
+const fixturesRoot = join(
+  here,
+  "..",
+  "..",
+  "..",
+  "..",
+  "integration",
+  "fixtures",
+);
 
 describe("escapePayloadLine", () => {
   test("plain line gets a + prefix", () => {
@@ -43,7 +51,11 @@ describe("escapePayloadLine", () => {
 describe("translateEdit — op to patch grammar", () => {
   test("replace single line → SWAP N:hh:", () => {
     expect(
-      translateEdit({ op: "replace", pos: "5:da", lines: ["  const timeout = 3000;"] }),
+      translateEdit({
+        op: "replace",
+        pos: "5:da",
+        lines: ["  const timeout = 3000;"],
+      }),
     ).toEqual(["SWAP 5:da:\n+  const timeout = 3000;"]);
   });
 
@@ -61,17 +73,25 @@ describe("translateEdit — op to patch grammar", () => {
   });
 
   test("replace with empty lines → DEL", () => {
-    expect(translateEdit({ op: "replace", pos: "5:da", lines: [] })).toEqual(["DEL 5:da"]);
+    expect(translateEdit({ op: "replace", pos: "5:da", lines: [] })).toEqual([
+      "DEL 5:da",
+    ]);
   });
 
   test("append with pos → INS.POST N:hh:", () => {
     expect(
-      translateEdit({ op: "append", pos: "5:da", lines: ["  const delay = 1000;"] }),
+      translateEdit({
+        op: "append",
+        pos: "5:da",
+        lines: ["  const delay = 1000;"],
+      }),
     ).toEqual(["INS.POST 5:da:\n+  const delay = 1000;"]);
   });
 
   test("append without pos → INS.TAIL:", () => {
-    expect(translateEdit({ op: "append", lines: ["z"] })).toEqual(["INS.TAIL:\n+z"]);
+    expect(translateEdit({ op: "append", lines: ["z"] })).toEqual([
+      "INS.TAIL:\n+z",
+    ]);
   });
 
   test("prepend with pos → INS.PRE N:hh:", () => {
@@ -81,7 +101,9 @@ describe("translateEdit — op to patch grammar", () => {
   });
 
   test("prepend without pos → INS.HEAD:", () => {
-    expect(translateEdit({ op: "prepend", lines: ["// header"] })).toEqual(["INS.HEAD:\n+// header"]);
+    expect(translateEdit({ op: "prepend", lines: ["// header"] })).toEqual([
+      "INS.HEAD:\n+// header",
+    ]);
   });
 
   test("delete single → DEL N:hh", () => {
@@ -89,7 +111,9 @@ describe("translateEdit — op to patch grammar", () => {
   });
 
   test("delete range → DEL N:hh..M:aa", () => {
-    expect(translateEdit({ op: "delete", pos: "8:b4", end: "12:f2" })).toEqual(["DEL 8:b4..12:f2"]);
+    expect(translateEdit({ op: "delete", pos: "8:b4", end: "12:f2" })).toEqual([
+      "DEL 8:b4..12:f2",
+    ]);
   });
 });
 
@@ -104,7 +128,9 @@ describe("buildPatchText", () => {
       { op: "delete", pos: "5:da" },
       { op: "replace", pos: "2:92", lines: ["a"] },
     ]);
-    expect(text).toBe("*** Begin Patch\nDEL 5:da\nSWAP 2:92:\n+a\n*** End Patch\n");
+    expect(text).toBe(
+      "*** Begin Patch\nDEL 5:da\nSWAP 2:92:\n+a\n*** End Patch\n",
+    );
   });
 
   test("empty edit list produces empty patch", () => {
@@ -140,7 +166,7 @@ describe("formatRead — binary-native N:hh|content rendering", () => {
       "[C:/Users/ADMIN/AppData/Local/Temp/golden.rs#5db5]\n" +
         "1:9b|fn main() {\n" +
         "2:f8|    let x = 1;\n" +
-        "3:d2|    println!(\"ok\");\n" +
+        '3:d2|    println!("ok");\n' +
         "4:88|}",
     );
     expect(view.truncated).toBe(false);
@@ -149,7 +175,7 @@ describe("formatRead — binary-native N:hh|content rendering", () => {
   test("offset/limit slice with nextOffset when truncated", () => {
     const view = formatRead(golden, { offset: 2, limit: 2 });
     expect(view.text).toContain("2:f8|    let x = 1;");
-    expect(view.text).toContain("3:d2|    println!(\"ok\");");
+    expect(view.text).toContain('3:d2|    println!("ok");');
     expect(view.text).not.toContain("1:9b");
     expect(view.text).not.toContain("4:88");
     expect(view.startLine).toBe(2);
@@ -204,10 +230,16 @@ describe("formatHashlineError — exit-1 taxonomy", () => {
   });
 
   test("mapErrorKind covers the contract's kinds", () => {
-    expect(mapErrorKind({ kind: "STALE_ANCHOR", error: "x" })).toBe("stale_anchor");
+    expect(mapErrorKind({ kind: "STALE_ANCHOR", error: "x" })).toBe(
+      "stale_anchor",
+    );
     expect(mapErrorKind({ kind: "NOOP_LOOP", error: "x" })).toBe("empty_patch");
-    expect(mapErrorKind({ kind: "AMBIGUOUS_HASH", error: "x" })).toBe("ambiguous_hash");
-    expect(mapErrorKind({ kind: "HASH_NOT_FOUND", error: "x" })).toBe("hash_not_found");
+    expect(mapErrorKind({ kind: "AMBIGUOUS_HASH", error: "x" })).toBe(
+      "ambiguous_hash",
+    );
+    expect(mapErrorKind({ kind: "HASH_NOT_FOUND", error: "x" })).toBe(
+      "hash_not_found",
+    );
     expect(mapErrorKind({ kind: "BINARY_FILE", error: "x" })).toBe("io");
     expect(mapErrorKind({ kind: "UNKNOWN_KIND", error: "x" })).toBe("io");
   });

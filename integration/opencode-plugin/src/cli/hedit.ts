@@ -54,7 +54,9 @@ async function main(): Promise<void> {
     if (!Array.isArray(parsed)) throw new Error("edits must be a JSON array");
     edits = parsed as EditOperation[];
   } catch (err) {
-    process.stderr.write(`Error: invalid --json edits: ${(err as Error).message}\n`);
+    process.stderr.write(
+      `Error: invalid --json edits: ${(err as Error).message}\n`,
+    );
     process.exit(2);
   }
 

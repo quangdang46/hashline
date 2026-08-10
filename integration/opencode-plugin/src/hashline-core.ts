@@ -106,7 +106,9 @@ export function runHashline(
       resolve({ stdout, stderr, exitCode: code ?? -1 });
     };
 
-    child.on("close", (code: unknown) => done(typeof code === "number" ? code : null));
+    child.on("close", (code: unknown) =>
+      done(typeof code === "number" ? code : null),
+    );
     child.on("error", (err: unknown) => done(null, err as Error));
 
     if (stdinText !== undefined) {
@@ -138,9 +140,9 @@ export function resolveHashlineBin(): string {
  * `hashline 0.9.1`), or null when the binary is missing/unparseable. Never
  * throws — callers degrade to a warning.
  */
-export async function probeHashlineVersion(
-  opts?: { signal?: AbortSignal },
-): Promise<string | null> {
+export async function probeHashlineVersion(opts?: {
+  signal?: AbortSignal;
+}): Promise<string | null> {
   try {
     const res = await runHashline(["--version"], undefined, opts?.signal);
     const m = /hashline\s+\d+\.\d+\.\d+/.exec(res.stdout.trim());
@@ -215,7 +217,11 @@ export function parseErrorPayload(stderr: string): ErrorPayload | null {
   if (trimmed.length === 0) return null;
   try {
     const parsed = JSON.parse(trimmed) as ErrorPayload;
-    if (parsed && typeof parsed === "object" && typeof parsed.kind === "string") {
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.kind === "string"
+    ) {
       return parsed;
     }
     return null;

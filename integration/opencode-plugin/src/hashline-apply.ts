@@ -104,12 +104,23 @@ export function buildPatchText(edits: EditOperation[]): string {
 }
 
 /** Build a short UI title summarizing the edit batch (for context.metadata). */
-export function buildEditTitle(args: { path: string; edits?: EditOperation[] }): string {
+export function buildEditTitle(args: {
+  path: string;
+  edits?: EditOperation[];
+}): string {
   const parts: string[] = [args.path];
   const ops: string[] = [];
   for (const e of args.edits ?? []) {
     if (e.op === "replace") {
-      ops.push(e.lines && e.lines.length > 0 ? (e.end ? `repl ${e.pos}..${e.end}` : `repl ${e.pos}`) : (e.end ? `del ${e.pos}..${e.end}` : `del ${e.pos}`));
+      ops.push(
+        e.lines && e.lines.length > 0
+          ? e.end
+            ? `repl ${e.pos}..${e.end}`
+            : `repl ${e.pos}`
+          : e.end
+            ? `del ${e.pos}..${e.end}`
+            : `del ${e.pos}`,
+      );
     } else if (e.op === "append") {
       ops.push(e.pos ? `app ${e.pos}` : "app EOF");
     } else if (e.op === "prepend") {

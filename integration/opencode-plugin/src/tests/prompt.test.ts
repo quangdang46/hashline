@@ -65,7 +65,9 @@ describe("example anchors vs the real binary (D.5 guard)", () => {
       probe = null;
     }
     if (!probe || probe.exitCode !== 0) {
-      console.warn("hashline binary not available — skipping live anchor check");
+      console.warn(
+        "hashline binary not available — skipping live anchor check",
+      );
       return;
     }
 

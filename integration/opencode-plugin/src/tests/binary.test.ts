@@ -19,7 +19,15 @@ import {
 } from "../hashline-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const fixturesRoot = join(here, "..", "..", "..", "..", "integration", "fixtures");
+const fixturesRoot = join(
+  here,
+  "..",
+  "..",
+  "..",
+  "..",
+  "integration",
+  "fixtures",
+);
 
 /**
  * Hand-rolled fake child that replays canned stdout/stderr and exit code
@@ -129,7 +137,10 @@ describe("runHashline spawn seam", () => {
       expect(args).toEqual(["patch", "t.rs", "-"]);
       return fake.child;
     });
-    await runHashline(["patch", "t.rs", "-"], "*** Begin Patch\n*** End Patch\n");
+    await runHashline(
+      ["patch", "t.rs", "-"],
+      "*** Begin Patch\n*** End Patch\n",
+    );
     expect(fake.written()).toContain("*** Begin Patch");
     setSpawnForTests(null);
   });
@@ -159,7 +170,11 @@ describe("JSON payload parsers", () => {
     const parsed = parseReadJson(raw);
     expect(parsed.hash).toBe("5db5");
     expect(parsed.lines).toHaveLength(4);
-    expect(parsed.lines[1]).toEqual({ n: 2, hash: "f8", content: "    let x = 1;" });
+    expect(parsed.lines[1]).toEqual({
+      n: 2,
+      hash: "f8",
+      content: "    let x = 1;",
+    });
   });
 
   test("parseReadJson rejects a non-JSON / wrong-shape payload", () => {
@@ -176,7 +191,9 @@ describe("JSON payload parsers", () => {
   });
 
   test("parseErrorPayload returns null for pretty text or empty", () => {
-    expect(parseErrorPayload("Error: line 2 content changed since last read")).toBeNull();
+    expect(
+      parseErrorPayload("Error: line 2 content changed since last read"),
+    ).toBeNull();
     expect(parseErrorPayload("")).toBeNull();
   });
 });

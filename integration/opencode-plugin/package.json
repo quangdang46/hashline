@@ -6,9 +6,17 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "hread": "./dist/cli/hread.js",
     "hedit": "./dist/cli/hedit.js"
@@ -31,5 +39,8 @@
     "build:all": "rm -rf dist && bun run build && bun run build:cli && bun run build:types",
     "prepublishOnly": "bun run build:all && bun run typecheck && bun test src/tests/"
   },
-  "publishConfig": { "registry": "https://registry.npmjs.org/", "access": "public" }
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
 }

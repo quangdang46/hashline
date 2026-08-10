@@ -7,7 +7,11 @@
  */
 
 import { parseArgs } from "node:util";
-import { runHashline, parseReadJson, resolveHashlineBin } from "../hashline-core";
+import {
+  runHashline,
+  parseReadJson,
+  resolveHashlineBin,
+} from "../hashline-core";
 import { formatRead } from "../format";
 
 const USAGE = `hread — hashline read wrapper
@@ -67,7 +71,9 @@ async function main(): Promise<void> {
   try {
     parsed = parseReadJson(result.stdout);
   } catch {
-    process.stderr.write(`Error: hashline read --json returned an unexpected payload\n`);
+    process.stderr.write(
+      `Error: hashline read --json returned an unexpected payload\n`,
+    );
     process.exit(2);
   }
 

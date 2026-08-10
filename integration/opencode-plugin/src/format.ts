@@ -39,7 +39,10 @@ export function formatRead(
   opts: ReadFormatOptions = {},
 ): ReadFormatResult {
   const offset = opts.offset && opts.offset >= 1 ? Math.floor(opts.offset) : 1;
-  const limit = opts.limit && opts.limit >= 1 ? Math.floor(opts.limit) : Number.POSITIVE_INFINITY;
+  const limit =
+    opts.limit && opts.limit >= 1
+      ? Math.floor(opts.limit)
+      : Number.POSITIVE_INFINITY;
 
   const startIdx = offset - 1;
   const sliced = result.lines.slice(startIdx, startIdx + limit);

@@ -26,7 +26,11 @@ import {
   buildEditTitle,
   type EditOperation,
 } from "./hashline-apply";
-import { formatHashlineError, RE_READ_HINT, INSTALL_HINT } from "./hashline-errors";
+import {
+  formatHashlineError,
+  RE_READ_HINT,
+  INSTALL_HINT,
+} from "./hashline-errors";
 import { renderHashlineEditPrompt } from "./prompt";
 
 /** Resolve a path relative to the session base directory (directory || worktree). */
@@ -80,9 +84,17 @@ const plugin: Plugin = async (ctx) => {
           "(the hashline binary format). Pass these N:hh anchors to hashline_edit. " +
           "Prefer this over read for files you intend to edit.",
         args: {
-          path: tool.schema.string().describe("Path to the file to read (relative or absolute)"),
-          offset: tool.schema.number().optional().describe("First line (1-based)"),
-          limit: tool.schema.number().optional().describe("Max lines (default all)"),
+          path: tool.schema
+            .string()
+            .describe("Path to the file to read (relative or absolute)"),
+          offset: tool.schema
+            .number()
+            .optional()
+            .describe("First line (1-based)"),
+          limit: tool.schema
+            .number()
+            .optional()
+            .describe("Max lines (default all)"),
         },
         async execute(args, context) {
           const filePath = resolvePath(args.path, getBaseDir(context));
@@ -99,7 +111,9 @@ const plugin: Plugin = async (ctx) => {
           }
           if (result.exitCode !== 0) {
             const fmt = formatHashlineError(result.stderr, result.exitCode);
-            return fmt.text.startsWith("Error:") ? fmt.text : `Error: ${fmt.text}`;
+            return fmt.text.startsWith("Error:")
+              ? fmt.text
+              : `Error: ${fmt.text}`;
           }
           let parsed;
           try {
@@ -107,7 +121,10 @@ const plugin: Plugin = async (ctx) => {
           } catch {
             return `Error: hashline read --json returned an unexpected payload`;
           }
-          const view = formatRead(parsed, { offset: args.offset, limit: args.limit });
+          const view = formatRead(parsed, {
+            offset: args.offset,
+            limit: args.limit,
+          });
           const rangeNote =
             view.truncated || (args.offset ?? 1) > 1
               ? `(showing lines ${view.startLine}-${view.endLine} of ${parsed.lines.length} total)\n`
@@ -130,27 +147,41 @@ const plugin: Plugin = async (ctx) => {
                 tool.schema.object({
                   op: tool.schema.literal("replace"),
                   pos: tool.schema.string().describe("anchor N:hh"),
-                  end: tool.schema.string().optional().describe("inclusive end anchor N:hh"),
+                  end: tool.schema
+                    .string()
+                    .optional()
+                    .describe("inclusive end anchor N:hh"),
                   lines: tool.schema.array(tool.schema.string()).optional(),
                 }),
                 tool.schema.object({
                   op: tool.schema.literal("append"),
-                  pos: tool.schema.string().optional().describe("insert after this N:hh; omit = EOF"),
+                  pos: tool.schema
+                    .string()
+                    .optional()
+                    .describe("insert after this N:hh; omit = EOF"),
                   lines: tool.schema.array(tool.schema.string()).optional(),
                 }),
                 tool.schema.object({
                   op: tool.schema.literal("prepend"),
-                  pos: tool.schema.string().optional().describe("insert before this N:hh; omit = BOF"),
+                  pos: tool.schema
+                    .string()
+                    .optional()
+                    .describe("insert before this N:hh; omit = BOF"),
                   lines: tool.schema.array(tool.schema.string()).optional(),
                 }),
                 tool.schema.object({
                   op: tool.schema.literal("delete"),
                   pos: tool.schema.string().describe("anchor N:hh to delete"),
-                  end: tool.schema.string().optional().describe("inclusive end anchor N:hh"),
+                  end: tool.schema
+                    .string()
+                    .optional()
+                    .describe("inclusive end anchor N:hh"),
                 }),
               ]),
             )
-            .describe("Edit operations; validated atomically by the hashline binary"),
+            .describe(
+              "Edit operations; validated atomically by the hashline binary",
+            ),
         },
         async execute(args, context) {
           const filePath = resolvePath(args.path, getBaseDir(context));
