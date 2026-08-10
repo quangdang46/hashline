@@ -1,0 +1,49 @@
+{
+  "name": "hashline-pi",
+  "version": "0.1.0",
+  "description": "Hashline read/edit override for pi-coding-agent — thin wrapper that shells out to the hashline binary",
+  "type": "module",
+  "main": "index.ts",
+  "license": "MIT",
+  "files": [
+    "index.ts",
+    "src",
+    "prompts",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/<owner>/hashline/main/integration/pi-hashline/docs/demo.png"
+  },
+  "scripts": {
+    "test": "npm run typecheck && npm run contract && npm run lint",
+    "contract": "rm -rf .tmp-tests && tsc -p tsconfig.contract.json && node --test .tmp-tests/test/*.test.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "^0.79.9",
+    "typebox": "^1.0.55"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.9",
+    "@earendil-works/pi-ai": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "@earendil-works/pi-coding-agent": "^0.79.9",
+    "@types/node": "^22.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

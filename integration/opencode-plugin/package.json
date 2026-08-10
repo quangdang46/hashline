@@ -1,0 +1,35 @@
+{
+  "name": "@scope/hashline-opencode-plugin",
+  "version": "0.1.0",
+  "description": "Hashline plugin for OpenCode — thin wrapper that shells out to the hashline binary",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "bin": {
+    "hread": "./dist/cli/hread.js",
+    "hedit": "./dist/cli/hedit.js"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.4.6",
+    "@types/bun": "^1.3.4",
+    "typescript": "^5.8.0"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --format esm --sourcemap=linked --target=bun",
+    "build:types": "tsc --emitDeclarationOnly",
+    "build:cli": "bun build src/cli/hread.ts src/cli/hedit.ts --outdir dist/cli --format esm --target=bun",
+    "clean": "rm -rf dist",
+    "test": "bun test src/tests/",
+    "typecheck": "tsc --noEmit",
+    "build:all": "rm -rf dist && bun run build && bun run build:cli && bun run build:types",
+    "prepublishOnly": "bun run build:all && bun run typecheck && bun test src/tests/"
+  },
+  "publishConfig": { "registry": "https://registry.npmjs.org/", "access": "public" }
+}

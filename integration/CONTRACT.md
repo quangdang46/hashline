@@ -59,19 +59,19 @@ hashline patch <file> '<patch>' --json
 
 Body rows are `+TEXT`; `+` alone = blank; `++`→`+`, `+-`→`-` escapes.
 
-### Exit codes
-- `0` — success (or a **recoverable** logical error: stale anchor, empty patch, no-op loop).
-  stdout = data; stderr = diagnostics.
-- `1` — infrastructure failure (I/O, invalid UTF-8, binary file, parse crash).
-  **Wrappers must treat exit 1 with an "Error:"/"Hint:" stderr as a logical failure and
-  surface the stderr text as a teaching tool error.**
+### Exit codes (VERIFIED empirically against release binary 0.9.1)
+- `0` — success, no-op patch, or `*** Abort`. stdout = data; stderr = diagnostics.
+- `1` — **any error**, including logical ones: stale anchor, empty patch, invalid anchor,
+  ambiguous hash, infrastructure failure (I/O, invalid UTF-8, binary file).
+  **Wrappers must treat exit 1 as "something failed"; parse stderr (`Error:`/`Hint:`) to
+  classify and surface a teaching tool error.** Do NOT assume exit 0 == recoverable.
 
 ### Stale anchor (the critical case)
 ```text
 Error: line 2 content changed since last read in <path> (expected hash 5b, got 38)
 Hint: re-read the file with `hashline read <file>`; ...
 ```
-Exit 0. Wrapper maps this to a `stale_anchor` kind and tells the model to re-read.
+**Exit 1.** Wrapper maps this to a `stale_anchor` kind and tells the model to re-read.
 
 ### `--json` errors
 ```json
