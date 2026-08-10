@@ -372,18 +372,31 @@ pub fn apply_edits(
                 let num_new = replacement_texts.len();
                 let num_old = delete_lines.len();
 
-                // Boundary echo detection (against the original snapshot)
+                // Boundary echo detection + conservative repair (against the
+                // original snapshot). Phase 7: exact-text boundary echoes are
+                // auto-repaired (provable without a parser); delimiter-semantic
+                // issues (dropped closers) still only warn — no parser, no repair.
                 if num_old > 0 {
                     let start_l = anchor_line;
                     let end_l = anchor_line + num_old - 1;
-                    let issues = crate::apply::detect_boundary_issues(
+                    if let Some((repaired, warning)) = crate::apply::repair_boundary_echo(
                         &replacement_texts,
                         start_l,
                         end_l,
                         entries,
-                    );
-                    for issue in &issues {
-                        eprintln!("warning: {issue}");
+                    ) {
+                        eprintln!("warning: {warning}");
+                        replacement_texts = repaired;
+                    } else {
+                        let issues = crate::apply::detect_boundary_issues(
+                            &replacement_texts,
+                            start_l,
+                            end_l,
+                            entries,
+                        );
+                        for issue in &issues {
+                            eprintln!("warning: {issue}");
+                        }
                     }
                 }
 
