@@ -50,6 +50,8 @@ pub fn write_json_success<W: Write, E: Write, T: Serialize + ?Sized>(
 
 #[derive(Serialize)]
 struct ErrorPayload<'a> {
+    /// Machine-readable error kind (`STALE_ANCHOR`, `NOOP_LOOP`, ...).
+    kind: &'a str,
     error: String,
     hint: Option<&'a str>,
     command: Option<&'a str>,
@@ -69,6 +71,7 @@ pub fn write_error<W: Write, E: Write>(
         }
         OutputMode::Json | OutputMode::Ndjson => {
             let payload = ErrorPayload {
+                kind: error.kind(),
                 error: error.to_string(),
                 hint: error.hint(),
                 command: error.command(),
