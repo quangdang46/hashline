@@ -41,6 +41,35 @@ pub fn short_hash_value(line: &str) -> ShortHash {
     short_from_full(full_hash(line))
 }
 
+/// True when a line has no letters or digits — only punctuation/symbols/
+/// whitespace (`}`, `)`, `]`, `//`, blank). These lines carry no content
+/// signal on their own, so identical ones hash identically; position-seeding
+/// (see [`short_hash_value_indexed`]) disambiguates them.
+pub fn is_symbol_only(line: &str) -> bool {
+    !line.chars().any(|c| c.is_alphanumeric())
+}
+
+/// Position-seeded short hash for a line at 1-based `line_no`.
+///
+/// Content lines (with a letter/digit) hash exactly as before (seed 0) so
+/// anchors are stable across nearby edits. Symbol-only lines (`}`, `)`, `]`,
+/// `//`, blank) get the line number mixed into the xxh32 seed, so identical
+/// symbols at different positions get different hashes — killing the
+/// "5000 identical `}` → 3 hashes" collapse (see accuracy_bench baseline).
+///
+/// Anchor syntax is unchanged: `42:ab` still names line 42 with a 2-char hash.
+/// The value for a symbol line changes when its line number changes (insert/
+/// delete above), which is acceptable — such an edit already invalidates the
+/// line-number anchor anyway; patch fails closed with a stale-anchor error.
+pub fn short_hash_value_indexed(line: &str, line_no: usize) -> ShortHash {
+    if is_symbol_only(line) {
+        let full = xxh32(line.trim_end().as_bytes(), line_no as u32);
+        short_from_full(full)
+    } else {
+        short_hash_value(line)
+    }
+}
+
 pub fn short_from_full(full: u32) -> ShortHash {
     (full & 0xff) as ShortHash
 }
@@ -81,8 +110,8 @@ pub fn collides(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        collides, format_short_hash, full_hash, full_hash_bytes, short_from_full, short_hash,
-        short_hash_value,
+        collides, format_short_hash, full_hash, full_hash_bytes, is_symbol_only, short_from_full,
+        short_hash, short_hash_value, short_hash_value_indexed,
     };
     use std::collections::HashMap;
     use xxhash_rust::xxh32::xxh32;
@@ -90,6 +119,49 @@ mod tests {
     #[test]
     fn test_empty_line_stable() {
         assert_eq!(short_hash(""), short_hash(""));
+    }
+
+    #[test]
+    fn test_is_symbol_only() {
+        assert!(is_symbol_only("}"));
+        assert!(is_symbol_only(")"));
+        assert!(is_symbol_only("]"));
+        assert!(is_symbol_only("//"));
+        assert!(is_symbol_only(""));
+        assert!(is_symbol_only("  "));
+        assert!(!is_symbol_only("} else {"));
+        assert!(!is_symbol_only("fn main() {"));
+        assert!(!is_symbol_only("    let x = 1;"));
+    }
+
+    #[test]
+    fn test_symbol_only_lines_disambiguate_by_position() {
+        // Identical symbol-only lines must spread across many hash values once
+        // position-seeded (Phase 2). A single (line, hash) pair can still
+        // collide at 8 bits, but across 1000 positions the values must be
+        // well-distributed — NOT all collapsing to one value.
+        use std::collections::HashSet;
+        let mut distinct: HashSet<u8> = HashSet::new();
+        for i in 1..=1000usize {
+            distinct.insert(short_hash_value_indexed("}", i));
+        }
+        assert!(
+            distinct.len() >= 100,
+            "position-seeding should spread `}}` across many hashes, got {} distinct",
+            distinct.len()
+        );
+    }
+
+    #[test]
+    fn test_content_lines_keep_plain_hash() {
+        // Content lines (with a letter/digit) hash exactly as before — seed 0 —
+        // so the indexed hash is identical to the plain hash for them.
+        let line = "    let x = 1;";
+        assert_eq!(
+            short_hash_value_indexed(line, 1),
+            short_hash_value_indexed(line, 999)
+        );
+        assert_eq!(short_hash_value_indexed(line, 1), short_hash_value(line));
     }
 
     #[test]

@@ -89,6 +89,12 @@ pub fn run<W: Write, E: Write>(
   ├──────────────┼──────────────────────────────────────────────┤
   │ INS.BLK.POST │ Insert after syntactic block around N        │
   │ N: +content  │                                              │
+  ├──────────────┼──────────────────────────────────────────────┤
+  │ CUT N..M     │ Capture lines N..M into a register and       │
+  │ [@name]      │ delete them (anonymous when @name omitted)   │
+  ├──────────────┼──────────────────────────────────────────────┤
+  │ PUT [@name]  │ Paste a captured register before line N      │
+  │ <N:          │ (bare PUT = file head)                       │
   └──────────────┴──────────────────────────────────────────────┘
 
 ───────────────────  RANGE SYNTAX  ──────────────────────────

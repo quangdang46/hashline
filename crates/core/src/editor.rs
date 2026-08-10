@@ -38,7 +38,7 @@ use crate::hash;
 use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
 use crate::snapshot_store::SnapshotStore;
-use crate::types::BlockResolver as BlockResolverTrait;
+use crate::types::{BlockResolver as BlockResolverTrait, Edit};
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -116,6 +116,7 @@ pub struct Editor {
     snapshot_store: Box<dyn SnapshotStore>,
     block_resolver: Option<Box<dyn BlockResolverTrait>>,
     config: HashlineConfig,
+    noop_guard: crate::noop_guard::NoopGuard,
 }
 
 impl Editor {
@@ -125,6 +126,9 @@ impl Editor {
             snapshot_store: Box::new(store),
             block_resolver: None,
             config: HashlineConfig::default(),
+            noop_guard: crate::noop_guard::NoopGuard::new(
+                HashlineConfig::default().noop_guard_limit,
+            ),
         }
     }
 
@@ -133,20 +137,23 @@ impl Editor {
         Self {
             snapshot_store: Box::new(store),
             block_resolver: None,
-            config,
+            config: config.clone(),
+            noop_guard: crate::noop_guard::NoopGuard::new(config.noop_guard_limit),
         }
     }
 
     /// Convenience: create an `Editor` with no snapshot caching
     /// (equivalent to `NoopSnapshotStore`).
     pub fn without_snapshots() -> Self {
+        let config = HashlineConfig {
+            enable_snapshots: false,
+            ..HashlineConfig::default()
+        };
         Self {
             snapshot_store: Box::new(crate::snapshot_store::NoopSnapshotStore),
             block_resolver: None,
-            config: HashlineConfig {
-                enable_snapshots: false,
-                ..HashlineConfig::default()
-            },
+            noop_guard: crate::noop_guard::NoopGuard::new(config.noop_guard_limit),
+            config,
         }
     }
 
@@ -284,12 +291,55 @@ impl Editor {
             message: msg,
         })?;
 
-        // Apply edits to in-memory lines
+        // Apply edits to in-memory lines. On a stale anchor, attempt
+        // snapshot-based recovery (Phase 3): replay the edits against the
+        // cached snapshot whose hashes match, then 3-way-merge onto the live
+        // content. Fail-closed — if recovery is unavailable or ambiguous, the
+        // original StaleAnchor error is surfaced.
         let mut lines: Vec<String> = split_normalized(text);
         let entries = fc.lines_with_hashes();
         let had_trailing_newline = fc.trailing_newline;
 
-        crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved)?;
+        let apply_result =
+            crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved);
+        if let Err(HashlineError::StaleAnchor { .. }) = apply_result {
+            if self.config.enable_snapshots {
+                let recovery = crate::recovery::Recovery::new(&*self.snapshot_store);
+                // The anchor came from the most-recently-read snapshot of this
+                // path, not the current (drifted) file. `try_recover` looks the
+                // snapshot up by its tag; use the head snapshot's hash.
+                let snapshot_hash = self
+                    .snapshot_store
+                    .head(&path.to_string_lossy())
+                    .map(|s| s.hash)
+                    .unwrap_or_else(|| fc.hash.clone());
+                let args = crate::recovery::RecoveryArgs {
+                    path: path.to_string_lossy().into_owned(),
+                    current_text: text.clone(),
+                    file_hash: snapshot_hash,
+                    edits: resolved.clone(),
+                };
+                let apply_fn = |snapshot_text: &str, edits: &[Edit]| {
+                    crate::commands::patch::apply_edits_pure(snapshot_text, edits, path)
+                        .map_err(|e| e.to_string())
+                };
+                if let Some(recovered) = recovery.try_recover(&args, apply_fn) {
+                    for w in &recovered.warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    // Rejoin the recovered text (LF-normalized already).
+                    lines = split_normalized(&recovered.text);
+                    let _ = had_trailing_newline;
+                } else {
+                    // Recovery failed — surface the original stale error.
+                    apply_result?;
+                }
+            } else {
+                apply_result?;
+            }
+        } else {
+            apply_result?;
+        }
 
         // Rejoin
         let result = if had_trailing_newline && !lines.is_empty() {
@@ -308,6 +358,25 @@ impl Editor {
         };
 
         let new_hash = hash::compute_file_hash(&final_text);
+
+        // No-op loop guard: a patch that produces no net content change on the
+        // same path with the same text, repeated `noop_guard_limit` times, is a
+        // loop — surface a hard error so the agent re-reads and re-anchors
+        // instead of spinning.
+        let was_noop = final_text == *text;
+        if !dry_run && self.config.noop_guard_enabled {
+            let fp = crate::noop_guard::fingerprint(patch_str);
+            let path_str = path.to_string_lossy();
+            if let Err(streak) = self.noop_guard.record(&path_str, fp, was_noop) {
+                return Err(HashlineError::NoopLoop {
+                    path: path.to_string_lossy().into_owned().into_boxed_str(),
+                    attempts: streak,
+                });
+            }
+            if !was_noop {
+                // A real change resets the streak; nothing more to do.
+            }
+        }
 
         if !dry_run {
             crate::commands::common::fast_write(path, final_text.as_bytes())?;
@@ -660,6 +729,78 @@ mod tests {
 
         let unchanged = fs::read_to_string(&path).unwrap();
         assert_eq!(unchanged, original);
+    }
+
+    #[test]
+    fn test_noop_loop_guard_fires_after_limit() {
+        // A patch that targets a line whose content is already the payload
+        // produces no net change. Repeating the SAME patch 3x must surface
+        // NoopLoop, not silently succeed.
+        let (_d, path) = temp_file("line1\nline2\nline3\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        // SWAP 2 to the same content — net no-op.
+        let noop_patch = "SWAP 2:\n+line2";
+        ed.patch(&path, noop_patch).unwrap();
+        ed.patch(&path, noop_patch).unwrap();
+        let err = ed.patch(&path, noop_patch).unwrap_err();
+        assert!(
+            err.to_string().contains("no-op loop"),
+            "expected NoopLoop error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_noop_guard_does_not_block_real_edits() {
+        let (_d, path) = temp_file("line1\nline2\nline3\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        // Same patch that DOES change content, applied repeatedly: first apply
+        // changes, the rest are no-ops relative to the new content but the
+        // guard fires only on identical repeated no-ops of the SAME text.
+        // The first apply is a real change (resets streak).
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        // Re-applying the same patch to the already-replaced file is a no-op:
+        // streak 1, then 2 (both Ok), then 3 → NoopLoop.
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        let err = ed.patch(&path, "SWAP 2:\n+replaced").unwrap_err();
+        assert!(
+            err.to_string().contains("no-op loop"),
+            "expected NoopLoop on 3rd identical no-op, got: {err}"
+        );
+        let readback = fs::read_to_string(&path).unwrap();
+        assert_eq!(readback, "line1\nreplaced\nline3\n");
+    }
+
+    #[test]
+    fn test_phase3_recovery_on_external_shift() {
+        // Phase 3: read records a snapshot; an external edit shifts the target
+        // line; a patch anchored to the OLD snapshot's hashes should recover
+        // via 3-way merge instead of failing stale.
+        let (_d, path) = temp_file("alpha\nbeta\ngamma\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        // Read → records snapshot (hash of "beta" at line 2).
+        let read = ed.read(&path).unwrap();
+        let beta_hash = &read.lines[1].hash; // line 2 = "beta"
+
+        // External edit: insert a line above "beta" (now "beta" is line 3).
+        fs::write(&path, "alpha\ninserted\nbeta\ngamma\n").unwrap();
+
+        // Patch anchored to the OLD hash (line 2, but content now at line 3).
+        // The anchor hash no longer matches line 2 → recovery should kick in.
+        let patch = format!("SWAP 2:{beta_hash}:\n+replaced");
+        let result = ed.patch(&path, &patch).unwrap();
+        assert!(
+            result.text.contains("replaced"),
+            "recovery should apply the swap"
+        );
+        let readback = fs::read_to_string(&path).unwrap();
+        assert_eq!(readback, "alpha\ninserted\nreplaced\ngamma\n");
     }
 
     #[test]

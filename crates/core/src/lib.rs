@@ -16,6 +16,7 @@ pub mod error;
 pub mod hash;
 pub mod merge;
 pub mod messages;
+pub mod noop_guard;
 pub mod normalize;
 pub mod parser;
 pub mod patch_format;

@@ -120,6 +120,11 @@ pub enum HashlineError {
     #[error("patch produced no edits: {reason}")]
     EmptyPatchWithReason { reason: Box<str> },
 
+    #[error(
+        "no-op loop detected: {attempts} consecutive identical no-op patches on '{path}' — re-read the file and re-anchor, or change the patch"
+    )]
+    NoopLoop { path: Box<str>, attempts: usize },
+
     #[error("multi-line content is only supported for range edits")]
     MultiLineContentUnsupported,
 
@@ -190,11 +195,24 @@ pub enum HashlineError {
 
     #[error("no block resolver configured")]
     NoBlockResolver,
+
+    #[error(
+        "register '{register}' was never captured — a `PUT @{register}` needs a `CUT ... @{register}` earlier in the same patch"
+    )]
+    ClipboardMissingRegister { register: String },
+
+    #[error(
+        "anonymous register is empty — a `PUT` without `@name` needs a `CUT` earlier in the same patch"
+    )]
+    ClipboardEmptyAnon,
 }
 
 impl HashlineError {
     pub fn hint(&self) -> Option<&'static str> {
         match self {
+            HashlineError::NoopLoop { .. } => Some(
+                "re-read the file with `hashline read <file>` and re-anchor, or change the patch",
+            ),
             HashlineError::NotImplemented { .. } => {
                 Some("continue with the next planned implementation bead")
             }
@@ -324,10 +342,51 @@ impl HashlineError {
             HashlineError::NoBlockResolver => {
                 Some("configure a block resolver before using block-based operations")
             }
+            HashlineError::ClipboardMissingRegister { .. } => {
+                Some("add a `CUT ... @name` earlier in the same patch before pasting `@name`")
+            }
+            HashlineError::ClipboardEmptyAnon => {
+                Some("add a `CUT` earlier in the same patch before an unlabeled `PUT`")
+            }
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => Some(
                 "use the `sha256_window` module to recompute the expected hash from current content",
             ),
+        }
+    }
+
+    /// Machine-readable error kind for structured (JSON) error output. This is
+    /// the stable contract agents key on — it does NOT change with message
+    /// wording. Backward-compatible: the text/hint fields stay, `kind` is new.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            HashlineError::StaleAnchor { .. } | HashlineError::StaleHash { .. } => "STALE_ANCHOR",
+            HashlineError::StaleFile { .. } => "STALE_FILE",
+            HashlineError::NoopLoop { .. } => "NOOP_LOOP",
+            HashlineError::ClipboardMissingRegister { .. } | HashlineError::ClipboardEmptyAnon => {
+                "CLIPBOARD"
+            }
+            HashlineError::EmptyPatch | HashlineError::EmptyPatchWithReason { .. } => "EMPTY_PATCH",
+            HashlineError::AmbiguousHash { .. } => "AMBIGUOUS_HASH",
+            HashlineError::HashNotFound { .. } => "HASH_NOT_FOUND",
+            HashlineError::InvalidAnchor { .. }
+            | HashlineError::InvalidRange { .. }
+            | HashlineError::InvalidIndentAmount { .. }
+            | HashlineError::InvalidIndentRange { .. }
+            | HashlineError::IndentUnderflow { .. }
+            | HashlineError::MixedIndentation { .. } => "INVALID_ANCHOR",
+            HashlineError::UnbalancedBlock { .. }
+            | HashlineError::AmbiguousBlockLanguage { .. }
+            | HashlineError::BlockUnresolved { .. } => "BLOCK_UNRESOLVED",
+            HashlineError::BinaryFile { .. } => "BINARY_FILE",
+            HashlineError::InvalidUtf8 { .. } => "INVALID_UTF8",
+            HashlineError::FileNotFound { .. } => "FILE_NOT_FOUND",
+            HashlineError::MissingSnapshotTag { .. } => "MISSING_SNAPSHOT_TAG",
+            HashlineError::CannotRecover { .. } => "CANNOT_RECOVER",
+            HashlineError::Io(_) => "IO",
+            HashlineError::Json(_) => "JSON",
+            HashlineError::PatchFailed { .. } => "PATCH_FAILED",
+            _ => "ERROR",
         }
     }
 
@@ -364,6 +423,7 @@ impl HashlineError {
             | HashlineError::PatchFailed { .. }
             | HashlineError::EmptyPatch
             | HashlineError::EmptyPatchWithReason { .. }
+            | HashlineError::NoopLoop { .. }
             | HashlineError::MultiLineContentUnsupported
             | HashlineError::MutationIndexOutOfBounds { .. }
             | HashlineError::InvalidMutationRange { .. }
@@ -377,7 +437,9 @@ impl HashlineError {
             | HashlineError::CannotRecover { .. }
             | HashlineError::BlockUnresolved { .. }
             | HashlineError::MissingSnapshotTag { .. }
-            | HashlineError::NoBlockResolver => None,
+            | HashlineError::NoBlockResolver
+            | HashlineError::ClipboardMissingRegister { .. }
+            | HashlineError::ClipboardEmptyAnon => None,
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => None,
         }
@@ -403,6 +465,34 @@ impl HashlineError {
 #[cfg(test)]
 mod tests {
     use super::HashlineError;
+
+    #[test]
+    fn error_kind_is_machine_readable() {
+        let stale = HashlineError::StaleAnchor {
+            anchor: "2:aa".into(),
+            line: 2,
+            expected: "aa".into(),
+            actual: "bb".into(),
+            path: "demo.txt".into(),
+            relocated_suffix: String::new().into(),
+        };
+        assert_eq!(stale.kind(), "STALE_ANCHOR");
+
+        let noop = HashlineError::NoopLoop {
+            path: "demo.txt".into(),
+            attempts: 3,
+        };
+        assert_eq!(noop.kind(), "NOOP_LOOP");
+
+        assert_eq!(HashlineError::EmptyPatch.kind(), "EMPTY_PATCH");
+        assert_eq!(
+            HashlineError::BinaryFile {
+                path: "bin.dat".into()
+            }
+            .kind(),
+            "BINARY_FILE"
+        );
+    }
 
     #[test]
     fn every_error_variant_has_a_recovery_hint() {
@@ -538,6 +628,10 @@ mod tests {
                 path: "snapshot.txt".into(),
             },
             HashlineError::NoBlockResolver,
+            HashlineError::ClipboardMissingRegister {
+                register: "fn".into(),
+            },
+            HashlineError::ClipboardEmptyAnon,
         ];
 
         for error in errors {

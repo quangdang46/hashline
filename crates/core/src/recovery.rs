@@ -271,7 +271,8 @@ fn get_edit_anchors(edit: &Edit) -> Vec<Anchor> {
     match edit {
         Edit::Delete { anchor, .. } => vec![*anchor],
         Edit::Block { anchor, .. } => vec![*anchor],
-        Edit::Insert { cursor, .. } => match cursor {
+        Edit::Cut { anchor, end, .. } => vec![*anchor, *end],
+        Edit::Insert { cursor, .. } | Edit::Paste { cursor, .. } => match cursor {
             Cursor::BeforeAnchor(a) | Cursor::AfterAnchor(a) => vec![*a],
             _ => vec![],
         },

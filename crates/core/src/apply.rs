@@ -81,6 +81,96 @@ pub fn detect_boundary_issues(
     warnings
 }
 
+/// Conservative boundary-echo REPAIR (Phase 7).
+///
+/// Upgrades the boundary-echo *warning* into an actual *repair* when the
+/// evidence is exact-text equality — no parser, no delimiter arithmetic:
+///
+/// 1. **Two-sided echo**: the payload's first line exactly equals the surviving
+///    line just above the range AND its last line exactly equals the surviving
+///    line just below. The model restated unchanged wrapper lines on both
+///    sides; drop both edges. Only when `leading + trailing < payload.len()`
+///    (the payload still has real content) — otherwise it's ambiguous.
+/// 2. **Single-sided echo on a structural closer**: the payload's edge is a
+///    pure closing delimiter (`}`, `)` etc.) that exactly equals the surviving
+///    boundary line, and the payload is long enough to be the widened range's
+///    full content. Dropping a single structural closer is safe by text proof.
+///
+/// Returns the repaired payload plus a warning describing the repair, or
+/// `None` when no safe repair applies.
+pub fn repair_boundary_echo(
+    payload: &[String],
+    start_line: usize,
+    end_line: usize,
+    entries: &[crate::document::LineEntry],
+) -> Option<(Vec<String>, String)> {
+    if payload.is_empty() || entries.is_empty() {
+        return None;
+    }
+    let entries_len = entries.len();
+
+    // Detect leading edge duplicate (payload[0] == line above range).
+    let leading = if start_line > 1 && start_line <= entries_len {
+        let line_above = &entries[start_line - 2].content;
+        if payload[0] == *line_above { 1 } else { 0 }
+    } else {
+        0
+    };
+
+    // Detect trailing edge duplicate (payload.last == line below range).
+    let trailing = if end_line < entries_len {
+        let line_below = &entries[end_line].content;
+        if payload.last().is_some_and(|p| p == line_below) {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    // Two-sided echo: drop both edges.
+    if leading > 0 && trailing > 0 && leading + trailing < payload.len() {
+        let repaired: Vec<String> = payload[leading..payload.len() - trailing].to_vec();
+        let warning = format!(
+            "Auto-repaired a boundary echo at line {start_line}: dropped {} leading and {} trailing \
+             payload line(s) identical to the surviving lines outside the range. Issue the payload \
+             as the final content for the range only.",
+            leading, trailing
+        );
+        return Some((repaired, warning));
+    }
+
+    // Single-sided echo on a structural closer (no parser needed — the closer
+    // is proven by exact text equality and is delimiter-neutral).
+    if leading > 0
+        && trailing == 0
+        && leading < payload.len()
+        && is_structural_closer(payload[0].trim())
+    {
+        let repaired: Vec<String> = payload[1..].to_vec();
+        let warning = format!(
+            "Auto-repaired a boundary echo at line {start_line}: dropped 1 leading payload line \
+             identical to the surviving structural closer above the range."
+        );
+        return Some((repaired, warning));
+    }
+    if trailing > 0
+        && leading == 0
+        && trailing < payload.len()
+        && is_structural_closer(payload[payload.len() - 1].trim())
+    {
+        let repaired: Vec<String> = payload[..payload.len() - trailing].to_vec();
+        let warning = format!(
+            "Auto-repaired a boundary echo at line {start_line}: dropped 1 trailing payload line \
+             identical to the surviving structural closer below the range."
+        );
+        return Some((repaired, warning));
+    }
+
+    None
+}
+
 /// Check if a payload likely has a leading duplicate prefix (restates content above range).
 /// Returns the number of leading duplicate lines, or 0.
 pub fn duplicate_prefix_count(
@@ -154,6 +244,49 @@ mod tests {
         let entries = vec![make_entry("fn old_func() {"), make_entry("    let x = 2;")];
         let warnings = detect_boundary_issues(&payload, 1, 1, &entries);
         assert!(warnings.is_empty());
+    }
+
+    // ---- repair_boundary_echo (Phase 7) ----
+
+    #[test]
+    fn test_repair_two_sided_echo() {
+        // Payload restates the line above AND below the range → drop both edges.
+        let payload = vec![
+            "fn old() {".to_string(),
+            "    let x = 1;".to_string(),
+            "}".to_string(),
+        ];
+        // Range is line 2 (only `    let x = 2;`); line 1 above and line 3 below survive.
+        let entries = vec![
+            make_entry("fn old() {"),
+            make_entry("    let x = 2;"),
+            make_entry("}"),
+        ];
+        let (repaired, warning) =
+            repair_boundary_echo(&payload, 2, 2, &entries).expect("should repair two-sided echo");
+        assert_eq!(repaired, vec!["    let x = 1;".to_string()]);
+        assert!(warning.contains("Auto-repaired"));
+    }
+
+    #[test]
+    fn test_repair_single_sided_closer_echo() {
+        // Payload's last line is a structural closer duplicating the line below
+        // the range → drop it.
+        let payload = vec!["    let x = 1;".to_string(), "}".to_string()];
+        let entries = vec![make_entry("fn old() {"), make_entry("}")];
+        let (repaired, warning) =
+            repair_boundary_echo(&payload, 1, 1, &entries).expect("should repair closer echo");
+        assert_eq!(repaired, vec!["    let x = 1;".to_string()]);
+        assert!(warning.contains("Auto-repaired"));
+    }
+
+    #[test]
+    fn test_repair_no_false_positive_on_intentional_duplicate() {
+        // A payload that fully duplicates the boundary (leading + trailing ==
+        // payload len) is ambiguous → no repair.
+        let payload = vec!["same".to_string(), "same".to_string()];
+        let entries = vec![make_entry("same"), make_entry("same")];
+        assert!(repair_boundary_echo(&payload, 1, 1, &entries).is_none());
     }
 
     #[test]

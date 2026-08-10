@@ -157,9 +157,12 @@ impl Executor {
             Token::OpBlock { target, line_num } => {
                 if matches!(
                     &target,
-                    BlockTarget::Replace(_, _) | BlockTarget::Delete(_, _)
+                    BlockTarget::Replace(_, _) | BlockTarget::Delete(_, _) | BlockTarget::Cut(..)
                 ) {
-                    if let BlockTarget::Replace(r, _) | BlockTarget::Delete(r, _) = &target {
+                    if let BlockTarget::Replace(r, _)
+                    | BlockTarget::Delete(r, _)
+                    | BlockTarget::Cut(r, _, _) = &target
+                    {
                         if let Err(e) = validate_range_order(r, line_num) {
                             self.warnings.push(e);
                         }
@@ -311,7 +314,8 @@ impl Executor {
             {
                 self.warnings.push(format!(
                     "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
-                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, or INS.BLK"
+                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
+                     INS.BLK, CUT, or PUT"
                 ));
             }
         }
@@ -573,6 +577,26 @@ impl Executor {
                     self.edit_index += 1;
                 }
             }
+            BlockTarget::Cut(range, hash, register) => {
+                self.edits.push(Edit::Cut {
+                    anchor: range.start,
+                    end: range.end,
+                    line_num,
+                    index: self.edit_index,
+                    register: register.clone(),
+                    expected_hash: *hash,
+                });
+                self.edit_index += 1;
+            }
+            BlockTarget::Paste(cursor, register) => {
+                self.edits.push(Edit::Paste {
+                    cursor: clone_cursor(cursor),
+                    line_num,
+                    index: self.edit_index,
+                    register: register.clone(),
+                });
+                self.edit_index += 1;
+            }
             BlockTarget::Remove => {
                 if let Err(e) = self.set_file_op(FileOp::Remove, line_num) {
                     self.warnings.push(e);
@@ -802,4 +826,80 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
     }
 
     executor.end()
+}
+
+#[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+mod cut_put_tests {
+    use super::*;
+
+    #[test]
+    fn cut_parses_to_cut_edit() {
+        let (edits, warnings, _file_op, _aborted) = parse_patch("CUT 5..9 @fn");
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got {warnings:?}"
+        );
+        assert_eq!(edits.len(), 1);
+        match &edits[0] {
+            Edit::Cut {
+                anchor,
+                end,
+                register,
+                expected_hash,
+                ..
+            } => {
+                assert_eq!(anchor.line, 5);
+                assert_eq!(end.line, 9);
+                assert_eq!(register.as_deref(), Some("fn"));
+                assert_eq!(*expected_hash, None);
+            }
+            other => panic!("expected Cut edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cut_anonymous_parses() {
+        let (edits, _warnings, _file_op, _aborted) = parse_patch("CUT 5..9");
+        match &edits[0] {
+            Edit::Cut { register, .. } => assert_eq!(*register, None),
+            other => panic!("expected Cut edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn put_parses_to_paste_edit() {
+        let (edits, _warnings, _file_op, _aborted) = parse_patch("PUT @fn <20");
+        assert_eq!(edits.len(), 1);
+        match &edits[0] {
+            Edit::Paste {
+                cursor, register, ..
+            } => {
+                assert!(matches!(cursor, Cursor::BeforeAnchor(a) if a.line == 20));
+                assert_eq!(register.as_deref(), Some("fn"));
+            }
+            other => panic!("expected Paste edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cut_and_put_parse_in_one_patch() {
+        let (edits, warnings, _file_op, _aborted) = parse_patch("CUT 5..9 @fn\nPUT @fn <20");
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got {warnings:?}"
+        );
+        assert_eq!(edits.len(), 2);
+        assert!(matches!(&edits[0], Edit::Cut { .. }));
+        assert!(matches!(&edits[1], Edit::Paste { .. }));
+    }
+
+    #[test]
+    fn cut_range_reversed_emits_warning() {
+        let (_edits, warnings, _file_op, _aborted) = parse_patch("CUT 9..5 @fn");
+        assert!(
+            warnings.iter().any(|w| w.contains("ends before it starts")),
+            "expected range-order warning, got {warnings:?}"
+        );
+    }
 }

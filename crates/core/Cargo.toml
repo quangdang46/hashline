@@ -79,3 +79,7 @@ harness = false
 [[bench]]
 name = "edit_bench"
 harness = false
+
+[[bench]]
+name = "accuracy_bench"
+harness = false
