@@ -841,21 +841,25 @@ pub fn apply_edits_with_clipboard(
                     }
                 }
 
-                // Resolve the syntactic block starting at line_no (returns
-                // original-snapshot 0-based indices).
+                // Resolve the syntactic block starting at line_no.
+                // NOTE: this resolves against the ORIGINAL snapshot. After
+                // prior edits in the same patch remove/insert lines, the
+                // original line numbers may no longer correspond to the
+                // intended blocks. This is a known limitation of block ops
+                // in multi-edit patches.
                 let (orig_block_start, orig_block_end) =
                     resolve_block_span(entries, anchor_index, path)?;
 
                 // Translate block boundaries to live buffer indices through the
                 // same shift table used by SWAP/DEL/CUT/PUT/INS (Bug #106).
+                // Only translate block_start; derive block_end from it to
+                // preserve the original block span.
                 let block_start = {
                     let raw = (orig_block_start as isize) + shift[orig_block_start.min(n - 1)];
                     raw.max(0) as usize
                 };
-                let block_end = {
-                    let raw = (orig_block_end as isize) + shift[orig_block_end.min(n - 1)];
-                    raw.max(0) as usize
-                };
+                let block_len = orig_block_end - orig_block_start + 1;
+                let block_end = block_start + block_len - 1;
 
                 match mode {
                     None if payloads.is_empty() => {
@@ -867,8 +871,11 @@ pub fn apply_edits_with_clipboard(
                                 lines.remove(idx);
                             }
                         }
-                        // Consume trailing blank line after the deleted block
-                        if block_start < lines.len() && lines[block_start].trim().is_empty() {
+                        // Consume trailing blank line after the deleted block.
+                        // Track whether one was consumed so shift is updated.
+                        let consumed_blank =
+                            block_start < lines.len() && lines[block_start].trim().is_empty();
+                        if consumed_blank {
                             lines.remove(block_start);
                         }
 
@@ -876,9 +883,12 @@ pub fn apply_edits_with_clipboard(
                         for dl in (orig_block_start + 1)..=(orig_block_end + 1).min(n) {
                             deleted[dl - 1] = true;
                         }
-                        let block_len = orig_block_end - orig_block_start + 1;
+                        // Account for both the block lines AND any consumed
+                        // trailing blank in the shift delta so subsequent block
+                        // ops translate against correct live positions.
+                        let total_removed = block_len + if consumed_blank { 1 } else { 0 };
                         if orig_block_end + 1 < n {
-                            apply_delta(&mut shift, orig_block_end + 2, -(block_len as isize));
+                            apply_delta(&mut shift, orig_block_end + 2, -(total_removed as isize));
                         }
                     }
                     None => {
