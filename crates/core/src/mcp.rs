@@ -931,7 +931,10 @@ mod tests {
             "initialize response must include 'instructions' field"
         );
         let text = instructions.unwrap();
-        assert!(text.contains("hashline"), "instructions should mention hashline");
+        assert!(
+            text.contains("hashline"),
+            "instructions should mention hashline"
+        );
         assert!(
             text.contains("read"),
             "instructions should mention the read-first workflow"
