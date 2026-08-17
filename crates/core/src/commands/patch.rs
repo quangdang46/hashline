@@ -577,15 +577,13 @@ pub fn apply_edits_with_clipboard(
                 // Validate anchor bounds before processing (same check as
                 // SWAP/DEL/CUT — anchor must reference an existing line).
                 match &cursor {
-                    Cursor::BeforeAnchor(a) | Cursor::AfterAnchor(a) => {
-                        if a.line > visible_lines {
-                            return Err(HashlineError::InvalidAnchor {
-                                anchor: format!(
-                                    "line {} not found (file has {visible_lines} lines)",
-                                    a.line,
-                                ),
-                            });
-                        }
+                    Cursor::BeforeAnchor(a) | Cursor::AfterAnchor(a) if a.line > visible_lines => {
+                        return Err(HashlineError::InvalidAnchor {
+                            anchor: format!(
+                                "line {} not found (file has {visible_lines} lines)",
+                                a.line,
+                            ),
+                        });
                     }
                     _ => {}
                 }
