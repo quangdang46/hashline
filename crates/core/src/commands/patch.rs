@@ -574,6 +574,22 @@ pub fn apply_edits_with_clipboard(
 
             // ---- INS.PRE / INS.POST / INS.HEAD / INS.TAIL --------------------
             Edit::Insert { cursor, text, .. } => {
+                // Validate anchor bounds before processing (same check as
+                // SWAP/DEL/CUT — anchor must reference an existing line).
+                match &cursor {
+                    Cursor::BeforeAnchor(a) | Cursor::AfterAnchor(a) => {
+                        if a.line > visible_lines {
+                            return Err(HashlineError::InvalidAnchor {
+                                anchor: format!(
+                                    "line {} not found (file has {visible_lines} lines)",
+                                    a.line,
+                                ),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
                 // Anchors address the ORIGINAL snapshot; translate to a live
                 // buffer index with the same shift table SWAP/DEL/CUT/PUT use.
                 let live = |orig: usize| -> usize {
