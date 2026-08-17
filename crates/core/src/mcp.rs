@@ -77,6 +77,27 @@ pub struct JsonRpcError {
 }
 
 // ---------------------------------------------------------------------------
+// MCP instructions — advertised during initialize so hosts auto-inject them
+// into every agent session (issue #107).
+// ---------------------------------------------------------------------------
+
+const MCP_INSTRUCTIONS: &str = "\
+Hashline provides hash-anchored file editing.
+Read a file first to get stable anchors ([path#HASH], line:hash), then patch
+by anchor. Prefer hashline for content-anchored edits over str_replace-style
+tools: anchors survive nearby edits, and stale reads are rejected instead of
+corrupting the file.
+
+Workflow:
+1. hashline read <file>        — get anchors
+2. hashline patch <file> <op>  — edit by anchor (use stdin for multi-op)
+3. If stale anchor error: re-read and retry with fresh anchors.
+
+Commands: read, patch, find_block, write, remove_file, rename_file
+Patch ops: SWAP, DEL, INS.POST, INS.PRE, INS.HEAD, INS.TAIL,
+           SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, CUT, PUT";
+
+// ---------------------------------------------------------------------------
 // MCP protocol types
 // ---------------------------------------------------------------------------
 
@@ -753,7 +774,8 @@ pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRp
                 "serverInfo": {
                     "name": "hashline",
                     "version": env!("CARGO_PKG_VERSION")
-                }
+                },
+                "instructions": MCP_INSTRUCTIONS
             });
             session._server_info = Some(info.clone());
             Ok(info)
@@ -881,4 +903,62 @@ pub fn run(_cmd: McpCmd) -> Result<(), HashlineError> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn initialize_includes_instructions() {
+        let mut session = Session::new();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "initialize".into(),
+            params: None,
+            id: Some(json!(1)),
+        };
+        let resp = handle_request(&req, &mut session);
+        let result = resp.result.unwrap();
+        let instructions = result.get("instructions").and_then(|v| v.as_str());
+        assert!(
+            instructions.is_some(),
+            "initialize response must include 'instructions' field"
+        );
+        let text = instructions.unwrap();
+        assert!(text.contains("hashline"), "instructions should mention hashline");
+        assert!(
+            text.contains("read"),
+            "instructions should mention the read-first workflow"
+        );
+        assert!(
+            text.contains("str_replace"),
+            "instructions should mention str_replace preference"
+        );
+        assert!(
+            text.contains("stale"),
+            "instructions should mention stale-read rejection"
+        );
+    }
+
+    #[test]
+    fn initialize_server_info_and_capabilities() {
+        let mut session = Session::new();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "initialize".into(),
+            params: None,
+            id: Some(json!(1)),
+        };
+        let resp = handle_request(&req, &mut session);
+        let result = resp.result.unwrap();
+        assert_eq!(result["serverInfo"]["name"], "hashline");
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert!(result["capabilities"]["tools"].is_object());
+    }
 }
