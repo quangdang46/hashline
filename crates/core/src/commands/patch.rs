@@ -574,15 +574,35 @@ pub fn apply_edits_with_clipboard(
 
             // ---- INS.PRE / INS.POST / INS.HEAD / INS.TAIL --------------------
             Edit::Insert { cursor, text, .. } => {
-                let base_line = match cursor {
-                    Cursor::BeforeAnchor(a) => a.line.wrapping_sub(1),
-                    Cursor::AfterAnchor(a) => a.line,
-                    Cursor::Bof => 0,
-                    Cursor::Eof => lines.len(),
+                // Anchors address the ORIGINAL snapshot; translate to a live
+                // buffer index with the same shift table SWAP/DEL/CUT/PUT use.
+                let live = |orig: usize| -> usize {
+                    if orig >= 1 && orig <= n {
+                        let raw = (orig as isize - 1) + shift[orig - 1];
+                        if raw >= 0 { raw as usize } else { 0 }
+                    } else {
+                        orig.saturating_sub(1)
+                    }
+                };
+                let (base_line, stack_key) = match cursor {
+                    // INS.PRE bumps shift at a.line inclusive, so repeated
+                    // PREs at one anchor already stack via `live`.
+                    Cursor::BeforeAnchor(a) => (live(a.line), None),
+                    // INS.POST bumps shift only from a.line+1 (so a SWAP of
+                    // a.line still hits the original line), hence the counter.
+                    Cursor::AfterAnchor(a) => (live(a.line) + 1, Some(a.line)),
+                    Cursor::Bof => (0, Some(0)),
+                    Cursor::Eof => (lines.len(), None),
                 };
 
-                let offset = insert_count.get(&base_line).copied().unwrap_or(0);
-                insert_count.insert(base_line, offset + 1);
+                let offset = match stack_key {
+                    Some(key) => {
+                        let o = insert_count.get(&key).copied().unwrap_or(0);
+                        insert_count.insert(key, o + 1);
+                        o
+                    }
+                    None => 0,
+                };
                 let pos = if base_line + offset <= lines.len() {
                     base_line + offset
                 } else {
@@ -821,34 +841,44 @@ pub fn apply_edits_with_clipboard(
                     }
                 }
 
-                // Resolve the syntactic block starting at line_no
-                let (block_start, block_end) = resolve_block_span(entries, anchor_index, path)?;
+                // Resolve the syntactic block starting at line_no (returns
+                // original-snapshot 0-based indices).
+                let (orig_block_start, orig_block_end) =
+                    resolve_block_span(entries, anchor_index, path)?;
+
+                // Translate block boundaries to live buffer indices through the
+                // same shift table used by SWAP/DEL/CUT/PUT/INS (Bug #106).
+                let block_start = {
+                    let raw = (orig_block_start as isize) + shift[orig_block_start.min(n - 1)];
+                    raw.max(0) as usize
+                };
+                let block_end = {
+                    let raw = (orig_block_end as isize) + shift[orig_block_end.min(n - 1)];
+                    raw.max(0) as usize
+                };
 
                 match mode {
                     None if payloads.is_empty() => {
-                        // DEL.BLK N
-                        for _ in block_start..=block_end.min(lines.len().saturating_sub(1)) {
-                            lines.remove(block_start);
+                        // DEL.BLK N — remove translated range in descending
+                        // order so earlier removals don't shift later indices.
+                        let del_end = block_end.min(lines.len().saturating_sub(1));
+                        for idx in (block_start..=del_end).rev() {
+                            if idx < lines.len() {
+                                lines.remove(idx);
+                            }
                         }
                         // Consume trailing blank line after the deleted block
                         if block_start < lines.len() && lines[block_start].trim().is_empty() {
                             lines.remove(block_start);
                         }
 
-                        // ---- update shift tracking ----
-                        for dl in (block_start + 1)..=(block_end + 1).min(n) {
+                        // ---- update shift tracking (uses original indices) ----
+                        for dl in (orig_block_start + 1)..=(orig_block_end + 1).min(n) {
                             deleted[dl - 1] = true;
                         }
-                        let block_len = block_end - block_start + 1;
-                        if block_end + 1 < n {
-                            apply_delta(&mut shift, block_end + 2, -(block_len as isize));
-                        }
-                        // +1 for trailing blank consumed
-                        if block_end + 1 < n
-                            && block_start < lines.len().saturating_sub(1)
-                            && lines.len() < n
-                        {
-                            // consumed-blank already shifts by −1 via the remove loop
+                        let block_len = orig_block_end - orig_block_start + 1;
+                        if orig_block_end + 1 < n {
+                            apply_delta(&mut shift, orig_block_end + 2, -(block_len as isize));
                         }
                     }
                     None => {
@@ -863,14 +893,14 @@ pub fn apply_edits_with_clipboard(
                             lines.insert(block_start + k, payload.clone());
                         }
 
-                        // ---- update shift tracking ----
-                        for dl in (block_start + 1)..=(block_end + 1).min(n) {
+                        // ---- update shift tracking (uses original indices) ----
+                        for dl in (orig_block_start + 1)..=(orig_block_end + 1).min(n) {
                             deleted[dl - 1] = true;
                         }
-                        if block_end + 1 < n {
+                        if orig_block_end + 1 < n {
                             apply_delta(
                                 &mut shift,
-                                block_end + 2,
+                                orig_block_end + 2,
                                 (payloads.len() as isize) - (num_old as isize),
                             );
                         }
@@ -882,9 +912,9 @@ pub fn apply_edits_with_clipboard(
                             lines.insert(insert_pos + k, payload.clone());
                         }
 
-                        // ---- update shift tracking ----
-                        if block_end + 1 < n {
-                            apply_delta(&mut shift, block_end + 2, payloads.len() as isize);
+                        // ---- update shift tracking (uses original indices) ----
+                        if orig_block_end + 1 < n {
+                            apply_delta(&mut shift, orig_block_end + 2, payloads.len() as isize);
                         }
                     }
                     Some(BlockMode::InsertBefore) => {
@@ -894,9 +924,9 @@ pub fn apply_edits_with_clipboard(
                             lines.insert(insert_pos + k, payload.clone());
                         }
 
-                        // ---- update shift tracking ----
-                        if block_start < n {
-                            apply_delta(&mut shift, block_start + 1, payloads.len() as isize);
+                        // ---- update shift tracking (uses original indices) ----
+                        if orig_block_start < n {
+                            apply_delta(&mut shift, orig_block_start + 1, payloads.len() as isize);
                         }
                     }
                 }
@@ -1972,6 +2002,51 @@ mod tests {
         assert_eq!(
             result,
             "L01\nL11\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nS10\nL12"
+        );
+    }
+
+    // ---- Bug #106: INS.PRE / INS.POST ignore shift table in multi-edit patches ----
+
+    #[test]
+    fn bug106_multi_ins_post_compounding_drift() {
+        // Three INS.POST at different anchors should each land at the
+        // correct position without compounding drift.
+        assert_eq!(
+            apply_text("L1\nL2\nL3\nL4\nL5\nL6", "INS.POST 2:\n+A\nINS.POST 4:\n+B"),
+            "L1\nL2\nA\nL3\nL4\nB\nL5\nL6"
+        );
+    }
+
+    #[test]
+    fn bug106_del_before_ins_post() {
+        // A DEL before an INS.POST should not cause the insert to land
+        // one line late.
+        assert_eq!(
+            apply_text("L1\nL2\nL3\nL4\nL5\nL6", "DEL 2\nINS.POST 4:\n+X"),
+            "L1\nL3\nL4\nX\nL5\nL6"
+        );
+    }
+
+    #[test]
+    fn bug106_multi_ins_pre() {
+        // Two INS.PRE at different anchors should each land before the
+        // correct original line.
+        assert_eq!(
+            apply_text("L1\nL2\nL3\nL4\nL5", "INS.PRE 2:\n+P\nINS.PRE 5:\n+Q"),
+            "L1\nP\nL2\nL3\nL4\nQ\nL5"
+        );
+    }
+
+    #[test]
+    fn bug106_ins_blk_post_multi_block() {
+        // Two INS.BLK.POST at different function anchors should inject
+        // comments after each function body, not inside the next one.
+        let original = "fn one() {\n    let a = 1;\n}\nfn two() {\n    let b = 2;\n}\nfn three() {\n    let c = 3;\n}\n";
+        let patch = "INS.BLK.POST 1:\n+// after fn one\nINS.BLK.POST 4:\n+// after fn two\n";
+        let result = apply_text_ext(original, patch, "rs");
+        assert_eq!(
+            result,
+            "fn one() {\n    let a = 1;\n}\n// after fn one\nfn two() {\n    let b = 2;\n}\n// after fn two\nfn three() {\n    let c = 3;\n}\n"
         );
     }
 }
