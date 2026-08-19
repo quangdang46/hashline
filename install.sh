@@ -542,7 +542,7 @@ main() {
         if [ "$(cd "$existing_dir" && pwd)" != "$(cd "$DEST" && pwd)" ]; then
             log_info "also updating existing $BINARY_NAME at $existing_bin"
             if cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
-                log_ok "replaced $existing_bin"
+                log_success "replaced $existing_bin"
             else
                 log_warn "could not update $existing_bin — you may need sudo or remove it manually"
             fi
