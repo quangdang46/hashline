@@ -7,7 +7,7 @@ use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
-use crate::types::{BlockMode, Clipboard, Cursor, Edit, InsertMode};
+use crate::types::{BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, InsertMode};
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
@@ -46,7 +46,19 @@ pub fn run<W: Write, E: Write>(
     let had_trailing_newline = fc.trailing_newline;
 
     let entries = fc.lines_with_hashes();
-    apply_edits(&mut lines, &entries, &cmd.file, &edits)?;
+    // Count unique high-level operations (each has a distinct line_num).
+    let op_count: usize = edits
+        .iter()
+        .map(|e| match e {
+            Edit::Insert { line_num, .. } => *line_num,
+            Edit::Delete { line_num, .. } => *line_num,
+            Edit::Block { line_num, .. } => *line_num,
+            Edit::Cut { line_num, .. } => *line_num,
+            Edit::Paste { line_num, .. } => *line_num,
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let changeset = apply_edits_tracked(&mut lines, &entries, &cmd.file, &edits, op_count)?;
 
     let result = if had_trailing_newline && !lines.is_empty() {
         lines.join("\n") + "\n"
@@ -98,29 +110,135 @@ pub fn run<W: Write, E: Write>(
         crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
     }
 
-    // Structured JSON output for agent integration.
-    if cmd.json {
-        use crate::hash::format_short_hash;
-        let new_entries: Vec<serde_json::Value> = final_text
-            .split('\n')
-            .filter(|l| !l.is_empty() || final_text.ends_with('\n'))
-            .enumerate()
-            .map(|(i, content)| {
-                let short = crate::hash::short_hash_value(content);
-                serde_json::json!({
-                    "line": i + 1,
-                    "hash": format_short_hash(short),
-                    "content": content,
+    // Render output based on output mode.
+    match ctx.output_mode() {
+        crate::context::OutputMode::Compact => {
+            // Agent-native: OK header + changed lines only
+            let path = cmd.file.display();
+            let changed_count =
+                changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
+            writeln!(
+                ctx.stdout(),
+                "OK {}#{} edits={} changed={}",
+                path,
+                changeset.file_hash,
+                changeset.edits_applied,
+                changed_count,
+            )?;
+            for line in &changeset.modified {
+                writeln!(
+                    ctx.stdout(),
+                    "~{}:{}|{}",
+                    line.line,
+                    line.hash,
+                    line.content
+                )?;
+            }
+            for line in &changeset.inserted {
+                writeln!(
+                    ctx.stdout(),
+                    "+{}:{}|{}",
+                    line.line,
+                    line.hash,
+                    line.content
+                )?;
+            }
+            for &line_num in &changeset.deleted {
+                writeln!(ctx.stdout(), "-{}", line_num)?;
+            }
+        }
+        crate::context::OutputMode::Verbose => {
+            // Human-readable: full file dump (old default)
+            writeln!(
+                ctx.stdout(),
+                "[{}#{}]",
+                cmd.file.display(),
+                changeset.file_hash
+            )?;
+            use crate::hash::write_short_hash_bytes;
+            let mut hash_buf = [0u8; 2];
+            for (i, content) in lines.iter().enumerate() {
+                if content.is_empty() && i == lines.len() - 1 && had_trailing_newline {
+                    continue;
+                }
+                let short = crate::hash::short_hash_value_indexed(content, i + 1);
+                write_short_hash_bytes(&mut hash_buf, short);
+                let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
+                writeln!(ctx.stdout(), "{}:{}|{}", i + 1, hash_str, content)?;
+            }
+        }
+        crate::context::OutputMode::Json => {
+            // Structured JSON with changed lines
+            let changed: Vec<serde_json::Value> = changeset
+                .modified
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "type": "modified",
+                        "line": l.line,
+                        "hash": l.hash,
+                        "content": l.content,
+                    })
                 })
-            })
-            .collect();
-        let payload = serde_json::json!({
-            "success": true,
-            "file": cmd.file.display().to_string(),
-            "edits_applied": edits.len(),
-            "lines": new_entries,
-        });
-        writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+                .chain(changeset.inserted.iter().map(|l| {
+                    serde_json::json!({
+                        "type": "inserted",
+                        "line": l.line,
+                        "hash": l.hash,
+                        "content": l.content,
+                    })
+                }))
+                .chain(changeset.deleted.iter().map(|&n| {
+                    serde_json::json!({
+                        "type": "deleted",
+                        "line": n,
+                    })
+                }))
+                .collect();
+            let payload = serde_json::json!({
+                "success": true,
+                "file": cmd.file.display().to_string(),
+                "hash": changeset.file_hash,
+                "edits_applied": changeset.edits_applied,
+                "changed": changed,
+            });
+            writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+        }
+        crate::context::OutputMode::Ndjson => {
+            // Same as compact for now
+            let path = cmd.file.display();
+            let changed_count =
+                changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
+            writeln!(
+                ctx.stdout(),
+                "OK {}#{} edits={} changed={}",
+                path,
+                changeset.file_hash,
+                changeset.edits_applied,
+                changed_count,
+            )?;
+            for line in &changeset.modified {
+                writeln!(
+                    ctx.stdout(),
+                    "~{}:{}|{}",
+                    line.line,
+                    line.hash,
+                    line.content
+                )?;
+            }
+            for line in &changeset.inserted {
+                writeln!(
+                    ctx.stdout(),
+                    "+{}:{}|{}",
+                    line.line,
+                    line.hash,
+                    line.content
+                )?;
+            }
+            for &line_num in &changeset.deleted {
+                writeln!(ctx.stdout(), "-{}", line_num)?;
+            }
+        }
     }
 
     Ok(())
@@ -274,6 +392,118 @@ pub fn apply_edits(
     edits: &[Edit],
 ) -> Result<(), HashlineError> {
     apply_edits_with_clipboard(lines, entries, path, edits, &mut Clipboard::default())
+}
+
+/// Like `apply_edits` but also returns a [`ChangeSet`] describing what changed.
+/// The changeset is computed from the edit operations and the before/after state.
+pub fn apply_edits_tracked(
+    lines: &mut Vec<String>,
+    entries: &[crate::document::LineEntry],
+    path: &Path,
+    edits: &[Edit],
+    edits_count: usize,
+) -> Result<ChangeSet, HashlineError> {
+    apply_edits(lines, entries, path, edits)?;
+    let changeset = compute_changeset(entries, lines, edits_count, path);
+    Ok(changeset)
+}
+
+/// Compute a [`ChangeSet`] by comparing original entries against the final lines.
+/// Uses the original entries as the pre-edit snapshot and the final lines as
+/// the post-edit result. The `edits_count` is the number of parsed edit operations.
+fn compute_changeset(
+    entries: &[crate::document::LineEntry],
+    final_lines: &[String],
+    edits_count: usize,
+    _path: &Path,
+) -> ChangeSet {
+    use crate::hash::{compute_file_hash, short_hash_value_indexed};
+
+    let mut modified = Vec::new();
+    let mut inserted = Vec::new();
+    let mut deleted = Vec::new();
+
+    // Filter entries to visible lines only (exclude trailing empty from
+    // split('\n') on files with trailing newline) so lengths match
+    // `final_lines` which comes from `split_normalized`.
+    let visible_entries: Vec<&crate::document::LineEntry> = entries
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| !(e.content.is_empty() && *i == entries.len() - 1))
+        .map(|(_, e)| e)
+        .collect();
+
+    // Build a map of original content → original line indices.
+    let mut orig_content_map: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, entry) in visible_entries.iter().enumerate() {
+        orig_content_map
+            .entry(entry.content.clone())
+            .or_default()
+            .push(i);
+    }
+
+    // Track which original lines are still present (by content match).
+    let mut orig_used: Vec<bool> = vec![false; visible_entries.len()];
+
+    // For each final line, check if it existed in the original.
+    for (final_idx, content) in final_lines.iter().enumerate() {
+        let line_num = final_idx + 1;
+        let hash = crate::hash::format_short_hash(short_hash_value_indexed(content, line_num));
+
+        if let Some(orig_indices) = orig_content_map.get(content) {
+            // Find the first unused original occurrence.
+            if let Some(&orig_idx) = orig_indices.iter().find(|&&i| !orig_used[i]) {
+                orig_used[orig_idx] = true;
+                // Line existed and is unchanged — skip.
+                continue;
+            }
+            // Content matches but all occurrences used — treat as insertion.
+            inserted.push(ChangedLine {
+                line: line_num,
+                hash,
+                content: content.clone(),
+            });
+        } else if final_idx < visible_entries.len() {
+            // Same position exists in original but content differs — modification.
+            orig_used[final_idx] = true; // Mark original as consumed
+            modified.push(ChangedLine {
+                line: line_num,
+                hash,
+                content: content.clone(),
+            });
+        } else {
+            // Beyond original bounds — insertion.
+            inserted.push(ChangedLine {
+                line: line_num,
+                hash,
+                content: content.clone(),
+            });
+        }
+    }
+
+    // Collect deleted lines — original lines that weren't matched.
+    for (i, used) in orig_used.iter().enumerate() {
+        if !used {
+            deleted.push(i + 1); // 1-indexed
+        }
+    }
+
+    let final_text = if final_lines.is_empty() {
+        String::new()
+    } else {
+        final_lines.join("\n") + "\n"
+    };
+    let file_hash = compute_file_hash(&final_text);
+
+    ChangeSet {
+        edits_applied: edits_count,
+        modified,
+        inserted,
+        deleted,
+        file_hash,
+        line_count: final_lines.len(),
+    }
 }
 
 /// `apply_edits` plus a caller-owned per-patch clipboard. `CUT` ops write

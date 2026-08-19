@@ -32,26 +32,58 @@ pub fn run<W: Write, E: Write>(
     let entries = fc.lines_with_hashes();
     let payload = find_block_payload(&fc, &entries, &cmd.anchor)?;
 
-    if cmd.json {
-        crate::output::write_json_success(ctx, &payload)?;
-    } else {
-        writeln!(
-            ctx.stdout(),
-            "File: {}  ({} lines)",
-            payload.file,
-            payload.line_count
-        )?;
-        if let Some(ref lang) = payload.language {
-            writeln!(ctx.stdout(), "Language: {lang}")?;
+    match ctx.output_mode() {
+        crate::context::OutputMode::Compact => {
+            // Agent-native: compact header + block lines
+            let lang = payload.language.as_deref().unwrap_or("Unknown");
+            writeln!(
+                ctx.stdout(),
+                "OK file={} lang={} lines={}",
+                payload.file,
+                lang,
+                payload.line_count,
+            )?;
+            for line in &payload.block_lines {
+                writeln!(ctx.stdout(), "{}:{}|{}", line.n, line.hash, line.content)?;
+            }
         }
-        let mut hash_buf = [0u8; 2];
-        for line in &payload.block_lines {
-            write_short_hash_bytes(
-                &mut hash_buf,
-                u8::from_str_radix(&line.hash, 16).unwrap_or(0),
-            );
-            let hash_str = std::str::from_utf8(&hash_buf).unwrap_or("??");
-            writeln!(ctx.stdout(), "{}:{}|{}", line.n, hash_str, line.content)?;
+        crate::context::OutputMode::Verbose => {
+            // Human-readable: old format
+            writeln!(
+                ctx.stdout(),
+                "File: {}  ({} lines)",
+                payload.file,
+                payload.line_count
+            )?;
+            if let Some(ref lang) = payload.language {
+                writeln!(ctx.stdout(), "Language: {lang}")?;
+            }
+            let mut hash_buf = [0u8; 2];
+            for line in &payload.block_lines {
+                write_short_hash_bytes(
+                    &mut hash_buf,
+                    u8::from_str_radix(&line.hash, 16).unwrap_or(0),
+                );
+                let hash_str = std::str::from_utf8(&hash_buf).unwrap_or("??");
+                writeln!(ctx.stdout(), "{}:{}|{}", line.n, hash_str, line.content)?;
+            }
+        }
+        crate::context::OutputMode::Json => {
+            crate::output::write_json_success(ctx, &payload)?;
+        }
+        crate::context::OutputMode::Ndjson => {
+            // Same as compact
+            let lang = payload.language.as_deref().unwrap_or("Unknown");
+            writeln!(
+                ctx.stdout(),
+                "OK file={} lang={} lines={}",
+                payload.file,
+                lang,
+                payload.line_count,
+            )?;
+            for line in &payload.block_lines {
+                writeln!(ctx.stdout(), "{}:{}|{}", line.n, line.hash, line.content)?;
+            }
         }
     }
 

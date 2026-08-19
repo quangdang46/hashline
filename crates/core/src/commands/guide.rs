@@ -29,12 +29,12 @@ pub fn run<W: Write, E: Write>(
 
     $ hashline read src/auth.js
 
-    ──[src/auth.js#1A2B]────────────────────────────────────────
-    1|   function verifyToken(token) {
-    2|     const decoded = jwt.verify(token, process.env.SECRET)
-    3:a3|   if (!decoded.exp) throw new TokenError('missing expiry')
-    4|     return decoded
-    5|   }
+    src/auth.js#1A2B
+    1:ee|function verifyToken(token) {
+    2:c6|  const decoded = jwt.verify(token, process.env.SECRET)
+    3:a3|  if (!decoded.exp) throw new TokenError('missing expiry')
+    4:18|  return decoded
+    5:58|}
 
     Each line shows its xxh32 hash (e.g. 3:a3). Copy the anchor
     you want to target.
@@ -44,15 +44,20 @@ pub fn run<W: Write, E: Write>(
     $ hashline patch src/auth.js 'SWAP 3:a3:
     +  if (!decoded || !decoded.exp) throw TokenError("expired")'
 
-    Or use positional range:
+    Output (compact, agent-first):
+    OK src/auth.js#7f2a edits=1 changed=1
+    ~3:b1|  if (!decoded || !decoded.exp) throw TokenError("expired")
 
-    $ hashline patch src/auth.js 'SWAP 3:a3..4:
-    +  if (!decoded || !decoded.exp) throw TokenError("expired")
-    +  return decoded'
+    Use --verbose for full file dump after patch.
+    Use --json for structured output with changed lines.
 
  3. FIND-BLOCK to locate structural context:
 
     $ hashline find-block src/auth.js 3:a3
+    OK file=src/auth.js lang=JavaScript lines=5
+    2:c6|  if (name) {
+    3:db|    console.log("Hello " + name);
+    4:8f|  }
 
 ──────────────────────  PATCH OPERATIONS  ──────────────────────
 
@@ -153,15 +158,17 @@ pub fn run<W: Write, E: Write>(
 
 ───────────────────  CONVENIENCE FLAGS  ──────────────────────
 
+  Output modes (mutually exclusive):
+    DEFAULT         Agent-native compact text (--verbose for human format)
+    --verbose       Human-readable format (full file after mutations)
+    --json          Structured JSON output
+
+  Other flags:
   hashline patch <file> <patch> --dry-run    Preview only
-  hashline patch <file> <patch> --json       JSON output
-  hashline read  <file>         --json       JSON output
-  hashline find-block <f> <a>   --json       JSON output
-  hashline find-block <f> <a>   --pretty     Pretty-print JSON
-  hashline write <file> <cont>              Write a new file
-  hashline write <file> <cont> --force      Overwrite existing
-  hashline remove <file>                    Delete a file
-  hashline rename <src> <dst>               Rename (move) a file
+  hashline patch <file> <patch> --safe       Atomic temp-file + fsync
+  hashline read  <file>         --no-cache   Skip snapshot cache
+  hashline find-block <f> <a>   --pretty     Pretty-print JSON (with --json)
+  hashline write <file> <cont> --force       Overwrite existing file
 
 ──────────────────────  DAEMON MODE  ──────────────────────────
 
@@ -200,23 +207,29 @@ pub fn run<W: Write, E: Write>(
   # Replace text on a specific line
   $ hashline patch config.rs 'SWAP 10:
   +  pub const TIMEOUT: u64 = 5000;'
+  OK config.rs#7f2a edits=1 changed=1
+  ~10:b1|  pub const TIMEOUT: u64 = 5000;
 
   # Remove a function
   $ hashline patch lib.rs 'DEL.BLK 42'
+  OK lib.rs#a1b2 edits=1 changed=5
+  -42
+  -43
+  -44
+  -45
+  -46
 
   # Add import at top of file
   $ hashline patch main.rs 'INS.HEAD:
   +  use std::collections::HashMap;'
+  OK main.rs#c3d4 edits=1 changed=1
+  +1:9b|  use std::collections::HashMap;
 
   # Add debug log after line
   $ hashline patch handler.rs 'INS.POST 12:
   +  log::info!("request processed");'
-
-  # Replace multiple lines
-  $ hashline patch model.rs 'SWAP 20..25:
-  +  pub fn new(name: String) -> Self {
-  +      Self { name, enabled: true }
-  +  }'
+  OK handler.rs#e5f6 edits=1 changed=1
+  +13:a1|  log::info!("request processed");
 
   # Multi-op patch — use stdin to avoid creating a .patch file
   $ hashline patch model.rs - <<'EOF'
@@ -228,9 +241,24 @@ pub fn run<W: Write, E: Write>(
   +  }
   *** End Patch
   EOF
+  OK model.rs#3e5a edits=2 changed=2
+  ~20:f1|  pub fn new(name: String) -> Self {
+  ~25:7c|      Self { name, enabled: true }
+
+  # Human-readable output (full file after patch)
+  $ hashline patch config.rs --verbose 'SWAP 10:
+  +  pub const TIMEOUT: u64 = 5000;'
+
+  # Structured JSON output
+  $ hashline patch config.rs --json 'SWAP 10:
+  +  pub const TIMEOUT: u64 = 5000;'
+  {"success":true,"file":"config.rs","hash":"7f2a","edits_applied":1,"changed":[{"type":"modified","line":10,"hash":"b1","content":"  pub const TIMEOUT: u64 = 5000;"}]}
 
 ───────────────────────  TIPS  ───────────────────────────────
 
+  • Default output is agent-first compact text (token-minimal)
+  • Use --verbose for human-readable full file dump after mutations
+  • Use --json for structured output with changed lines array
   • Always read before editing — anchors change when files change
   • Use --dry-run to preview patches before writing
   • An anchor like "42:a3" refers to line 42 with xxh32 hash a3
@@ -240,12 +268,12 @@ pub fn run<W: Write, E: Write>(
       .py .verse            → indentation-based
       .rb                   → keyword (def/class/end)
   • hashline writes atomically (temp file + rename)
-  • JSON mode is ideal for agent consumption
   • Use write to create new files: hashline write <file> <content>
   • Wrap complex patches in *** Begin/End Patch markers
   • Use ++ for literal +, +- for literal - in payload lines
   • A.=B range syntax is accepted alongside A..B
   • stdin (-) is always faster than @path — no file create/write overhead
+  • Patch output prefix convention: ~modified +inserted -deleted
 "#;
 
     writeln!(ctx.stdout(), "{}", guide.trim())?;

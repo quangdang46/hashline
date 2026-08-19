@@ -35,20 +35,31 @@ pub fn run<W: Write, E: Write>(
     std::fs::rename(&cmd.src, &cmd.dst)?;
 
     // 5. Output result
-    if cmd.json {
-        let output = serde_json::json!({
-            "success": true,
-            "src": cmd.src.display().to_string(),
-            "dst": cmd.dst.display().to_string(),
-        });
-        writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
-    } else {
-        writeln!(
-            ctx.stdout(),
-            "renamed '{}' -> '{}'",
-            cmd.src.display(),
-            cmd.dst.display()
-        )?;
+    match ctx.output_mode() {
+        crate::context::OutputMode::Compact | crate::context::OutputMode::Ndjson => {
+            writeln!(
+                ctx.stdout(),
+                "OK {}>{}",
+                cmd.src.display(),
+                cmd.dst.display()
+            )?;
+        }
+        crate::context::OutputMode::Verbose => {
+            writeln!(
+                ctx.stdout(),
+                "renamed '{}' -> '{}'",
+                cmd.src.display(),
+                cmd.dst.display()
+            )?;
+        }
+        crate::context::OutputMode::Json => {
+            let output = serde_json::json!({
+                "success": true,
+                "src": cmd.src.display().to_string(),
+                "dst": cmd.dst.display().to_string(),
+            });
+            writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
+        }
     }
 
     Ok(())

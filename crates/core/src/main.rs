@@ -649,7 +649,7 @@ mod tests {
             let mut ctx = hashline::context::CommandContext::new(
                 &mut sink_out,
                 &mut sink_err,
-                hashline::context::OutputMode::Pretty,
+                hashline::context::OutputMode::Verbose,
             );
             hashline::output::write_error(&mut ctx, &error).unwrap();
             stdout = sink_out;

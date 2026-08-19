@@ -45,8 +45,10 @@ pub struct PatchCmd {
     pub patch: String,
     #[arg(long)]
     pub dry_run: bool,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "verbose")]
     pub json: bool,
+    #[arg(long, conflicts_with = "json")]
+    pub verbose: bool,
     #[arg(
         long,
         help = "Use atomic temp-file + fsync (crash-safe but slower; default is fast direct write)"
@@ -59,8 +61,10 @@ pub struct PatchCmd {
 pub struct FindBlockCmd {
     pub file: PathBuf,
     pub anchor: String,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "verbose")]
     pub json: bool,
+    #[arg(long, conflicts_with = "json")]
+    pub verbose: bool,
     #[arg(long)]
     pub pretty: bool,
 }
@@ -72,8 +76,10 @@ pub struct WriteCmd {
     pub content: String,
     #[arg(long, help = "Overwrite existing file if it already exists")]
     pub force: bool,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "verbose")]
     pub json: bool,
+    #[arg(long, conflicts_with = "json")]
+    pub verbose: bool,
     #[arg(
         long,
         help = "Use atomic temp-file + fsync (crash-safe but slower; default is fast direct write)"
@@ -112,8 +118,10 @@ pub struct McpCmd {
 #[command(about = "Delete a file")]
 pub struct RemoveCmd {
     pub file: PathBuf,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "verbose")]
     pub json: bool,
+    #[arg(long, conflicts_with = "json")]
+    pub verbose: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
@@ -121,8 +129,10 @@ pub struct RemoveCmd {
 pub struct RenameCmd {
     pub src: PathBuf,
     pub dst: PathBuf,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "verbose")]
     pub json: bool,
+    #[arg(long, conflicts_with = "json")]
+    pub verbose: bool,
     #[arg(long, help = "Overwrite destination file if it already exists")]
     pub force: bool,
 }

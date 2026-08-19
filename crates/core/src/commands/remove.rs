@@ -19,14 +19,20 @@ pub fn run<W: Write, E: Write>(
     std::fs::remove_file(&cmd.file)?;
 
     // 3. Output result
-    if cmd.json {
-        let output = serde_json::json!({
-            "success": true,
-            "path": cmd.file.display().to_string(),
-        });
-        writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
-    } else {
-        writeln!(ctx.stdout(), "removed '{}'", cmd.file.display())?;
+    match ctx.output_mode() {
+        crate::context::OutputMode::Compact | crate::context::OutputMode::Ndjson => {
+            writeln!(ctx.stdout(), "OK {}", cmd.file.display())?;
+        }
+        crate::context::OutputMode::Verbose => {
+            writeln!(ctx.stdout(), "removed '{}'", cmd.file.display())?;
+        }
+        crate::context::OutputMode::Json => {
+            let output = serde_json::json!({
+                "success": true,
+                "path": cmd.file.display().to_string(),
+            });
+            writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
+        }
     }
 
     Ok(())

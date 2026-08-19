@@ -62,7 +62,82 @@ pub fn write_error<W: Write, E: Write>(
     error: &HashlineError,
 ) -> io::Result<()> {
     match ctx.output_mode() {
-        OutputMode::Pretty => {
+        OutputMode::Compact => {
+            // ERR KIND key=val pairs
+            write!(ctx.stderr(), "ERR {}", error.kind())?;
+            match error {
+                HashlineError::StaleAnchor {
+                    path,
+                    line,
+                    expected,
+                    actual,
+                    ..
+                } => {
+                    write!(
+                        ctx.stderr(),
+                        " file={} line={} expected={} actual={}",
+                        path,
+                        line,
+                        expected,
+                        actual
+                    )?;
+                }
+                HashlineError::StaleHash {
+                    path,
+                    expected,
+                    actual,
+                } => {
+                    write!(
+                        ctx.stderr(),
+                        " file={} expected={} actual={}",
+                        path,
+                        expected,
+                        actual
+                    )?;
+                }
+                HashlineError::FileNotFound { path } => {
+                    write!(ctx.stderr(), " file={}", path)?;
+                }
+                HashlineError::TargetExists { path } => {
+                    write!(ctx.stderr(), " file={}", path)?;
+                }
+                HashlineError::HashNotFound { hash, path } => {
+                    write!(ctx.stderr(), " hash={} file={}", hash, path)?;
+                }
+                HashlineError::AmbiguousHash {
+                    hash,
+                    count,
+                    lines,
+                    path,
+                } => {
+                    write!(
+                        ctx.stderr(),
+                        " hash={} count={} lines={} file={}",
+                        hash,
+                        count,
+                        lines,
+                        path
+                    )?;
+                }
+                HashlineError::InvalidAnchor { anchor } => {
+                    write!(ctx.stderr(), " anchor={}", anchor)?;
+                }
+                HashlineError::UnbalancedBlock { line_no } => {
+                    write!(ctx.stderr(), " line={}", line_no)?;
+                }
+                HashlineError::EmptyPatch => {}
+                HashlineError::EmptyPatchWithReason { reason } => {
+                    write!(ctx.stderr(), " reason={}", reason)?;
+                }
+                _ => {}
+            }
+            writeln!(ctx.stderr())?;
+            if let Some(hint) = error.hint() {
+                writeln!(ctx.stderr(), "HINT {}", hint)?;
+            }
+            Ok(())
+        }
+        OutputMode::Verbose => {
             writeln!(ctx.stderr(), "Error: {error}")?;
             if let Some(hint) = error.hint() {
                 writeln!(ctx.stderr(), "Hint: {hint}")?;

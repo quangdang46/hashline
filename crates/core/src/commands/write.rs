@@ -29,43 +29,74 @@ pub fn run<W: Write, E: Write>(
         crate::commands::common::fast_write(&cmd.file, write_content.as_bytes())?;
     }
 
-    // 4. Re-read and show hashline output
-    let fc = crate::document::FileContent::load(&cmd.file)?;
-    let raw_lines = fc.lines();
-    let entries = fc.lines_with_hashes();
+    // 4. Compute hash and line count from the written content (canonical path).
+    let file_hash = hash::compute_file_hash(&write_content);
+    let line_count = write_content.lines().count();
 
-    if cmd.json {
-        let lines: Vec<serde_json::Value> = entries
-            .iter()
-            .enumerate()
-            .filter(|(i, entry)| {
-                !(entry.content.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
-            })
-            .map(|(i, entry)| {
-                serde_json::json!({
-                    "n": i + 1,
-                    "hash": hash::format_short_hash(entry.short_hash),
-                    "content": entry.content,
-                })
-            })
-            .collect();
-        let output = serde_json::json!({
-            "success": true,
-            "path": fc.path.display().to_string(),
-            "hash": fc.hash,
-            "lines": lines,
-        });
-        writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
-    } else {
-        writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
-        let mut hash_buf = [0u8; 2];
-        for (i, entry) in entries.iter().enumerate() {
-            if entry.content.is_empty() && i == raw_lines.len() - 1 && fc.trailing_newline {
-                continue;
+    // 5. Render output based on output mode.
+    match ctx.output_mode() {
+        crate::context::OutputMode::Compact => {
+            // Agent-native: status line only, no re-read
+            writeln!(
+                ctx.stdout(),
+                "OK {}#{} lines={}",
+                cmd.file.display(),
+                file_hash,
+                line_count,
+            )?;
+        }
+        crate::context::OutputMode::Verbose => {
+            // Human-readable: re-read and dump full file (old default)
+            let fc = crate::document::FileContent::load(&cmd.file)?;
+            let raw_lines = fc.lines();
+            let entries = fc.lines_with_hashes();
+            writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
+            let mut hash_buf = [0u8; 2];
+            for (i, entry) in entries.iter().enumerate() {
+                if entry.content.is_empty() && i == raw_lines.len() - 1 && fc.trailing_newline {
+                    continue;
+                }
+                hash::write_short_hash_bytes(&mut hash_buf, entry.short_hash);
+                let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
+                writeln!(ctx.stdout(), "{}:{}|{}", i + 1, hash_str, entry.content)?;
             }
-            hash::write_short_hash_bytes(&mut hash_buf, entry.short_hash);
-            let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
-            writeln!(ctx.stdout(), "{}:{}|{}", i + 1, hash_str, entry.content)?;
+        }
+        crate::context::OutputMode::Json => {
+            // Structured JSON
+            let fc = crate::document::FileContent::load(&cmd.file)?;
+            let raw_lines = fc.lines();
+            let entries = fc.lines_with_hashes();
+            let lines: Vec<serde_json::Value> = entries
+                .iter()
+                .enumerate()
+                .filter(|(i, entry)| {
+                    !(entry.content.is_empty() && *i == raw_lines.len() - 1 && fc.trailing_newline)
+                })
+                .map(|(i, entry)| {
+                    serde_json::json!({
+                        "n": i + 1,
+                        "hash": hash::format_short_hash(entry.short_hash),
+                        "content": entry.content,
+                    })
+                })
+                .collect();
+            let output = serde_json::json!({
+                "success": true,
+                "path": fc.path.display().to_string(),
+                "hash": fc.hash,
+                "lines": lines,
+            });
+            writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
+        }
+        crate::context::OutputMode::Ndjson => {
+            // Same as compact
+            writeln!(
+                ctx.stdout(),
+                "OK {}#{} lines={}",
+                cmd.file.display(),
+                file_hash,
+                line_count,
+            )?;
         }
     }
 

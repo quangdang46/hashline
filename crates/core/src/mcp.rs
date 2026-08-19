@@ -82,11 +82,19 @@ pub struct JsonRpcError {
 // ---------------------------------------------------------------------------
 
 const MCP_INSTRUCTIONS: &str = "\
-Hashline provides hash-anchored file editing.
+Hashline provides hash-anchored file editing with agent-first compact output.
 Read a file first to get stable anchors ([path#HASH], line:hash), then patch
 by anchor. Prefer hashline for content-anchored edits over str_replace-style
 tools: anchors survive nearby edits, and stale reads are rejected instead of
 corrupting the file.
+
+Output is agent-native compact text by default:
+- read: full file with [path#hash] header + line:hash|content
+- patch: OK path#hash edits=N changed=N + changed lines (~modified +inserted -deleted)
+- write: OK path#hash lines=N (no file re-read)
+- find_block: OK file=path lang=X lines=N + block lines
+- remove: OK path
+- rename: OK src>dst
 
 Workflow:
 1. hashline read <file>        — get anchors
@@ -281,15 +289,17 @@ fn handle_find_block(file: &str, anchor_str: &str) -> String {
 
     let (start, end) = block_result.unwrap_or((anchor_index, anchor_index));
 
+    // Agent-native compact header + block lines
     let mut out = format!(
-        "File: {}  ({} lines)\nLanguage: {language}\n",
+        "OK file={} lang={} lines={}\n",
         fc.path.display(),
+        language,
         fc.len()
     );
     for i in start..=end {
         let entry = &entries[i];
-        let hash = hash::format_short_hash(entry.short_hash);
-        out.push_str(&format!("{}:{}|{}\n", i + 1, hash, entry.content));
+        let h = hash::format_short_hash(entry.short_hash);
+        out.push_str(&format!("{}:{}|{}\n", i + 1, h, entry.content));
     }
     out
 }
@@ -505,7 +515,8 @@ fn handle_remove_file(file: &str, json: bool) -> String {
             if json {
                 serde_json::json!({"success": true, "file": file}).to_string()
             } else {
-                format!("Removed {file}")
+                // Agent-native compact
+                format!("OK {file}")
             }
         }
         Err(e) => format!("Error: {e}"),
@@ -529,7 +540,8 @@ fn handle_rename_file(src: &str, dst: &str, json: bool) -> String {
             if json {
                 serde_json::json!({"success": true, "src": src, "dst": dst}).to_string()
             } else {
-                format!("Renamed {src} -> {dst}")
+                // Agent-native compact
+                format!("OK {src}>{dst}")
             }
         }
         Err(e) => format!("Error: {e}"),
@@ -546,8 +558,6 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
 
     // Surface warnings in the tool result so MCP clients see them
     // (Issue #93 — warnings are not just debug info for the terminal).
-    // The first line of the response carries the outcome; warnings follow
-    // as indented notes that are visible in both CLI and agent output.
     let mut warning_line = String::new();
     if !warnings.is_empty() {
         warning_line = format!(
@@ -574,9 +584,16 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
     let (mut lines, _) = split_text(&fc.normalized);
 
     let entries = fc.lines_with_hashes();
-    if let Err(e) = crate::commands::patch::apply_edits(&mut lines, &entries, path, &edits) {
-        return format!("Error: {e}");
-    }
+    let changeset = match crate::commands::patch::apply_edits_tracked(
+        &mut lines,
+        &entries,
+        path,
+        &edits,
+        edits.len(),
+    ) {
+        Ok(cs) => cs,
+        Err(e) => return format!("Error: {e}"),
+    };
 
     let result = join_lines(&lines, fc.trailing_newline);
     let line_ending = detect_line_ending(&fc.raw);
@@ -590,7 +607,28 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
         format!("Dry-run result:\n{final_text}")
     } else {
         match crate::commands::common::fast_write(path, final_text.as_bytes()) {
-            Ok(_) => format!("Patch applied.{warning_line}\n{}", handle_read(file, false)),
+            Ok(_) => {
+                // Agent-native compact output: OK header + changed lines only
+                let changed_count =
+                    changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
+                let mut out = format!(
+                    "OK {}#{} edits={} changed={}",
+                    file, changeset.file_hash, changeset.edits_applied, changed_count,
+                );
+                for line in &changeset.modified {
+                    out.push_str(&format!("\n~{}:{}|{}", line.line, line.hash, line.content));
+                }
+                for line in &changeset.inserted {
+                    out.push_str(&format!("\n+{}:{}|{}", line.line, line.hash, line.content));
+                }
+                for &line_num in &changeset.deleted {
+                    out.push_str(&format!("\n-{}", line_num));
+                }
+                if !warning_line.is_empty() {
+                    out.push_str(&warning_line);
+                }
+                out
+            }
             Err(e) => format!("Error writing file: {e}"),
         }
     }
@@ -615,11 +653,15 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
         return format!("Error: {e}");
     }
 
-    match FileContent::load(path) {
-        Ok(fc) => {
-            let entries = fc.lines_with_hashes();
+    // Compute hash and line count from the written content (canonical path).
+    let file_hash = hash::compute_file_hash(&write_content);
+    let line_count = write_content.lines().count();
 
-            if json {
+    if json {
+        // JSON: re-read for full line data (backward compatible)
+        match FileContent::load(path) {
+            Ok(fc) => {
+                let entries = fc.lines_with_hashes();
                 let lines: Vec<Value> = entries
                     .iter()
                     .enumerate()
@@ -638,18 +680,12 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
                     "lines": lines,
                 }))
                 .unwrap_or_default()
-            } else {
-                let mut out = format!("[{}#{}]\n", fc.path.display(), fc.hash);
-                let mut hash_buf = [0u8; 2];
-                for (i, entry) in entries.iter().enumerate() {
-                    hash::write_short_hash_bytes(&mut hash_buf, entry.short_hash);
-                    let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
-                    out.push_str(&format!("{}:{}|{}\n", i + 1, hash_str, entry.content));
-                }
-                out
             }
+            Err(e) => format!("Written successfully.\nError re-reading file: {e}"),
         }
-        Err(e) => format!("Written successfully.\nError re-reading file: {e}"),
+    } else {
+        // Agent-native compact: status line only, no re-read
+        format!("OK {}#{} lines={}", file, file_hash, line_count)
     }
 }
 

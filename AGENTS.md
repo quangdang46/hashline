@@ -4,6 +4,7 @@
 
 ### Why It's Useful
 
+- **Agent-first output:** Default output is compact, token-minimal, machine-readable — designed for AI agents, not humans
 - **Stable anchors:** `line:hash` format survives nearby edits — line numbers shift but hashes stay valid
 - **Concurrent-safe:** Detects stale anchors when content changed; fails explicitly instead of guessing
 - **No merge conflicts:** Each edit is independent; no patch files needed
@@ -19,9 +20,58 @@ Anchors are `line_number:content_hash` pairs like `3:a7`:
 
 Example output from `hashline read`:
 ```
-  1:9b  fn main() {
-  2:89      let name = "hashline";
-  3:a7      let version = "0.8.4";
+src/main.rs#3a58
+1:9b|fn main() {
+2:89|    let name = "hashline";
+3:a7|    let version = "0.9.0";
+```
+
+### Output Architecture
+
+hashline uses **agent-first, token-minimal output** by default:
+
+```
+hashline CLI
+├── DEFAULT  → Agent-native compact text (--verbose for human format)
+├── --verbose → Human-readable format (full file after mutations)
+└── --json   → Structured JSON output
+```
+
+**Default (compact) output examples:**
+
+```bash
+# read — full file with anchors (always full, already optimal)
+hashline read src/main.rs
+# src/main.rs#3a58
+# 1:9b|fn main() {
+# 2:89|    let name = "hashline";
+
+# patch — status + changed lines only
+hashline patch src/main.rs "SWAP 3:a7:
++    let version = \"0.9.1\";"
+# OK src/main.rs#7f2a edits=1 changed=1
+# ~3:b1|    let version = "0.9.1";
+
+# write — status line only (no file re-read)
+hashline write new.txt "hello"
+# OK new.txt#a1b2 lines=1
+
+# find-block — compact header + block lines
+hashline find-block src/main.rs 2:89
+# OK file=src/main.rs lang=Rust lines=5
+# 1:9b|fn main() {
+# 2:89|    let name = "hashline";
+# 3:b1|    let version = "0.9.1";
+# 4:3c|}
+# 5:00|
+
+# remove
+hashline remove old.txt
+# OK old.txt
+
+# rename
+hashline rename old.txt new.txt
+# OK old.txt>new.txt
 ```
 
 ### Command Reference
@@ -102,9 +152,10 @@ INS.POST 4:6c:
 |------|-------------|--------|
 | `--dry-run` | `patch` | Show what would change without modifying file |
 | `--safe` | `patch`, `write` | Atomic temp-file + fsync (crash-safe, slower) |
-| `--json` | `read`, `patch`, `find-block`, `write`, `remove` | Machine-readable JSON output |
+| `--json` | `read`, `patch`, `find-block`, `write`, `remove` | Structured JSON output |
+| `--verbose` | `patch`, `write`, `find-block`, `remove`, `rename` | Human-readable format (full file after mutations) |
 | `--no-cache` | `read` | Skip snapshot cache |
-| `--pretty` | `find-block` | Formatted output (default) |
+| `--pretty` | `find-block` | Formatted JSON output (with `--json`) |
 | `--force` | `write` | Overwrite existing file |
 | `--detach` | `serve` | Fork to background as daemon |
 | `--pid-file` | `serve` | Write PID to file |
@@ -114,9 +165,16 @@ INS.POST 4:6c:
 
 ### Error Recovery
 
+**Compact format (default):**
+```
+ERR STALE file=sample.rs line=3 expected=a7 actual=e7
+HINT re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor
+```
+
+**Verbose format (`--verbose`):**
 ```
 Error: line 3 content changed since last read in sample.rs (expected hash a7, got e7)
-Hint: re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor
+Hint: re-read the file with `hashline read <file>`; ...
 ```
 
 **Fix:** `hashline read <file>` → use the new hash → retry.
@@ -130,6 +188,23 @@ Hint: re-read the file with `hashline read <file>`; if the hash moved, use the r
 - **Leading sigil is consumed:** The `+` payload prefix is stripped; if you need a literal leading `+`, double it: `++plus` → `+plus`. Same for bare body (no `+`) lines — they're treated as body content but may trigger a warning about missing `+` prefix
 - **Boundary echo:** warning when payload first line duplicates the line above the target range
 
+### Patch Output (Compact)
+
+```bash
+hashline patch src/main.rs "SWAP 3:a7:
++    let version = \"0.9.1\";
+INS.TAIL:
++    println!(\"done\");"
+# OK src/main.rs#7f2a edits=2 changed=2
+# ~3:b1|    let version = "0.9.1";
+# +6:5e|    println!("done");
+```
+
+Prefix convention:
+- `~` = modified line (content changed)
+- `+` = inserted line (new)
+- `-N` = deleted line (line N removed)
+
 ### JSON Output
 
 `read`, `patch`, and `find-block` all support `--json`:
@@ -137,6 +212,9 @@ Hint: re-read the file with `hashline read <file>`; if the hash moved, use the r
 ```bash
 hashline read sample.rs --json
 # {"hash":"3a58","lines":[{"content":"fn main() {","hash":"9b","n":1},...],"path":"sample.rs"}
+
+hashline patch sample.rs "SWAP 3:a7:+replaced" --json
+# {"success":true,"file":"sample.rs","hash":"7f2a","edits_applied":1,"changed":[{"type":"modified","line":3,"hash":"b1","content":"replaced"}]}
 ```
 
 ### Rules for Agents (MANDATORY)

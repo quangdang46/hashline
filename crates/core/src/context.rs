@@ -6,8 +6,10 @@ use crate::cli::Commands;
 /// [`CommandContext`] via [`CommandContext::json_pretty`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputMode {
-    /// Human-readable text output (default).
-    Pretty,
+    /// Agent-native compact text — the default for hashline.
+    Compact,
+    /// Human-readable text output (full file dump after mutations).
+    Verbose,
     /// Single JSON document (compact by default; pretty when `--pretty` is set).
     Json,
     /// Newline-delimited JSON stream (one JSON object per line, no wrapper).
@@ -32,7 +34,7 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
     }
 
     /// Builder helper: enable pretty-printing for JSON output.
-    /// Has no effect on `OutputMode::Pretty` (text) or `OutputMode::Ndjson`.
+    /// Has no effect on `OutputMode::Verbose` (text) or `OutputMode::Ndjson`.
     pub fn with_json_pretty(mut self, pretty: bool) -> Self {
         self.json_pretty = pretty;
         self
@@ -58,14 +60,14 @@ impl<'a, W: Write, E: Write> CommandContext<'a, W, E> {
 
 pub fn output_mode_for(command: &Commands) -> OutputMode {
     match command {
-        Commands::Read(cmd) => flag_mode(cmd.json),
-        Commands::Patch(cmd) => flag_mode(cmd.json),
-        Commands::Write(cmd) => flag_mode(cmd.json),
-        Commands::FindBlock(cmd) => flag_mode(cmd.json),
-        Commands::Guide(cmd) => flag_mode(cmd.json),
-        Commands::Remove(cmd) => flag_mode(cmd.json),
-        Commands::Rename(cmd) => flag_mode(cmd.json),
-        Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Pretty,
+        Commands::Read(cmd) => flag_mode(cmd.json, false),
+        Commands::Patch(cmd) => flag_mode(cmd.json, cmd.verbose),
+        Commands::Write(cmd) => flag_mode(cmd.json, cmd.verbose),
+        Commands::FindBlock(cmd) => flag_mode(cmd.json, cmd.verbose),
+        Commands::Guide(cmd) => flag_mode(cmd.json, false),
+        Commands::Remove(cmd) => flag_mode(cmd.json, cmd.verbose),
+        Commands::Rename(cmd) => flag_mode(cmd.json, cmd.verbose),
+        Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Verbose,
     }
 }
 
@@ -79,11 +81,13 @@ pub fn json_pretty_for(command: &Commands) -> bool {
     }
 }
 
-fn flag_mode(json: bool) -> OutputMode {
+fn flag_mode(json: bool, verbose: bool) -> OutputMode {
     if json {
         OutputMode::Json
+    } else if verbose {
+        OutputMode::Verbose
     } else {
-        OutputMode::Pretty
+        OutputMode::Compact
     }
 }
 
@@ -105,14 +109,14 @@ mod tests {
     }
 
     #[test]
-    fn uses_pretty_mode_when_json_flag_is_false() {
+    fn uses_compact_mode_when_no_flags() {
         let command = Commands::Read(ReadCmd {
             file: PathBuf::from("demo.txt"),
             json: false,
             no_cache: false,
         });
 
-        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
+        assert_eq!(output_mode_for(&command), OutputMode::Compact);
     }
 
     #[test]
@@ -121,6 +125,7 @@ mod tests {
             file: PathBuf::from("demo.txt"),
             anchor: "1:aa".into(),
             json: true,
+            verbose: false,
             pretty: false,
         });
 
@@ -128,20 +133,21 @@ mod tests {
     }
 
     #[test]
-    fn patch_defaults_to_pretty() {
+    fn patch_defaults_to_compact() {
         let command = Commands::Patch(crate::cli::PatchCmd {
             file: PathBuf::from("demo.txt"),
             patch: "".into(),
             dry_run: false,
             safe: false,
             json: false,
+            verbose: false,
         });
 
-        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
+        assert_eq!(output_mode_for(&command), OutputMode::Compact);
     }
 
     #[test]
-    fn serve_defaults_to_pretty() {
+    fn serve_defaults_to_verbose() {
         let command = Commands::Serve(crate::cli::ServeCmd {
             socket: None,
             http: None,
@@ -149,6 +155,6 @@ mod tests {
             pid_file: None,
         });
 
-        assert_eq!(output_mode_for(&command), OutputMode::Pretty);
+        assert_eq!(output_mode_for(&command), OutputMode::Verbose);
     }
 }

@@ -86,6 +86,7 @@ mod tests {
             dry_run: false,
             safe: false,
             json: false,
+            verbose: false,
         });
         assert_eq!(command_name(&cmd), "patch");
     }

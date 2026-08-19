@@ -35,19 +35,29 @@ hashline ships a 6-tool MCP server that works with Claude Code, Codex, Cursor, W
 hashline mcp
 
 # Read a file with hashes — agents copy anchors, not lines
-hashline read src/auth.js --json
+hashline read src/auth.js
 
-# Patch by anchor — survives nearby edits
-hashline patch src/auth.js 'SWAP 2:b2:'
-+  const decoded = jwt.verify(token, env.SECRET)
+# Patch by anchor — survives nearby edits (compact output)
+hashline patch src/auth.js 'SWAP 2:b2:
++  const decoded = jwt.verify(token, env.SECRET)'
+# OK src/auth.js#7f2a edits=1 changed=1
+# ~2:f9|  const decoded = jwt.verify(token, env.SECRET)
 
 # Dry-run before applying
-hashline patch src/auth.js 'DEL 3' --dry-run --json
+hashline patch src/auth.js 'DEL 3' --dry-run
 ```
+
+**Output architecture** — agent-first, token-minimal by default:
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| **Compact** (default) | — | `OK path#hash edits=N changed=N` + changed lines only |
+| **Verbose** | `--verbose` | Full file dump after mutation (human-readable) |
+| **JSON** | `--json` | Structured JSON with changed lines array |
 
 **Output conventions**
 - stdout = data only (file content, patch result, JSON)
-- stderr = diagnostics, warnings
+- stderr = diagnostics, warnings (`ERR KIND key=val` + `HINT ...` in compact mode)
 - exit 0 = success, exit 1 = stale-read rejection or no-op
 
 ---
@@ -66,6 +76,7 @@ AI coding agents (`str_replace`, `sed`, bespoke edit LLM tools) routinely botch 
 
 | Feature | What it does |
 |---------|--------------|
+| **Agent-first output** | Compact, token-minimal by default — `OK path#hash edits=N` + changed lines only |
 | **Stable anchors** | xxh32 hashes survive nearby edits; re-targeting is one anchor change |
 | **Stale-read detection** | Hard error if file changed between read and patch |
 | **Block-aware ops** | `SWAP.BLK` / `DEL.BLK` / `INS.BLK.POST` for brace-delimited, indent-based, and Ruby `def…end` blocks |
@@ -95,19 +106,25 @@ AI coding agents (`str_replace`, `sed`, bespoke edit LLM tools) routinely botch 
 ```bash
 # 1. Read a file — every line gets a hash
 hashline read src/app.ts
+# src/app.ts#1A2B
+# 1:a1|import { verify } from 'jwt'
+# 2:b2|const token = req.headers.authorization
+# 3:c3|if (!verify(token, SECRET)) throw 401
+# 4:d4|return decode(token)
 
-# ──[src/app.ts#1A2B]─────────────────────────────
-# 1:a1| import { verify } from 'jwt'
-# 2:b2| const token = req.headers.authorization
-# 3:c3| if (!verify(token, SECRET)) throw 401
-# 4:d4| return decode(token)
-
-# 2. Build a patch using the anchor
+# 2. Build a patch using the anchor (compact output)
 hashline patch src/app.ts 'SWAP 3:c3:
 +  if (!token) throw new AuthError("missing token")'
+# OK src/app.ts#7f2a edits=1 changed=1
+# ~3:e5|  if (!token) throw new AuthError("missing token")
 
-# 3. Apply — atomic write, no partial file
-#    File is updated in-place with a temp-file+rename
+# 3. Human-readable mode (full file after patch)
+hashline patch src/app.ts --verbose 'SWAP 4:d4:
++  return decode(token)'
+
+# 4. Structured JSON output
+hashline patch src/app.ts --json 'SWAP 3:c3:
++  if (!token) throw new AuthError("missing token")'
 ```
 
 ---
@@ -116,6 +133,7 @@ hashline patch src/app.ts 'SWAP 3:c3:
 
 | Principle | Rationale |
 |---|---|
+| **Agent-first output** | Default output is compact, token-minimal, machine-readable. `--verbose` for human debugging. |
 | **Anchors over content matching** | xxh32 hashes are stable, short, and easy for agents to copy. Re-targeting after an edit is a single anchor change. |
 | **Stale-read is a hard error** | If the file changed between `read` and `patch`, `hashline` refuses — the agent must re-read and re-anchor. Better fail-fast than corrupt. |
 | **Block awareness** | Brace-delimited, indentation-based, and Ruby `def…end` block ops eliminate the "find the closing brace" problem that LLMs struggle with. |

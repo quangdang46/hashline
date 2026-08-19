@@ -155,6 +155,39 @@ pub enum BlockOp {
     InsertBefore,
 }
 
+// ---------------------------------------------------------------------------
+// ChangeSet — shared mutation result for compact/verbose/JSON/MCP output
+// ---------------------------------------------------------------------------
+
+/// A single line that was changed (modified or inserted) during a patch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChangedLine {
+    /// 1-indexed line number in the **result** file.
+    pub line: usize,
+    /// xxh32 short hash (2-char hex) of the new content.
+    pub hash: String,
+    /// The new line content.
+    pub content: String,
+}
+
+/// What changed after a patch application. Single source of truth consumed
+/// by CLI compact text, CLI verbose, JSON, and MCP renderers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChangeSet {
+    /// Number of edit operations parsed and applied.
+    pub edits_applied: usize,
+    /// Lines that existed but had content changed (SWAP).
+    pub modified: Vec<ChangedLine>,
+    /// Lines that were inserted (INS.HEAD/INS.TAIL/INS.POST/INS.PRE).
+    pub inserted: Vec<ChangedLine>,
+    /// Original 1-indexed line numbers that were deleted.
+    pub deleted: Vec<usize>,
+    /// xxh3-64 file-level hash (4-char hex) of the final text.
+    pub file_hash: String,
+    /// Total line count after patch.
+    pub line_count: usize,
+}
+
 /// Per-patch clipboard carrying lines captured by `CUT` ops so later `PUT`
 /// ops in the same patch can paste them. Lives for the duration of a single
 /// patch application and does not persist across patch calls.
