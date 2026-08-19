@@ -532,6 +532,23 @@ main() {
 
     maybe_add_path
 
+    # Also replace any existing `hashline` on PATH at a different location
+    # so `hashline --version` always shows the latest version.
+    local existing_bin
+    existing_bin=$(command -v "$BINARY_NAME" 2>/dev/null || true)
+    if [ -n "$existing_bin" ]; then
+        local existing_dir
+        existing_dir=$(dirname "$existing_bin")
+        if [ "$(cd "$existing_dir" && pwd)" != "$(cd "$DEST" && pwd)" ]; then
+            log_info "also updating existing $BINARY_NAME at $existing_bin"
+            if cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+                log_ok "replaced $existing_bin"
+            else
+                log_warn "could not update $existing_bin — you may need sudo or remove it manually"
+            fi
+        fi
+    fi
+
     if [ "$VERIFY" -eq 1 ]; then
         "$DEST/$BINARY_NAME" --version >/dev/null
     fi

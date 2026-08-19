@@ -249,10 +249,10 @@ function Install-BinaryAtomic {
 
     # Phase 2: the old binary is likely in use. Windows allows renaming a
     # running executable even though it cannot be deleted/overwritten.
-    # Rename the old file out of the way, then move the new one into place.
-    # The renamed *.{pid}.old file is unlinked when the last handle closes.
+    # Rename the old file out of the way, then copy the new one into place.
+    # Use Copy-Item (not Move-Item) because Copy-Item works on locked files.
     Rename-Item -LiteralPath $DestPath -NewName $oldName -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $tmp -Destination $DestPath -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $tmp -Destination $DestPath -Force -ErrorAction SilentlyContinue
 
     if (-not (Test-Path -LiteralPath $DestPath)) {
         # Restore the old binary and die.
@@ -485,6 +485,46 @@ The version you asked for ($Version) does not include $archive. Either:
     if (-not $bin) { Die "$BinaryFile not found inside $archive" }
 
     Install-BinaryAtomic -SourcePath $bin.FullName -DestPath (Join-Path $Dest $BinaryFile)
+
+    # -----------------------------------------------------------------------
+    # Also replace any existing `hashline` on PATH at a different location
+    # so `hashline --version` always shows the latest version.
+    # On Windows, a running .exe can't be overwritten but CAN be renamed,
+    # so we rename the old one out of the way first.
+    # -----------------------------------------------------------------------
+    $existingOnPath = Get-Command $BinaryName -ErrorAction SilentlyContinue
+    if ($existingOnPath) {
+        $existingDir = Split-Path $existingOnPath.Source -Parent
+        $existingDirNorm = $existingDir.TrimEnd('\').ToLower()
+        $destDirNorm = $Dest.TrimEnd('\').ToLower()
+        if ($existingDirNorm -ne $destDirNorm) {
+            Write-Info "also updating existing $BinaryName at $($existingOnPath.Source)"
+            $srcFile = Join-Path $Dest $BinaryFile
+            $dstFile = $existingOnPath.Source
+            $tmpFile = "$dstFile.tmp.$PID"
+            # Copy new binary to a temp name next to the old one
+            try {
+                Copy-Item -LiteralPath $srcFile -Destination $tmpFile -Force
+                # Rename old binary out of the way (Windows allows renaming running exes)
+                $oldFile = "$dstFile.old.$PID"
+                Rename-Item -LiteralPath $dstFile -NewName $oldFile -ErrorAction SilentlyContinue
+                # Copy new binary into place (Copy-Item works on locked files)
+                Copy-Item -LiteralPath $tmpFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $dstFile) {
+                    Write-Ok "replaced $dstFile"
+                    Remove-Item -LiteralPath $oldFile -Force -ErrorAction SilentlyContinue
+                } else {
+                    # Restore old binary if move failed
+                    Move-Item -LiteralPath $oldFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
+                    Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+                }
+            } catch {
+                Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
+                Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+            }
+        }
+    }
 
     Update-UserPath
 
