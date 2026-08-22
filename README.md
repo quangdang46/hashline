@@ -183,7 +183,7 @@ they never reimplement hashing, staleness detection, or merge recovery in TypeSc
 | Package | Host | Tools | Install |
 |---|---|---|---|
 | [`integration/pi-hashline`](integration/pi-hashline) | pi-coding-agent | `read`, `edit`, `write`, `find_block`, `remove_file`, `rename_file` | `pi install npm:hashline-pi` |
-| [`integration/opencode-plugin`](integration/opencode-plugin) | OpenCode | `hashline_read`, `hashline_edit` | `opencode.json` `plugin: ["@scope/hashline-opencode-plugin"]` + disable native `edit` |
+| [`integration/opencode-plugin`](integration/opencode-plugin) | OpenCode | `hashline_read`, `hashline_edit`, `hashline_write`, `hashline_find_block`, `hashline_remove_file`, `hashline_rename_file` | `npm i hashline-opencode-plugin` + `opencode.json` `"plugin": ["hashline-opencode-plugin"]`, disable native `edit` |
 
 ### pi-coding-agent guide
 
@@ -209,7 +209,7 @@ Full details: [`integration/pi-hashline/README.md`](integration/pi-hashline/READ
 | Package | Install |
 |---|---|
 | [`integration/opencode-plugin`](integration/opencode-plugin) | `opencode.json` `plugin: ["@scope/hashline-opencode-plugin"]` + disable native `edit` |
-See [`integration/opencode-plugin/README.md`](integration/opencode-plugin/README.md).
+See [`integration/opencode-plugin/README.md`](integration/opencode-plugin/README.md) — published as [`hashline-opencode-plugin`](https://www.npmjs.com/package/hashline-opencode-plugin) on npm.
 
 Both packages require the `hashline` binary on `PATH` (or `HASHLINE_BIN`). See each package's
 `README.md` and [`integration/CONTRACT.md`](integration/CONTRACT.md) for the exact CLI contract.

@@ -1,7 +1,7 @@
 {
-  "name": "@hashline/hashline-opencode-plugin",
+  "name": "hashline-opencode-plugin",
   "version": "0.1.0",
-  "description": "Hashline plugin for OpenCode — thin wrapper that shells out to the hashline binary",
+  "description": "Hashline plugin for OpenCode \u2014 thin wrapper that shells out to the hashline binary",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

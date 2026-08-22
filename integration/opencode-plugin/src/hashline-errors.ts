@@ -27,6 +27,26 @@ export interface FormattedHashlineError {
   kind: ErrorKind;
 }
 
+const COMPACT_KIND_MAP: Record<string, ErrorKind> = {
+  STALE_ANCHOR: "stale_anchor",
+  STALE_FILE: "stale_anchor",
+  EMPTY_PATCH: "empty_patch",
+  NOOP_LOOP: "empty_patch",
+  AMBIGUOUS_HASH: "ambiguous_hash",
+  HASH_NOT_FOUND: "hash_not_found",
+  INVALID_ANCHOR: "invalid_anchor",
+  BLOCK_UNRESOLVED: "invalid_anchor",
+};
+
+/** Compact ERR line: `ERR KIND key=val...` (default stderr since binary 0.9.12). */
+const COMPACT_ERR = /^ERR ([A-Z_]+)(.*)$/m;
+
+/** Extract a single `key=value` pair from a compact ERR argument string. */
+function errArg(args: string, key: string): string | undefined {
+  const match = args.match(new RegExp(`(?:\\s|^)${key}=(\\S+)`));
+  return match?.[1];
+}
+
 /** Substring signatures for pretty-mode stderr detection. */
 const SIGNATURES: Array<[ErrorKind, RegExp]> = [
   ["stale_anchor", /changed since last read/i],
@@ -82,16 +102,28 @@ export function formatHashlineError(
 ): FormattedHashlineError {
   const trimmed = stderr.trim();
 
-  // Structured JSON error (binary invoked with --json).
-  const payload = parseErrorPayload(stderr);
-  if (payload) {
-    const kind = mapErrorKind(payload);
-    const hint = payload.hint ? `\n${payload.hint}` : "";
-    return {
-      text: `Error: ${payload.error}${hint}`,
-      kind,
-    };
+  // Compact-mode stderr: `ERR KIND key=val...` + optional `HINT ...`.
+  const compact = trimmed.match(COMPACT_ERR);
+  if (compact) {
+    const kindName = compact[1] as keyof typeof COMPACT_KIND_MAP;
+    const args = compact[2] ?? "";
+    const hintLine = trimmed
+      .split("\n")
+      .find((line) => line.startsWith("HINT "));
+    const hint = hintLine?.slice("HINT ".length);
+    const diag = hint
+      ? `Error: ERR ${kindName}${args}\n${hint}`
+      : `Error: ERR ${kindName}${args}`;
+    const kind = COMPACT_KIND_MAP[kindName] ?? "io";
+    const teaching =
+      kind === "stale_anchor" || kind === "hash_not_found"
+        ? `\n${RE_READ_HINT}`
+        : kind === "ambiguous_hash"
+          ? "\nRe-read; use the exact N:hh anchor."
+          : "";
+    return { text: `${diag}${teaching}`, kind };
   }
+
 
   // Pretty-mode stderr: `Error: ...` / `Hint: ...`.
   if (trimmed.length > 0) {

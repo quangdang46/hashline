@@ -97,7 +97,8 @@ The anchor ${e5} uniquely identifies line 5 by its content hash. Pass it to \`ha
 
 <operations>
 Each edit in the \`edits\` array has:
-- **op**: \`"replace"\` | \`"append"\` | \`"prepend"\` | \`"delete"\`
+- **op**: \"replace"\ | \"append"\ | \"prepend"\ | \"delete"\ | \"replace_block"\ | \"delete_block"\ | \"insert_block_after"\
+- **pos** for block ops: plain 1-based line number anywhere inside the target block (tree-sitter resolves the whole block; not an anchor)
 - **pos**: \`"N:hh"\` — anchor of the line to anchor on
 - **end**: \`"N:hh"\` — inclusive end anchor for range operations (optional)
 - **lines**: new content lines (optional; omit/empty for delete)
@@ -117,7 +118,20 @@ Each edit in the \`edits\` array has:
 **\`op: "delete"\`** — Delete a line or inclusive range by anchor.
   - \`{ op: "delete", pos: ${e5} }\`
   - \`{ op: "delete", pos: ${e8}, end: ${e12} }\`
+
+**Block ops** — whole-block edits resolved by tree-sitter. \`pos\` is a plain 1-based
+line number anywhere inside the block (not an anchor). Use \`hashline_find_block\` first.
+- **\`replace_block\`** — replace the entire block: \`{ op: "replace_block", pos: 12, lines: [...] }\`
+- **\`delete_block\`** — delete the entire block: \`{ op: "delete_block", pos: 12 }\`
+- **\`insert_block_after\`** — insert lines as a new block after the block containing \`pos\`.
 </operations>
+
+<tools>
+Beyond read/edit you also have: \`hashline_write\` (create/fully replace a file; returns fresh anchors),
+\`hashline_find_block\` (show the tree-sitter block around a line),
+\`hashline_remove_file\` (delete a file), \`hashline_rename_file\` (move/rename; force overwrites).
+Prefer these over shell commands for the whole file lifecycle.
+</tools>
 
 <rules>
 - **Anchors are content hashes** — they are stable only while the line is unchanged. Never reuse anchors from an earlier read after any edit.

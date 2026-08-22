@@ -78,7 +78,7 @@ maybe("e2e against the hashline binary", () => {
     expect(res.exitCode).toBe(1);
     const fmt = formatHashlineError(res.stderr, res.exitCode);
     expect(fmt.kind).toBe("stale_anchor");
-    expect(fmt.text).toMatch(/expected hash ff/i);
+    expect(fmt.text).toMatch(/expected=ff/i); // compact ERR key=val form
 
     await rm(dir, { recursive: true, force: true });
   });

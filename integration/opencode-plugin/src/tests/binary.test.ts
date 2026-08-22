@@ -105,8 +105,8 @@ describe("resolveHashlineBin", () => {
     if (old !== undefined) process.env.HASHLINE_BIN = old;
   });
 
-  test("MIN_HASHLINE_VERSION is pinned to 0.9.1", () => {
-    expect(MIN_HASHLINE_VERSION).toBe("0.9.1");
+  test("MIN_HASHLINE_VERSION is pinned to 0.9.12", () => {
+    expect(MIN_HASHLINE_VERSION).toBe("0.9.12");
   });
 });
 

@@ -1,26 +1,33 @@
-# @hashline/hashline-opencode-plugin
+# hashline-opencode-plugin
 
 Hashline plugin for [OpenCode](https://opencode.ai) — a **thin wrapper** that
 shells out to the [hashline](https://github.com/quangdang46/hashline) binary.
 It does **not** reimplement hashing, staleness detection, or merge recovery:
-the Rust binary (`crates/core`, v0.9.1) is the single source of truth.
+the Rust binary (`crates/core`, >= 0.9.12) is the single source of truth.
 
-The plugin registers two tools that replace the built-in `read`/`edit` flow:
+The plugin registers six tools covering the full file lifecycle:
 
 | Tool | Purpose |
 |------|---------|
-| `hashline_read` | Read a file rendered as `N:hh|content` lines (binary-native hashline format). |
-| `hashline_edit` | Edit a file using `N:hh` anchors. All anchors are validated atomically by the binary; stale anchors are rejected with a mismatch error. |
+| `hashline_read` | Read a file rendered as `N:hh|content` lines (binary-native format). |
+| `hashline_edit` | Edit via `N:hh` anchors; batched ops validated atomically; stale anchors rejected. Supports tree-sitter block ops (`replace_block`, `delete_block`, `insert_block_after`). |
+| `hashline_write` | Create a new file or fully replace one (pass `force`). Response includes fresh anchors. |
+| `hashline_find_block` | Show the syntactic block around a line — pair with block ops. |
+| `hashline_remove_file` | Delete a file (explicit, auditable). |
+| `hashline_rename_file` | Move/rename a file (`force` overwrites). |
 
 `hashline_grep` is **deferred** — search is owned by the sibling
 [`ffs`](https://github.com/quangdang46/fast_file_search) repo, not hashline.
 
 ## Install
 
-Requires the `hashline` binary on `PATH` (or `HASHLINE_BIN`), version `>= 0.9.1`:
+Requires the `hashline` binary on `PATH` (or `HASHLINE_BIN`), version `>= 0.9.12`
+(agent-first compact output):
 
 ```bash
-cargo install hashline        # or download from the hashline releases page
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/hashline/main/install.sh" | bash   # macOS / Linux
+irm "https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1" | iex          # Windows
+cargo install hashline                                                                       # or via cargo
 ```
 
 Add the plugin to `opencode.json`. Use the **`plugin` array** form, and disable
@@ -28,7 +35,7 @@ the built-in `edit` tool so the model is forced through `hashline_edit`:
 
 ```jsonc
 {
-  "plugin": ["@hashline/hashline-opencode-plugin"],
+  "plugin": ["hashline-opencode-plugin"],
   "agent": {
     "build": {
       "tools": { "edit": false },
@@ -42,7 +49,7 @@ Local development (instead of publishing under a real scope):
 
 ```jsonc
 {
-  "plugin": ["./.opencode/node_modules/@hashline/hashline-opencode-plugin/dist/index.js"],
+  "plugin": ["./.opencode/node_modules/hashline-opencode-plugin/dist/index.js"],
   "agent": {
     "build": {
       "tools": { "edit": false }

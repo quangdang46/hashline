@@ -217,7 +217,176 @@ const plugin: Plugin = async (ctx) => {
             return `${prefix}${fmt.text}${reRead}`;
           }
 
-          return `Patch applied to ${args.path}. Re-read with hashline_read for fresh anchors.`;
+          // Compact mode (binary >= 0.9.12): stdout carries the OK header +
+          // changed-line rows (~modified / +inserted / -deleted).
+          const changedRows = result.stdout.trim();
+          return `Patch applied to ${args.path}.${changedRows ? `\n${changedRows}` : ""}\nRe-read with hashline_read for fresh anchors.`;
+        },
+      }),
+
+      // ─── hashline_write ──────────────────────────────────────────────
+      hashline_write: tool({
+        description:
+          "Create a new file or fully replace an existing one via the hashline binary. " +
+          "The response includes fresh N:hh anchors so follow-up hashline_edit calls work immediately. " +
+          "Prefer hashline_edit for changing part of an existing file.",
+        args: {
+          path: tool.schema.string().describe("Path to the file"),
+          content: tool.schema
+            .string()
+            .describe("Full file content, written verbatim"),
+          force: tool.schema
+            .boolean()
+            .optional()
+            .describe("Overwrite if the file already exists (default false)"),
+        },
+        async execute(args, context) {
+          const filePath = resolvePath(args.path, getBaseDir(context));
+          const argv = ["write", filePath, args.content];
+          if (args.force) argv.push("--force");
+          let result;
+          try {
+            result = await runHashline([...argv, "--json"], undefined, context.abort, {
+              cwd: baseDir,
+            });
+          } catch {
+            return `Error: ${INSTALL_HINT}`;
+          }
+          if (result.exitCode !== 0) {
+            const fmt = formatHashlineError(result.stderr, result.exitCode);
+            if (!args.force && result.stderr.includes("already exists")) {
+              return `Error: ${args.path} already exists. Re-read it and use hashline_edit with N:hh anchors for changes, or pass force: true to replace it entirely.`;
+            }
+            return fmt.text.startsWith("Error:")
+              ? fmt.text
+              : `Error: ${fmt.text}`;
+          }
+          try {
+            const parsed = parseReadJson(result.stdout);
+            const anchors = parsed.lines
+              .map((l) => `${l.n}:${l.hash}|${l.content}`)
+              .join("\n");
+            return `Wrote ${args.path} (#${parsed.hash}).\n--- Anchors ---\n${anchors}`;
+          } catch {
+            return `Wrote ${args.path}.`;
+          }
+        },
+      }),
+
+      // ─── hashline_find_block ─────────────────────────────────────────
+      hashline_find_block: tool({
+        description:
+          "Show the syntactic block (function/class/if body — tree-sitter aware) containing a line. " +
+          "Returns the block's N:hh anchors; pair with hashline_edit replace_block/delete_block ops.",
+        args: {
+          path: tool.schema.string().describe("Path to the file"),
+          pos: tool.schema
+            .number()
+            .describe("1-based line number inside the target block"),
+          anchor: tool.schema
+            .string()
+            .describe("2-char hash of that line from hashline_read output"),
+        },
+        async execute(args, context) {
+          const filePath = resolvePath(args.path, getBaseDir(context));
+          let result;
+          try {
+            result = await runHashline(
+              ["find-block", filePath, `${args.pos}:${args.anchor}`, "--json"],
+              undefined,
+              context.abort,
+              { cwd: baseDir },
+            );
+          } catch {
+            return `Error: ${INSTALL_HINT}`;
+          }
+          if (result.exitCode !== 0) {
+            const fmt = formatHashlineError(result.stderr, result.exitCode);
+            return fmt.text.startsWith("Error:")
+              ? fmt.text
+              : `Error: ${fmt.text}`;
+          }
+          try {
+            const parsed = JSON.parse(result.stdout) as {
+              language?: string;
+              line_count?: number;
+              block_lines?: Array<{ n: number; hash: string; content: string }>;
+            };
+            const rows = (parsed.block_lines ?? [])
+              .map((l) => `${l.n}:${l.hash}|${l.content}`)
+              .join("\n");
+            return `Block in ${args.path} (${parsed.language ?? "unknown"}, ${parsed.line_count ?? "?"} lines total):\n${rows || "[empty]"}`;
+          } catch {
+            return `Error: hashline find-block --json returned an unexpected payload`;
+          }
+        },
+      }),
+
+      // ─── hashline_remove_file ────────────────────────────────────────
+      hashline_remove_file: tool({
+        description:
+          "Delete a file via the hashline binary. Prefer this over shell rm so deletions stay explicit.",
+        args: {
+          path: tool.schema.string().describe("Path to the file to delete"),
+        },
+        async execute(args, context) {
+          const filePath = resolvePath(args.path, getBaseDir(context));
+          let result;
+          try {
+            result = await runHashline(
+              ["remove", filePath, "--json"],
+              undefined,
+              context.abort,
+              { cwd: baseDir },
+            );
+          } catch {
+            return `Error: ${INSTALL_HINT}`;
+          }
+          if (result.exitCode !== 0) {
+            const fmt = formatHashlineError(result.stderr, result.exitCode);
+            return fmt.text.startsWith("Error:")
+              ? fmt.text
+              : `Error: ${fmt.text}`;
+          }
+          return `Removed ${args.path}.`;
+        },
+      }),
+
+      // ─── hashline_rename_file ────────────────────────────────────────
+      hashline_rename_file: tool({
+        description:
+          "Move/rename a file via the hashline binary. Pass force to overwrite an existing destination.",
+        args: {
+          path: tool.schema.string().describe("Current file path"),
+          to: tool.schema.string().describe("New path"),
+          force: tool.schema
+            .boolean()
+            .optional()
+            .describe("Overwrite destination if it exists (default false)"),
+        },
+        async execute(args, context) {
+          const src = resolvePath(args.path, getBaseDir(context));
+          const dst = resolvePath(args.to, getBaseDir(context));
+          const argv = ["rename", src, dst];
+          if (args.force) argv.push("--force");
+          let result;
+          try {
+            result = await runHashline([...argv, "--json"], undefined, context.abort, {
+              cwd: baseDir,
+            });
+          } catch {
+            return `Error: ${INSTALL_HINT}`;
+          }
+          if (result.exitCode !== 0) {
+            const fmt = formatHashlineError(result.stderr, result.exitCode);
+            if (!args.force && result.stderr.includes("already exists")) {
+              return `Error: ${args.to} already exists. Pass force: true to overwrite it.`;
+            }
+            return fmt.text.startsWith("Error:")
+              ? fmt.text
+              : `Error: ${fmt.text}`;
+          }
+          return `Renamed ${args.path} -> ${args.to}.`;
         },
       }),
     },

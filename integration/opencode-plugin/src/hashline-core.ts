@@ -15,7 +15,7 @@
 import { spawn } from "node:child_process";
 
 /** Minimum hashline binary version this package is compatible with. */
-export const MIN_HASHLINE_VERSION = "0.9.1";
+export const MIN_HASHLINE_VERSION = "0.9.12";
 
 /** Result of a spawned hashline invocation. */
 export interface HashlineRunResult {

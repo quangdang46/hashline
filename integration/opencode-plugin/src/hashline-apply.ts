@@ -31,9 +31,10 @@
 
 /** Edit operation dialect understood by the plugin tools. */
 export interface EditOperation {
-  op: "replace" | "append" | "prepend" | "delete";
+  op: "replace" | "append" | "prepend" | "delete" | "replace_block" | "delete_block" | "insert_block_after";
   /** Anchor `N:hh` (from hashline_read output). Required for replace/delete, optional for append/prepend. */
-  pos?: string;
+  /** Anchor `N:hh` for line ops; plain 1-based line number (number) for block ops. */
+  pos?: string | number;
   /** Inclusive end anchor `N:hh` for range operations. */
   end?: string;
   /** New content lines. Omit/empty for delete. */
@@ -82,6 +83,21 @@ export function translateEdit(edit: EditOperation): string[] {
     case "delete": {
       const anchor = end ? `${pos}..${end}` : pos!;
       return [`DEL ${anchor}`];
+    }
+    case "replace_block": {
+      const n = typeof pos === "number" ? pos : Number.parseInt(String(pos), 10);
+      if (!Number.isInteger(n) || n < 1 || payload.length === 0) return [];
+      return [renderBody(`SWAP.BLK ${n}`, payload)];
+    }
+    case "delete_block": {
+      const n = typeof pos === "number" ? pos : Number.parseInt(String(pos), 10);
+      if (!Number.isInteger(n) || n < 1) return [];
+      return [`DEL.BLK ${n}`];
+    }
+    case "insert_block_after": {
+      const n = typeof pos === "number" ? pos : Number.parseInt(String(pos), 10);
+      if (!Number.isInteger(n) || n < 1 || payload.length === 0) return [];
+      return [renderBody(`INS.BLK.POST ${n}`, payload)];
     }
   }
 }
