@@ -81,6 +81,10 @@ const v2Plugin = {
     });
 
     // Tools: re-register each v1 hook tool under the same name.
+    // The v1 tool bodies resolve paths via context.directory/worktree — the
+    // plugin-level baseDir captured at factory time. Forward the live ToolContext
+    // (id/sessionID/agent/messageID per opencode2 docs) plus those fields.
+    const baseDir = process.cwd();
     for (const [name, def] of Object.entries(hooks.tool)) {
       const execute = def.execute;
       await ctx.tool.transform((tools) => {
@@ -88,8 +92,14 @@ const v2Plugin = {
           name,
           description: def.description,
           input: def.args as never,
-          execute: async (input: unknown) => ({
-            content: await execute(input, { metadata: () => {} }),
+          execute: async (input: unknown, toolCtx: unknown) => ({
+            content: await execute(input, {
+              ...((toolCtx ?? {}) as Record<string, unknown>),
+              abort: undefined,
+              directory: baseDir,
+              worktree: baseDir,
+              metadata: () => {},
+            } as never),
           }),
         } as never);
       });
