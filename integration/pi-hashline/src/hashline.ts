@@ -5,7 +5,7 @@
  * the single source of truth. This module only resolves the binary path,
  * spawns it (without a shell), and parses its documented output shapes.
  *
- * CLI contract: integration/CONTRACT.md (pinned to hashline >= 0.9.1).
+ * CLI contract: integration/CONTRACT.md (pinned to hashline >= 0.9.12).
  */
 
 import { spawn } from "node:child_process";
@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getBinaryPath } from "./config.js";
 
-export const MIN_HASHLINE_VERSION = "0.9.1";
+export const MIN_HASHLINE_VERSION = "0.9.12";
 
 export type HashlineRun = {
   stdout: string;
@@ -177,6 +177,38 @@ export function parseReadJson(stdout: string): ReadResult {
 /** Split a ReadResult's lines into display rows `N:hh|content`. */
 export function formatReadLines(parsed: ReadResult): string[] {
   return parsed.lines.map((l) => `${l.n}:${l.hash}|${l.content}`);
+}
+
+/**
+ * Parse the compact (default, 0.9.12+) patch success output:
+ * `OK <path>#<4hex> edits=<n> changed=<n>` followed by
+ * `~N:hh|content` / `+N:hh|content` / `-N` changed-line rows.
+ * Returns null when stdout is not compact patch output.
+ */
+export type CompactPatchResult = {
+  fileHash: string;
+  editsApplied: number;
+  changedCount: number;
+  rows: string[];
+};
+
+export function parseCompactPatchOutput(
+  stdout: string,
+): CompactPatchResult | null {
+  const lines = stdout.split("\n").filter((line) => line.length > 0);
+  const header = lines[0]?.match(
+    /^OK (.+)#([0-9a-fA-F]{4}) edits=(\d+) changed=(\d+)$/,
+  );
+  if (!header) {
+    return null;
+  }
+  return {
+    // Path may contain '#'; keep everything before the final 4-hex tag.
+    fileHash: header[2]!,
+    editsApplied: Number(header[3]),
+    changedCount: Number(header[4]),
+    rows: lines.slice(1),
+  };
 }
 
 /**

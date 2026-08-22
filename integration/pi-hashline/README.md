@@ -10,7 +10,7 @@ formatting.
 
 ## Install
 
-Prerequisite: the `hashline` binary (>= 0.9.1) on PATH, or pointed at by config.
+Prerequisite: the `hashline` binary (>= 0.9.12) on PATH, or pointed at by config. Requires the agent-first compact output introduced in 0.9.12.
 
 ```bash
 cargo install hashline            # or build from this repo: cargo build -p hashline --release

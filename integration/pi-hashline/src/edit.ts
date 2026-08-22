@@ -17,6 +17,7 @@ import { resolveToCwd } from "./path-utils.js";
 import {
   runHashline,
   parseReadJson,
+  parseCompactPatchOutput,
   formatReadLines,
   type ReadResult,
 } from "./hashline.js";
@@ -261,8 +262,15 @@ export function registerEditTool(pi: ExtensionAPI): void {
           anchors = "";
         }
       }
-
-      const applied = stdout.trim();
+      // Compact mode (0.9.12+): stdout carries the OK header + changed rows.
+      // Fall back to raw stdout when the shape differs (older binaries).
+      const compact = parseCompactPatchOutput(stdout);
+      const applied = compact
+        ? [
+            `OK #${compact.fileHash} edits=${compact.editsApplied} changed=${compact.changedCount}`,
+            ...compact.rows,
+          ].join("\n")
+        : stdout.trim();
       return textResult(
         `Patch applied.${applied ? `\n${applied}` : ""}${anchors}`,
         {

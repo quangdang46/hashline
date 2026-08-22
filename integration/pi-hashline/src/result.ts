@@ -51,9 +51,19 @@ const REREAD_HINT =
 
 /**
  * Map a failed hashline invocation (exit != 0) to a structured tool error.
- * The binary's own stderr is authoritative; this only classifies it and appends
- * teaching text. Never re-implements hashing/merge/recovery.
+ * Accepts both the compact `ERR KIND key=val...` + `HINT ...` stderr (default
+ * output mode since 0.9.12) and the legacy verbose `Error: ...`/`Hint: ...`
+ * form. The binary's own diagnostics are authoritative; this only classifies
+ * them and appends teaching text. Never re-implements hashing/merge/recovery.
  */
+const COMPACT_ERR = /^ERR ([A-Z_]+)(.*)$/;
+
+/** Extract a single `key=value` pair from a compact ERR argument string. */
+function errArg(args: string, key: string): string | undefined {
+  const match = args.match(new RegExp(`(?:\\s|^)${key}=(\\S+)`));
+  return match?.[1];
+}
+
 export function formatHashlineError(
   stderr: string,
   exitCode: number,
@@ -61,6 +71,47 @@ export function formatHashlineError(
   const text = stderr.trim();
   const lower = text.toLowerCase();
 
+  // Compact mode (default since 0.9.12): first line is `ERR KIND key=val...`,
+  // optional second line `HINT ...`. Kind names match the --json taxonomy.
+  const compact = text.match(COMPACT_ERR);
+  if (compact) {
+    const kind = compact[1]!;
+    const args = compact[2] ?? "";
+    const hint = text
+      .split("\n")
+      .find((line) => line.startsWith("HINT "))
+      ?.slice("HINT ".length);
+    const diag = hint
+      ? `ERR ${kind}${args}\nHINT: ${hint}`
+      : `ERR ${kind}${args}`;
+    switch (kind) {
+      case "STALE_ANCHOR":
+      case "STALE_FILE":
+        return { kind: "stale_anchor", text: `${diag}\n${REREAD_HINT}` };
+      case "EMPTY_PATCH": {
+        const reason = errArg(args, "reason");
+        return {
+          kind: "empty_patch",
+          text: `${diag}\nPatch was empty${reason ? `: ${reason}` : " — nothing to do."}`,
+        };
+      }
+      case "AMBIGUOUS_HASH":
+        return {
+          kind: "ambiguous_hash",
+          text: `${diag}\nRe-read; use the exact N:hh anchor.`,
+        };
+      case "HASH_NOT_FOUND":
+        return { kind: "hash_not_found", text: `${diag}\n${REREAD_HINT}` };
+      case "INVALID_ANCHOR":
+        return { kind: "out_of_range", text: diag };
+      case "BINARY_FILE":
+        return { kind: "binary_file", text: diag };
+      default:
+        return { kind: "io", text: diag };
+    }
+  }
+
+  // Verbose fallback (0.9.11- binaries or --verbose runs): legacy Error:/Hint: text.
   if (exitCode === 1) {
     if (
       lower.includes("changed since last read") ||

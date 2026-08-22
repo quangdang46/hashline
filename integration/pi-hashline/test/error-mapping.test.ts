@@ -16,6 +16,46 @@ test("stale anchor pretty stderr maps to stale_anchor with re-read hint", () => 
   assert.match(err.text, /Re-read the file with `read`/);
 });
 
+test("compact ERR STALE_ANCHOR stderr maps to stale_anchor", () => {
+  const stderr =
+    "ERR STALE_ANCHOR file=s.rs line=2 expected=5b actual=38\nHINT re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor";
+  const err = formatHashlineError(stderr, 1);
+  assert.equal(err.kind, "stale_anchor");
+  assert.match(err.text, /ERR STALE_ANCHOR/);
+  assert.match(err.text, /Re-read the file with `read`/);
+});
+
+test("compact ERR EMPTY_PATCH maps to empty_patch with reason", () => {
+  const err = formatHashlineError(
+    "ERR EMPTY_PATCH reason=no operations matched",
+    1,
+  );
+  assert.equal(err.kind, "empty_patch");
+  assert.match(err.text, /no operations matched/);
+});
+
+test("compact ERR AMBIGUOUS_HASH maps to ambiguous_hash", () => {
+  const err = formatHashlineError(
+    "ERR AMBIGUOUS_HASH hash=aa count=2 lines=1, 3 file=x.rs\nHINT use a line-qualified hash like '2:f1' to disambiguate",
+    1,
+  );
+  assert.equal(err.kind, "ambiguous_hash");
+});
+
+test("compact ERR HASH_NOT_FOUND maps to hash_not_found", () => {
+  const err = formatHashlineError(
+    "ERR HASH_NOT_FOUND hash=ff file=demo.txt",
+    1,
+  );
+  assert.equal(err.kind, "hash_not_found");
+  assert.match(err.text, /Re-read the file with `read`/);
+});
+
+test("compact ERR BINARY_FILE maps to binary_file and IO fallback", () => {
+  assert.equal(formatHashlineError("ERR BINARY_FILE", 1).kind, "binary_file");
+  assert.equal(formatHashlineError("ERR SOMETHING_NEW", 1).kind, "io");
+});
+
 test("stale anchor JSON stderr maps to stale_anchor", () => {
   const stderr = JSON.stringify({
     kind: "STALE_ANCHOR",

@@ -9,6 +9,7 @@ import {
   parseHashlineVersion,
   isVersionAtLeast,
   parseReadJson,
+  parseCompactPatchOutput,
 } from "../src/hashline.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +115,30 @@ test("parseHashlineVersion and version gate", () => {
     isVersionAtLeast({ major: 1, minor: 0, patch: 0 }, "0.9.1"),
     true,
   );
+});
+
+test("parseCompactPatchOutput parses OK header and changed rows", () => {
+  const out = [
+    "OK src/main.rs#7f2a edits=2 changed=3",
+    "~3:b1|let version = 1;",
+    '+6:5e|println!("done");',
+    "-9",
+  ].join("\n");
+  const parsed = parseCompactPatchOutput(out);
+  assert.ok(parsed);
+  assert.equal(parsed?.fileHash, "7f2a");
+  assert.equal(parsed?.editsApplied, 2);
+  assert.equal(parsed?.changedCount, 3);
+  assert.deepEqual(parsed?.rows, [
+    "~3:b1|let version = 1;",
+    '+6:5e|println!("done");',
+    "-9",
+  ]);
+});
+
+test("parseCompactPatchOutput returns null for non-compact output", () => {
+  assert.equal(parseCompactPatchOutput(""), null);
+  assert.equal(parseCompactPatchOutput("[x#abcd]\n1:9b|hi"), null);
 });
 
 test("golden fixture invariant: anchors are binary-native N:hh|content", () => {

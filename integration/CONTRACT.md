@@ -5,7 +5,7 @@ The single source of truth for hashes, staleness, and recovery is the **hashline
 pure subprocess glue — they spawn this binary and translate arguments/output. This document
 pins the exact contract both wrappers depend on. Golden fixtures live in `integration/fixtures/`.
 
-**Minimum binary version: `0.9.1`** (const `MIN_HASHLINE_VERSION` in both wrappers).
+**Minimum binary version: `0.9.12`** (const `MIN_HASHLINE_VERSION` in both wrappers).
 
 ---
 
@@ -59,19 +59,37 @@ hashline patch <file> '<patch>' --json
 
 Body rows are `+TEXT`; `+` alone = blank; `++`→`+`, `+-`→`-` escapes.
 
-### Exit codes (VERIFIED empirically against release binary 0.9.1)
+### Exit codes (VERIFIED empirically against release binary >= 0.9.12)
+### Default (compact) output — since 0.9.12 (BREAKING)
+Success:
+```text
+OK <path>#<4hex> edits=<n> changed=<n>
+~<line>:<hh>|content      # modified
++<line>:<hh>|content      # inserted
+-<line>                   # deleted
+```
+`write`: `OK <path>#<hash> lines=<n>`. `remove`: `OK <path>`. `rename`: `OK <src>><dst>`.
+`find-block`: `OK file=<p> lang=<l> lines=<n>` + block lines. Use `--verbose` for the old full-file dumps.
+Errors (stderr, exit 1):
+```text
+ERR KIND key=val...
+HINT <teaching hint>
+```
+`KIND` values match the `--json` kind list above (`STALE_ANCHOR file= line= expected= actual=`,
+`EMPTY_PATCH reason=`, `HASH_NOT_FOUND hash= file=`, `AMBIGUOUS_HASH hash= count= lines= file=`,
+`INVALID_ANCHOR anchor=`, `BINARY_FILE`, `IO`, ...). Legacy `Error:`/`Hint:` text is the
+`--verbose` form; wrappers should accept both.
 - `0` — success, no-op patch, or `*** Abort`. stdout = data; stderr = diagnostics.
 - `1` — **any error**, including logical ones: stale anchor, empty patch, invalid anchor,
   ambiguous hash, infrastructure failure (I/O, invalid UTF-8, binary file).
-  **Wrappers must treat exit 1 as "something failed"; parse stderr (`Error:`/`Hint:`) to
-  classify and surface a teaching tool error.** Do NOT assume exit 0 == recoverable.
+  **Wrappers must treat exit 1 as "something failed" and classify stderr.** Accept both compact
+  `ERR KIND ...`/`HINT ...` and verbose `Error:`/`Hint:` forms; do NOT assume exit 0 == recoverable.
 
-### Stale anchor (the critical case)
+### Stale anchor (the critical case — verbose form; compact is `ERR STALE_ANCHOR file= line= expected= actual=`)
 ```text
 Error: line 2 content changed since last read in <path> (expected hash 5b, got 38)
 Hint: re-read the file with `hashline read <file>`; ...
 ```
-**Exit 1.** Wrapper maps this to a `stale_anchor` kind and tells the model to re-read.
 
 ### `--json` errors
 ```json

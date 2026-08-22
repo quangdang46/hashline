@@ -25,4 +25,4 @@ Rules:
 - `lines` is literal file content with exact indentation. Never include `N:hh|` prefixes, diff `+`/`-` markers, or a copy of a neighboring line — the `|content` part of an anchor is context for you, not payload, and repeating a boundary line duplicates it in the file.
 - Anchors are opaque: copy them exactly, never compute, shift, or guess one.
 - Edits in one call must not overlap or touch adjacent lines — merge such changes into a single edit.
-- On a stale-anchor error, re-read the file to get current anchors before retrying. The `--- Anchors ---` block after a successful edit replaces a re-read for nearby follow-up edits.
+- On a stale-anchor error, re-read the file to get current anchors before retrying. The changed-line rows and the --- Anchors --- block after a successful edit replace a re-read for nearby follow-up edits.

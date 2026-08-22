@@ -1,4 +1,4 @@
 - Use edit with N:hh anchors from the latest read or edit result for all file changes; batch every change to one file into a single edit call.
 - Never reuse anchors from an earlier read or edit response once a newer one exists for the same file; treat only the most recent response as carrying valid anchors.
-- After a successful edit, the returned --- Anchors --- block replaces a re-read for nearby follow-up edits.
+- After a successful edit, the response lists changed lines (`~N:hh|content` modified, `+N:hh|content` inserted, `-N` deleted) followed by a --- Anchors --- block; that block replaces a re-read for nearby follow-up edits.
 - On a stale-anchor error, re-read the file to get current anchors before retrying.
