@@ -1,7 +1,7 @@
 {
   "name": "hashline-pi",
-  "version": "0.1.0",
-  "description": "Hashline read/edit override for pi-coding-agent — thin wrapper that shells out to the hashline binary",
+  "version": "0.1.1",
+  "description": "Hashline read/edit override for pi-coding-agent \u2014 thin wrapper that shells out to the hashline binary",
   "type": "module",
   "main": "index.ts",
   "license": "MIT",
