@@ -182,12 +182,37 @@ they never reimplement hashing, staleness detection, or merge recovery in TypeSc
 
 | Package | Host | Tools | Install |
 |---|---|---|---|
-| [`integration/pi-hashline`](integration/pi-hashline) | pi-coding-agent | overrides built-in `read`/`edit` | `pi install git:github.com/quangdang46/hashline#<path>` (see package README) |
+| [`integration/pi-hashline`](integration/pi-hashline) | pi-coding-agent | `read`, `edit`, `write`, `find_block`, `remove_file`, `rename_file` | `pi install npm:hashline-pi` |
 | [`integration/opencode-plugin`](integration/opencode-plugin) | OpenCode | `hashline_read`, `hashline_edit` | `opencode.json` `plugin: ["@scope/hashline-opencode-plugin"]` + disable native `edit` |
 
-Both require the `hashline` binary on `PATH` (or `HASHLINE_BIN`). See each package's
-`README.md` and [`integration/CONTRACT.md`](integration/CONTRACT.md) for the exact CLI
-contract and setup.
+### pi-coding-agent guide
+
+The [`hashline-pi`](https://www.npmjs.com/package/hashline-pi) extension replaces pi's built-in
+file tools with the full hashline surface — anchors on every read, stale-safe batched edits,
+tree-sitter block ops, and colored diffs in the TUI.
+
+```bash
+# 1. Install the binary first (the package is a thin wrapper — it does not bundle it)
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/hashline/main/install.sh" | bash   # macOS / Linux
+irm "https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1" | iex          # Windows (PowerShell)
+
+# 2. Install the extension (project-local: add -l; global: omit it)
+pi install npm:hashline-pi
+```
+
+Then `/reload` in pi and check `/hashline-status`. Requires binary >= 0.9.12.
+Binary off PATH? Set `HASHLINE_BIN` or `{ "binary": "..." }` in `~/.pi/agent/hashline.json`.
+Full details: [`integration/pi-hashline/README.md`](integration/pi-hashline/README.md).
+
+### OpenCode
+
+| Package | Install |
+|---|---|
+| [`integration/opencode-plugin`](integration/opencode-plugin) | `opencode.json` `plugin: ["@scope/hashline-opencode-plugin"]` + disable native `edit` |
+See [`integration/opencode-plugin/README.md`](integration/opencode-plugin/README.md).
+
+Both packages require the `hashline` binary on `PATH` (or `HASHLINE_BIN`). See each package's
+`README.md` and [`integration/CONTRACT.md`](integration/CONTRACT.md) for the exact CLI contract.
 
 ---
 
