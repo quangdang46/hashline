@@ -1,8 +1,8 @@
 /**
  * plugin.ts — Hashline OpenCode plugin.
  *
- * Registers `hashline_read` and `hashline_edit`, both of which shell out to
- * the hashline binary (v0.9.1). No hashing/staleness/merge logic lives here.
+ * Registers hashline_* tools that shell out to the hashline binary (>= 0.9.12).
+ * No hashing/staleness/merge logic lives here.
  *
  * API surface (verified against @opencode-ai/plugin 1.4.6): `import { tool }
  * from "@opencode-ai/plugin"` returns a plain `{description, args, execute}`
@@ -399,3 +399,4 @@ const plugin: Plugin = async (ctx) => {
 };
 
 export default plugin;
+export { plugin };

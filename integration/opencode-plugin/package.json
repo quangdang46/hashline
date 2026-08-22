@@ -1,16 +1,12 @@
 {
   "name": "hashline-opencode-plugin",
-  "version": "0.1.0",
-  "description": "Hashline plugin for OpenCode \u2014 thin wrapper that shells out to the hashline binary",
+  "version": "0.1.8",
+  "description": "Hashline plugin for OpenCode — thin wrapper that shells out to the hashline binary",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/v2.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    }
+    ".": "./dist/v2.js"
   },
   "files": [
     "dist",
@@ -25,12 +21,12 @@
     "@opencode-ai/plugin": ">=1.0.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.4.6",
+    "@opencode-ai/plugin": "1.18.16",
     "@types/bun": "^1.3.4",
     "typescript": "^5.8.0"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --format esm --sourcemap=linked --target=bun",
+    "build": "bun build src/index.ts src/v2.ts --outdir dist --format esm --sourcemap=linked --target=bun",
     "build:types": "tsc --emitDeclarationOnly",
     "build:cli": "bun build src/cli/hread.ts src/cli/hedit.ts --outdir dist/cli --format esm --target=bun",
     "clean": "rm -rf dist",
