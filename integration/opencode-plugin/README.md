@@ -30,10 +30,21 @@ irm "https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1" | 
 cargo install hashline                                                                       # or via cargo
 ```
 
-Add the plugin to `opencode.json`. Use the **`plugin` array** form, and disable
-the built-in `edit` tool so the model is forced through `hashline_edit`:
+`opencode.json` — **OpenCode 2.x** uses the `plugins` array (the plugin auto-registers
+all six tools and the hashline system prompt); disable the built-in `edit` so the
+model is routed through `hashline_edit`. **OpenCode 1.x** keeps the singular
+`plugin` form:
 
-```jsonc
+```jsonc title="OpenCode 2.x — opencode.json"
+{
+  "plugins": ["hashline-opencode-plugin"],
+  "agent": {
+    "build": { "tools": { "edit": false } }
+  }
+}
+```
+
+```jsonc title="OpenCode 1.x — opencode.json"
 {
   "plugin": ["hashline-opencode-plugin"],
   "agent": {
@@ -45,17 +56,10 @@ the built-in `edit` tool so the model is forced through `hashline_edit`:
 }
 ```
 
-Local development (instead of publishing under a real scope):
+Local development:
 
-```jsonc
-{
-  "plugin": ["./.opencode/node_modules/hashline-opencode-plugin/dist/index.js"],
-  "agent": {
-    "build": {
-      "tools": { "edit": false }
-    }
-  }
-}
+```bash
+npm install hashline-opencode-plugin        # then reference ./node_modules/... in config
 ```
 
 ## Binary discovery
