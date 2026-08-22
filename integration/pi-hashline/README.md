@@ -10,16 +10,34 @@ formatting.
 
 ## Install
 
-Prerequisite: the `hashline` binary (>= 0.9.12) on PATH, or pointed at by config. Requires the agent-first compact output introduced in 0.9.12.
+`hashline-pi` is a **thin wrapper** — it does NOT bundle the `hashline` binary.
+You must install both, in this order:
+
+### Step 1 — install the `hashline` binary (required)
 
 ```bash
-cargo install hashline            # or build from this repo: cargo build -p hashline --release
-# Install the extension from this repo (github path)
-pi install git:github.com/quangdang46/hashline#main:integration/pi-hashline
-# or, from a local checkout:
-pi install /path/to/hashline/integration/pi-hashline
-# or, once published to npm:
+# macOS / Linux (auto-detects platform, verifies SHA-256, installs to ~/.local/bin)
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/hashline/main/install.sh" | bash
+
+# Windows (PowerShell)
+irm "https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1" | iex
+
+# or via cargo
+cargo install hashline
+```
+
+Requires **>= 0.9.12** (agent-first compact output). Without the binary the
+extension fails at startup with an install hint; if it is installed somewhere
+off PATH, point the extension at it (see [Binary discovery](#binary-discovery)).
+
+### Step 2 — install the pi extension
+
+```bash
 pi install npm:hashline-pi
+# or from this repo:
+pi install git:github.com/quangdang46/hashline#main:integration/pi-hashline
+# or from a local checkout:
+pi install /path/to/hashline/integration/pi-hashline
 ```
 
 Then `/reload` in pi. Verify with the `/hashline-status` command.
