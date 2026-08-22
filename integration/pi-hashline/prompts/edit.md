@@ -8,6 +8,10 @@ Ops:
 - `prepend` — insert `lines` before `pos`; omit `pos` to insert at start of file.
 - `delete` — delete the line at `pos`, or the inclusive span `pos`..`end`.
 - `replace_text` — `{ "op": "replace_text", "oldText": ..., "newText": ... }` replaces one exact, unique occurrence and fails otherwise. Prefer anchors; use this only when uniqueness is certain. `oldText`/`newText` are invalid on any other op.
+- `replace_block` — replace the entire syntactic block (function/class/if body, tree-sitter) containing line `pos` with `lines`. Use find_block first to see the block.
+- `delete_block` — delete the whole syntactic block containing line `pos`.
+- `insert_block_after` — insert `lines` as a new block after the block containing line `pos`.
+Block ops take a plain 1-based line number in `pos` (not an N:hh anchor) and are language-aware.
 
 Example — single-line and span replace in one call:
 ```json

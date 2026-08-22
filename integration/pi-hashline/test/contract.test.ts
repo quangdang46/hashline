@@ -72,18 +72,31 @@ function registerExtension() {
   return { tools, commands, events };
 }
 
-test("registers read and edit tools overriding the built-ins", () => {
+test("registers read/edit/write overrides plus file tools", () => {
   const { tools } = registerExtension();
 
   const names = tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ["edit", "read"]);
+  assert.deepEqual(
+    names.sort(),
+    [
+      "edit",
+      "find_block",
+      "read",
+      "remove_file",
+      "rename_file",
+      "write",
+    ].sort(),
+  );
 
   const read = tools.find((tool) => tool.name === "read");
   const edit = tools.find((tool) => tool.name === "edit");
+  const write = tools.find((tool) => tool.name === "write");
   assert.ok(read, "read tool registered");
   assert.ok(edit, "edit tool registered");
+  assert.ok(write, "write tool registered");
   assert.ok(read?.parameters, "read has a parameter schema");
   assert.ok(edit?.parameters, "edit has a parameter schema");
+  assert.ok(write?.parameters, "write has a parameter schema");
 });
 
 test("edit tool forces renderShell default (must not inherit built-in 'self')", () => {

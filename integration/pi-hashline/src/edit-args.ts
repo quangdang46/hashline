@@ -14,11 +14,16 @@ export type HashlineEditOp =
   | "append"
   | "prepend"
   | "delete"
-  | "replace_text";
+  | "replace_text"
+  | "replace_block"
+  | "delete_block"
+  | "insert_block_after";
 
 export type HashlineEdit = {
   op: HashlineEditOp;
-  pos?: string;
+  /** Line number (1-based) for block ops; N:hh anchor otherwise. */
+  /** N:hh anchor for line ops; 1-based line number (integer) for block ops. */
+  pos?: string | number;
   end?: string;
   lines?: string[];
   oldText?: string;
@@ -67,7 +72,7 @@ export function translateEdit(edit: HashlineEdit): string[] | null {
   switch (edit.op) {
     case "replace": {
       const pos = edit.pos;
-      if (pos === undefined || !isValidAnchor(pos)) {
+      if (typeof pos !== "string" || !isValidAnchor(pos)) {
         return null;
       }
       const lines = edit.lines ?? [];
@@ -80,7 +85,7 @@ export function translateEdit(edit: HashlineEdit): string[] | null {
     }
     case "delete": {
       const pos = edit.pos;
-      if (pos === undefined || !isValidAnchor(pos)) {
+      if (typeof pos !== "string" || !isValidAnchor(pos)) {
         return null;
       }
       return edit.end ? [`DEL ${pos}..${edit.end}`] : [`DEL ${pos}`];
@@ -94,6 +99,29 @@ export function translateEdit(edit: HashlineEdit): string[] | null {
       const lines = edit.lines ?? [];
       const header = edit.pos ? `INS.PRE ${edit.pos}:` : `INS.HEAD:`;
       return [header, ...payloadRows(lines)];
+    }
+    case "replace_block": {
+      // Block ops address a line number (1-based), not an N:hh anchor — the
+      // binary locates the enclosing syntactic block via tree-sitter.
+      const n = Number(edit.pos);
+      if (!Number.isInteger(n) || n < 1 || edit.lines === undefined) {
+        return null;
+      }
+      return [`SWAP.BLK ${n}:`, ...payloadRows(edit.lines)];
+    }
+    case "delete_block": {
+      const n = Number(edit.pos);
+      if (!Number.isInteger(n) || n < 1) {
+        return null;
+      }
+      return [`DEL.BLK ${n}`];
+    }
+    case "insert_block_after": {
+      const n = Number(edit.pos);
+      if (!Number.isInteger(n) || n < 1 || edit.lines === undefined) {
+        return null;
+      }
+      return [`INS.BLK.POST ${n}:`, ...payloadRows(edit.lines)];
     }
     case "replace_text": {
       // Never translatable without the file contents (needs a read to find

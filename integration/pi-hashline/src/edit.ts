@@ -30,6 +30,8 @@ import {
   type TextToolResult,
 } from "./result.js";
 import { getReplaceTextEnabled } from "./config.js";
+import { renderDiffLines, reuseText } from "./render.js";
+import type { Component } from "@earendil-works/pi-tui";
 
 const EDIT_DESC = loadPrompt(
   new URL("../prompts/edit.md", import.meta.url),
@@ -101,6 +103,46 @@ const replaceTextEdit = Type.Object(
   { additionalProperties: false },
 );
 
+const blockLine = Type.Integer({
+  description:
+    "1-based line number inside the target block (any line of the block)",
+  minimum: 1,
+});
+
+const replaceBlockEdit = Type.Object(
+  {
+    op: Type.Literal("replace_block", {
+      description:
+        "replace the whole syntactic block containing line pos (tree-sitter)",
+    }),
+    pos: blockLine,
+    lines: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const deleteBlockEdit = Type.Object(
+  {
+    op: Type.Literal("delete_block", {
+      description: "delete the whole syntactic block containing line pos",
+    }),
+    pos: blockLine,
+  },
+  { additionalProperties: false },
+);
+
+const insertBlockAfterEdit = Type.Object(
+  {
+    op: Type.Literal("insert_block_after", {
+      description:
+        "insert lines as a new block after the block containing line pos",
+    }),
+    pos: blockLine,
+    lines: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
 export const editToolSchema = Type.Object(
   {
     path: Type.String(),
@@ -111,6 +153,9 @@ export const editToolSchema = Type.Object(
         prependEdit,
         deleteEdit,
         replaceTextEdit,
+        replaceBlockEdit,
+        deleteBlockEdit,
+        insertBlockAfterEdit,
       ]),
       { description: "edit operations; applied atomically by the binary" },
     ),
@@ -271,12 +316,55 @@ export function registerEditTool(pi: ExtensionAPI): void {
             ...compact.rows,
           ].join("\n")
         : stdout.trim();
+      // Unified +/- diff for the pi UI (details.diff is rendered by
+      // renderResult via pi's native renderDiff). Built from the changed rows.
+      const diff = compact
+        ? compact.rows
+            .map((row) => {
+              if (row.startsWith("~")) {
+                const rest = row.slice(1);
+                const bar = rest.indexOf("|");
+                return `-${rest.slice(bar + 1)}\n+${rest.slice(bar + 1)}`;
+              }
+              if (row.startsWith("+")) {
+                return `${row}`;
+              }
+              if (row.startsWith("-")) {
+                return row; // deleted line number only — content unknown
+              }
+              return null;
+            })
+            .filter((line): line is string => line !== null)
+            .join("\n")
+        : undefined;
       return textResult(
         `Patch applied.${applied ? `\n${applied}` : ""}${anchors}`,
         {
           ok: true,
+          ...(diff ? { diff } : {}),
         },
       );
+    },
+    renderResult(result, _options, _theme, context): Component {
+      const empty = reuseText(context.lastComponent);
+      empty.setText("");
+      if (context.isError) {
+        const errorText = result.content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text || "")
+          .join("\n");
+        const errText = reuseText(context.lastComponent);
+        errText.setText(errorText);
+        return errText;
+      }
+      const diff = (result.details as { diff?: string } | undefined)?.diff;
+      if (!diff || context.isPartial) {
+        return empty;
+      }
+      const pathArg = (context.args as { path?: string } | undefined)?.path;
+      const diffText = reuseText(context.lastComponent);
+      diffText.setText(renderDiffLines(diff, pathArg ?? "").join("\n"));
+      return diffText;
     },
   });
 }

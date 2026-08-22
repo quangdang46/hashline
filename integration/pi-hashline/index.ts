@@ -13,6 +13,8 @@ import type {
 import { registerEditTool } from "./src/edit.js";
 import { registerReadTool } from "./src/read.js";
 import { registerGrepTool } from "./src/grep.js";
+import { registerWriteTool } from "./src/write.js";
+import { registerFileTools } from "./src/files.js";
 import {
   getGrepEnabled,
   getConfigWarnings,
@@ -47,6 +49,8 @@ async function versionStatus(ctx: ExtensionContext): Promise<string> {
 export default function (pi: ExtensionAPI): void {
   registerReadTool(pi);
   registerEditTool(pi);
+  registerWriteTool(pi);
+  registerFileTools(pi);
   if (getGrepEnabled()) {
     registerGrepTool(pi);
   }
