@@ -134,7 +134,17 @@ export async function runHashlineWithBin(
     child.on("close", (exitCode) => {
       resolve({ stdout, stderr, exitCode: exitCode ?? 1 });
     });
-    child.stdin.end(stdin ?? "");
+    child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code !== "EPIPE" && err.code !== "ERR_STREAM_DESTROYED") {
+        stderr += `
+stdin error: ${err.message}`;
+      }
+    });
+    if (stdin !== undefined && stdin.length > 0) {
+      child.stdin.end(stdin);
+    } else {
+      child.stdin.end();
+    }
   });
 }
 

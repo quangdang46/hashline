@@ -153,3 +153,25 @@ test("edit tool schema rejects replace_text when the op set is validated", () =>
     assert.ok(ops.includes(op), `edit item union includes op ${op}`);
   }
 });
+
+test("runHashlineWithBin handles early subprocess exit without unhandled EPIPE error", async () => {
+  const { runHashlineWithBin } = await import("../src/hashline.js");
+  const ctx = { cwd: process.cwd() } as ExtensionContext;
+  const res = await runHashlineWithBin(
+    ["-e", "process.exit(0)"],
+    undefined,
+    ctx,
+    undefined,
+    process.execPath,
+  );
+  assert.equal(res.exitCode, 0);
+
+  const res2 = await runHashlineWithBin(
+    ["-e", "process.exit(0)"],
+    "some input data",
+    ctx,
+    undefined,
+    process.execPath,
+  );
+  assert.equal(res2.exitCode, 0);
+});
