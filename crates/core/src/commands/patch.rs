@@ -2342,7 +2342,8 @@ mod tests {
     #[test]
     fn bug112_standalone_unknown_op_rejected() {
         // A standalone unknown keyword (no pending op) must also be rejected.
-        let (edits, _warnings, _file_op, aborted) = crate::parser::parse_patch("SWAP 1:\n+foo\nEND");
+        let (edits, _warnings, _file_op, aborted) =
+            crate::parser::parse_patch("SWAP 1:\n+foo\nEND");
         assert!(edits.is_empty(), "expected zero edits, got {edits:?}");
         assert!(aborted, "expected aborted=true");
     }
