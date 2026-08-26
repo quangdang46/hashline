@@ -211,6 +211,8 @@ fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(u
     let use_block_comments = ext != "py" && ext != "rb";
 
     let mut in_block_comment = false;
+    let mut in_template_literal = false;
+    let mut template_escape = false;
 
     for (line_idx, entry) in entries.iter().enumerate() {
         let bytes = entry.content.as_bytes();
@@ -220,6 +222,18 @@ fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(u
         let mut prev_escape = false;
 
         while i < bytes.len() {
+            if in_template_literal {
+                if template_escape {
+                    template_escape = false;
+                } else if bytes[i] == b'\\' {
+                    template_escape = true;
+                } else if bytes[i] == b'`' {
+                    in_template_literal = false;
+                }
+                i += 1;
+                continue;
+            }
+
             if prev_escape {
                 prev_escape = false;
                 i += 1;
@@ -275,6 +289,11 @@ fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(u
             }
             if !in_single_quote && !in_double_quote && bytes[i] == b'"' {
                 in_double_quote = true;
+                i += 1;
+                continue;
+            }
+            if !in_single_quote && !in_double_quote && bytes[i] == b'`' {
+                in_template_literal = true;
                 i += 1;
                 continue;
             }
@@ -628,6 +647,16 @@ mod tests {
         let (fc, entries) = make_fc(content, "test.rs");
         let payload = find_block_payload(&fc, &entries, &anchor_for(2, &entries)).unwrap();
         assert_eq!(payload.block_lines.len(), 3);
+        assert_eq!(payload.block_lines[2].content, "}");
+    }
+    #[test]
+
+    fn test_brace_detection_skips_javascript_template_literals() {
+        let content = "function greet(name) {\n  return `Hello, ${name}!`;\n}\n";
+        let (fc, entries) = make_fc(content, "test.js");
+        let payload = find_block_payload(&fc, &entries, &anchor_for(2, &entries)).unwrap();
+        assert_eq!(payload.block_lines.len(), 3);
+        assert_eq!(payload.block_lines[0].content, "function greet(name) {");
         assert_eq!(payload.block_lines[2].content, "}");
     }
 

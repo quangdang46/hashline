@@ -97,6 +97,8 @@ fn find_brace_pairs(entries: &[LineEntry], ext: &str) -> Vec<(usize, usize)> {
     };
     let use_block_comments = ext != "py" && ext != "rb";
     let mut in_block_comment = false;
+    let mut in_template_literal = false;
+    let mut template_escape = false;
 
     for (line_idx, entry) in entries.iter().enumerate() {
         let bytes = entry.content.as_bytes();
@@ -106,6 +108,18 @@ fn find_brace_pairs(entries: &[LineEntry], ext: &str) -> Vec<(usize, usize)> {
         let mut prev_escape = false;
 
         while i < bytes.len() {
+            if in_template_literal {
+                if template_escape {
+                    template_escape = false;
+                } else if bytes[i] == b'\\' {
+                    template_escape = true;
+                } else if bytes[i] == b'`' {
+                    in_template_literal = false;
+                }
+                i += 1;
+                continue;
+            }
+
             if prev_escape {
                 prev_escape = false;
                 i += 1;
@@ -161,6 +175,11 @@ fn find_brace_pairs(entries: &[LineEntry], ext: &str) -> Vec<(usize, usize)> {
             }
             if !in_single_quote && !in_double_quote && bytes[i] == b'"' {
                 in_double_quote = true;
+                i += 1;
+                continue;
+            }
+            if !in_single_quote && !in_double_quote && bytes[i] == b'`' {
+                in_template_literal = true;
                 i += 1;
                 continue;
             }
@@ -362,6 +381,12 @@ mod tests {
         assert_eq!(inner, Some((2, 4)));
         let outer = resolve_brace_block(&e, 0, "rs");
         assert_eq!(outer, Some((0, 5)));
+    }
+    #[test]
+
+    fn test_brace_resolution_skips_javascript_template_literals() {
+        let e = entries_from("function greet(name) {\n  return `Hello, ${name}!`;\n}\n");
+        assert_eq!(resolve_brace_block(&e, 1, "js"), Some((0, 2)));
     }
 
     #[test]
