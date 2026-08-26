@@ -106,6 +106,7 @@ pub struct Executor {
     pending: Option<Pending>,
     terminated: bool,
     aborted: bool,
+    had_unknown_op: bool,
 }
 
 impl Default for Executor {
@@ -124,6 +125,7 @@ impl Executor {
             pending: None,
             terminated: false,
             aborted: false,
+            had_unknown_op: false,
         }
     }
 
@@ -194,6 +196,24 @@ impl Executor {
             return (Vec::new(), Vec::new(), None, aborted);
         }
         self.flush_pending();
+
+        // Reject the entire patch if any unrecognized operation keyword was
+        // encountered (Bug #112). Without this guard, unknown ops like bare
+        // `SWAP` (missing range) or invented keywords like `END` are silently
+        // treated as body text and inserted into the file, corrupting it while
+        // the tool still reports success.
+        if self.had_unknown_op {
+            self.edits.clear();
+            self.file_op = None;
+            self.pending = None;
+            self.had_unknown_op = false;
+            self.edit_index = 0;
+            self.terminated = false;
+            self.aborted = false;
+            let warnings = std::mem::take(&mut self.warnings);
+            return (Vec::new(), warnings, None, true);
+        }
+
         self.validate_no_overlapping_deletes();
         let edits = std::mem::take(&mut self.edits);
         let warnings = std::mem::take(&mut self.warnings);
@@ -219,6 +239,7 @@ impl Executor {
         ) {
             return;
         }
+
         let pending_mut = self.pending.as_mut().unwrap();
         // Flush deferred blanks into payloads before appending the new
         // payload line, so interior blank lines survive (Issue #93-A).
@@ -269,6 +290,28 @@ impl Executor {
                 });
                 return;
             }
+            // Bug #112: Detect unknown operation keywords being consumed as bare
+            // payload. Lines like `END` or bare `SWAP` (without range) look like
+            // ops but were never tokenized as OpBlock — flag and abort atomically.
+            if !text.trim().is_empty() {
+                let first_word_end = text.find([' ', '.', ':']).unwrap_or(text.len());
+                let first_word = &text[..first_word_end];
+                if first_word.len() >= 2
+                    && first_word
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '.')
+                    && !self
+                        .warnings
+                        .contains(&format!("unknown operation `{first_word}`"))
+                {
+                    self.warnings.push(format!(
+                        "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST,                          INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE,                          INS.BLK, CUT, or PUT"
+                    ));
+                    self.had_unknown_op = true;
+                    return;
+                }
+            }
+
             if !self
                 .warnings
                 .contains(&BARE_BODY_AUTO_PIPED_WARNING.to_string())
@@ -317,6 +360,7 @@ impl Executor {
                      INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
                      INS.BLK, CUT, or PUT"
                 ));
+                self.had_unknown_op = true;
             }
         }
     }
@@ -825,7 +869,23 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
         executor.feed(token);
     }
 
-    executor.end()
+    let (mut edits, mut warnings, file_op, aborted) = executor.end();
+
+    // Bug #112: If the executor produced both valid edits AND warnings about
+    // unknown operation keywords, the patch mixed recognized and unrecognized
+    // ops. Unrecognized ops (e.g. bare `SWAP`, `END`) were consumed as payload
+    // text by the executor, silently corrupting the file while reporting OK.
+    // Reject the entire patch atomically — no edits, no file mutation.
+    if !edits.is_empty() && !aborted {
+        let has_unknown_op_warning = warnings.iter().any(|w| w.starts_with("unknown operation"));
+        if has_unknown_op_warning {
+            edits.clear();
+            warnings.clear();
+            return (Vec::new(), Vec::new(), None, true);
+        }
+    }
+
+    (edits, warnings, file_op, aborted)
 }
 
 #[allow(clippy::items_after_test_module)]

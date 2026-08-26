@@ -2303,4 +2303,63 @@ mod tests {
             "fn one() {\n    let a = 1;\n}\n// after fn one\nfn two() {\n    let b = 2;\n}\n// after fn two\nfn three() {\n    let c = 3;\n}\n"
         );
     }
+    // =====================================================================
+    // Regression tests for Issue #112 — unknown op keywords must cause
+    // atomic failure, not partial file corruption.
+    // =====================================================================
+
+    #[test]
+    fn bug112_unknown_op_with_pending_swap_aborts_atomically() {
+        // A valid SWAP followed by an unknown keyword (`END`) must reject
+        // the entire patch — no file mutation, no partial apply.
+        let (edits, warnings, _file_op, aborted) =
+            crate::parser::parse_patch("SWAP 2:\n+replaced\nEND");
+        assert!(edits.is_empty(), "expected zero edits, got {edits:?}");
+        assert!(aborted, "expected aborted=true when unknown op is present");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("unknown operation `END`")),
+            "expected unknown op warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn bug112_unknown_op_between_valid_ops_aborts_atomically() {
+        // Unknown keyword between two valid ops — entire patch must be rejected.
+        let (edits, warnings, _file_op, aborted) =
+            crate::parser::parse_patch("SWAP 2:\n+replaced\nEND\nDEL 3");
+        assert!(edits.is_empty(), "expected zero edits, got {edits:?}");
+        assert!(aborted, "expected aborted=true");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("unknown operation `END`")),
+            "expected unknown op warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn bug112_standalone_unknown_op_rejected() {
+        // A standalone unknown keyword (no pending op) must also be rejected.
+        let (edits, warnings, _file_op, aborted) = crate::parser::parse_patch("SWAP 1:\n+foo\nEND");
+        assert!(edits.is_empty(), "expected zero edits, got {edits:?}");
+        assert!(aborted, "expected aborted=true");
+    }
+
+    #[test]
+    fn bug112_valid_patch_still_works() {
+        // Sanity: a valid patch with no unknown ops must still apply.
+        let result = apply_text("line1\nline2\nline3", "SWAP 2:\n+replaced2");
+        assert_eq!(result, "line1\nreplaced2\nline3");
+    }
+
+    #[test]
+    fn bug112_plus_prefixed_uppercase_payload_not_rejected() {
+        // `+REPLACED` is a legitimate payload (explicit `+` prefix) — must NOT
+        // be flagged as unknown op. Only bare (unprefixed) uppercase keywords
+        // trigger the abort.
+        let result = apply_text("line1\nline2\nline3", "SWAP 2:\n+REPLACED");
+        assert_eq!(result, "line1\nREPLACED\nline3");
+    }
 }
