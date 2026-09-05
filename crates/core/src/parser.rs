@@ -14,7 +14,8 @@ use crate::prefixes::strip_one_hashline_prefix;
 fn is_known_op_keyword(word: &str) -> bool {
     matches!(
         word.to_ascii_lowercase().as_str(),
-        "swap" | "del"
+        "swap"
+            | "del"
             | "ins"
             | "ins.pre"
             | "ins.post"
@@ -990,9 +991,9 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
     // Fix #113/#114/#115: Also handle "malformed operation" warnings for known
     // keywords with wrong syntax (e.g. `PUT @name:N:` instead of `PUT @name <N`).
     if !edits.is_empty() && !aborted {
-        let has_op_error = warnings.iter().any(|w| {
-            w.starts_with("unknown operation") || w.starts_with("malformed operation")
-        });
+        let has_op_error = warnings
+            .iter()
+            .any(|w| w.starts_with("unknown operation") || w.starts_with("malformed operation"));
         if has_op_error {
             edits.clear();
             warnings.clear();
@@ -1111,7 +1112,10 @@ mod regression_113_114_115_tests {
         // `SWAP 2:97 |+content` — body has explicit `+` prefix.
         let (edits, _warnings, _file_op, _aborted) =
             parse_patch("SWAP 2:97 |+Line 2: MODIFIED via SWAP");
-        assert!(!edits.is_empty(), "should produce edits for pipe with +prefix");
+        assert!(
+            !edits.is_empty(),
+            "should produce edits for pipe with +prefix"
+        );
     }
 
     // --- Issue #114: PUT format error message ---
@@ -1139,7 +1143,9 @@ mod regression_113_114_115_tests {
             "correct PUT should produce edits, got warnings: {warnings:?}"
         );
         assert!(
-            !warnings.iter().any(|w| w.contains("malformed") || w.contains("unknown")),
+            !warnings
+                .iter()
+                .any(|w| w.contains("malformed") || w.contains("unknown")),
             "correct PUT should have no format errors, got: {warnings:?}"
         );
     }
@@ -1150,7 +1156,9 @@ mod regression_113_114_115_tests {
         let (edits, warnings, _file_op, _aborted) = parse_patch("PUT @fn");
         assert!(!edits.is_empty(), "bare PUT should produce edits");
         assert!(
-            !warnings.iter().any(|w| w.contains("malformed") || w.contains("unknown")),
+            !warnings
+                .iter()
+                .any(|w| w.contains("malformed") || w.contains("unknown")),
             "bare PUT should have no format errors, got: {warnings:?}"
         );
     }
@@ -1162,8 +1170,7 @@ mod regression_113_114_115_tests {
         // Stale anchor `SWAP 99:zz |stale line` — should be recognized as
         // a SWAP operation (not "unknown"), and the applier should detect the
         // stale/out-of-range anchor.
-        let (edits, warnings, _file_op, _aborted) =
-            parse_patch("SWAP 99:zz |stale line");
+        let (edits, warnings, _file_op, _aborted) = parse_patch("SWAP 99:zz |stale line");
         // The pipe fix should recognize this as a SWAP, not flag "unknown".
         assert!(
             !warnings.iter().any(|w| w.contains("unknown operation")),
@@ -1192,7 +1199,9 @@ mod regression_113_114_115_tests {
         // `FOOBAR 5:` is NOT a known keyword — should still be "unknown".
         let (_edits, warnings, _file_op, _aborted) = parse_patch("FOOBAR 5:");
         assert!(
-            warnings.iter().any(|w| w.contains("unknown operation `FOOBAR`")),
+            warnings
+                .iter()
+                .any(|w| w.contains("unknown operation `FOOBAR`")),
             "truly unknown keyword should be flagged as unknown, got: {warnings:?}"
         );
     }
