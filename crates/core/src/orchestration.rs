@@ -18,6 +18,7 @@ pub fn command_name(command: &Commands) -> &'static str {
         Commands::Mcp(_) => "mcp",
         Commands::Remove(_) => "remove",
         Commands::Rename(_) => "rename",
+        Commands::Update(_) => "update",
     }
 }
 
@@ -57,6 +58,7 @@ pub fn run_command<W: Write, E: Write>(
         Commands::Mcp(_) => unreachable!("mcp mode is handled before command dispatch"),
         Commands::Remove(cmd) => commands::remove::run(&mut context, cmd).map(|_| 0),
         Commands::Rename(cmd) => commands::rename::run(&mut context, cmd).map(|_| 0),
+        Commands::Update(cmd) => commands::update::run(&mut context, cmd).map(|_| 0),
     }?;
 
     Ok((exit_code, None))

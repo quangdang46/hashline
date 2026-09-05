@@ -26,6 +26,7 @@ pub enum Commands {
     Mcp(McpCmd),
     Remove(RemoveCmd),
     Rename(RenameCmd),
+    Update(UpdateCmd),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
@@ -135,4 +136,21 @@ pub struct RenameCmd {
     pub verbose: bool,
     #[arg(long, help = "Overwrite destination file if it already exists")]
     pub force: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Parser)]
+#[command(about = "Check for a new release and update the hashline binary")]
+pub struct UpdateCmd {
+    #[arg(
+        long,
+        help = "Only check whether an update is available; do not install"
+    )]
+    pub check: bool,
+    #[arg(
+        long,
+        help = "Install a specific release version (e.g. 0.9.16) instead of the latest"
+    )]
+    pub version: Option<String>,
+    #[arg(long)]
+    pub json: bool,
 }

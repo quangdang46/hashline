@@ -202,6 +202,19 @@ pub fn run<W: Write, E: Write>(
       }
     }
 
+──────────────────────  SELF-UPDATE  ──────────────────────────
+
+  hashline update --check          Only check for a newer release
+  hashline update                  Download + install the latest release
+  hashline update --version 0.9.16 Install a specific version
+  hashline update --json           Structured JSON output
+
+  • Assets come from GitHub Releases and are SHA-256 verified before
+    the binary is replaced atomically.
+  • Once a day, interactive commands print a one-line notice to stderr
+    when a newer release exists. Set HASHLINE_NO_UPDATE_CHECK=1 to
+    disable the notice.
+
 ───────────────────────  EXAMPLES  ───────────────────────────
 
   # Replace text on a specific line

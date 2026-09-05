@@ -88,6 +88,7 @@ hashline rename old.txt new.txt
 | `hashline guide` | Interactive user guide |
 | `hashline serve` | Daemon mode over Unix socket or HTTP |
 | `hashline mcp` | MCP server over stdio |
+| `hashline update` | Self-update the binary from GitHub Releases (`--check` to only compare) |
 
 ### Patch Operations (hashline patch)
 
@@ -162,6 +163,14 @@ INS.POST 4:6c:
 | `--socket` | `serve` | Unix socket path (default ~/.hashline/daemon.sock) |
 | `--http` | `serve` | HTTP port instead of Unix socket |
 | `--proxy-to-daemon` | `mcp` | Proxy MCP requests to running daemon |
+| `--check` | `update` | Only compare installed vs latest release; do not install |
+| `--version <v>` | `update` | Install a specific release version instead of the latest |
+
+### Self-Update
+
+- `hashline update` fetches the latest GitHub Release for the platform, verifies the `.sha256` checksum, and atomically replaces the running binary.
+- **Update notice:** once per 24h (cached in `~/.hashline/update-check.json`), successful interactive commands print `NOTE update available: latest=<v> installed=<v> (run \`hashline update\`)` to stderr — only when stderr is a terminal, so piped/agent output stays byte-identical.
+- **Disable the notice:** set `HASHLINE_NO_UPDATE_CHECK=1`. **Mirror/test override:** set `HASHLINE_RELEASES_BASE_URL` to redirect all release lookups.
 
 ### Error Recovery
 

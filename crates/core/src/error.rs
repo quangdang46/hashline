@@ -141,6 +141,9 @@ pub enum HashlineError {
     #[error("server error: {message}")]
     ServerError { message: String, kind: String },
 
+    #[error("update failed: {message}")]
+    UpdateFailed { message: String },
+
     #[error(
         "outline input '{path}' is too large to parse safely: {actual} {unit} (limit: {limit} {unit})"
     )]
@@ -270,6 +273,9 @@ impl HashlineError {
             HashlineError::TargetExists { .. } => {
                 Some("use --force to overwrite the existing file")
             }
+            HashlineError::UpdateFailed { .. } => Some(
+                "check network connectivity, then retry; if it keeps failing, reinstall manually with the install.sh script from the repository",
+            ),
             HashlineError::ImplodeMissingMeta { .. } => Some(
                 "run `hashline explode <file> --out <dir>` first or restore the missing .meta.json",
             ),
@@ -386,6 +392,7 @@ impl HashlineError {
             HashlineError::Io(_) => "IO",
             HashlineError::Json(_) => "JSON",
             HashlineError::PatchFailed { .. } => "PATCH_FAILED",
+            HashlineError::UpdateFailed { .. } => "UPDATE",
             _ => "ERROR",
         }
     }
@@ -439,7 +446,8 @@ impl HashlineError {
             | HashlineError::MissingSnapshotTag { .. }
             | HashlineError::NoBlockResolver
             | HashlineError::ClipboardMissingRegister { .. }
-            | HashlineError::ClipboardEmptyAnon => None,
+            | HashlineError::ClipboardEmptyAnon
+            | HashlineError::UpdateFailed { .. } => None,
             #[cfg(feature = "sha256-anchors")]
             HashlineError::Sha256Anchor(_) => None,
         }

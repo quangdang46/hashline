@@ -67,6 +67,7 @@ pub fn output_mode_for(command: &Commands) -> OutputMode {
         Commands::Guide(cmd) => flag_mode(cmd.json, false),
         Commands::Remove(cmd) => flag_mode(cmd.json, cmd.verbose),
         Commands::Rename(cmd) => flag_mode(cmd.json, cmd.verbose),
+        Commands::Update(cmd) => flag_mode(cmd.json, false),
         Commands::Serve(_) | Commands::Mcp(_) => OutputMode::Verbose,
     }
 }
@@ -77,6 +78,7 @@ pub fn json_pretty_for(command: &Commands) -> bool {
         Commands::Read(_) | Commands::Patch(_) | Commands::Write(_) => false,
         Commands::FindBlock(cmd) => cmd.pretty,
         Commands::Guide(_) | Commands::Remove(_) | Commands::Rename(_) => false,
+        Commands::Update(_) => false,
         Commands::Serve(_) | Commands::Mcp(_) => false,
     }
 }

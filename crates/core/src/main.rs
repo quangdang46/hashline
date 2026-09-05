@@ -5,7 +5,7 @@
 //
 // Items consumed below come from `hashline::*`.
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -28,9 +28,12 @@ fn main() {
     debug!(command = command_name(&cli.command), "parsed CLI arguments");
     info!(command = command_name(&cli.command), "command started");
 
-    // Check HASHLINE_SOCKET for daemon routing (skip for serve and mcp commands
-    // to avoid routing loops)
-    let should_route = !matches!(&cli.command, Commands::Serve(_) | Commands::Mcp(_));
+    // Check HASHLINE_SOCKET for daemon routing (skip for serve, mcp, and
+    // update commands to avoid routing loops and remote self-updates)
+    let should_route = !matches!(
+        &cli.command,
+        Commands::Serve(_) | Commands::Mcp(_) | Commands::Update(_)
+    );
 
     if should_route {
         let no_fallback = std::env::var("HASHLINE_NO_FALLBACK").is_ok();
@@ -80,6 +83,9 @@ fn main() {
 
     let output_mode = output_mode_for(&cli.command);
     let json_pretty = json_pretty_for(&cli.command);
+    // The automatic update notice must know the command before `cli` is
+    // moved into `run`.
+    let update_notice_allowed = hashline::update::notice_eligible(&cli.command);
     // Wrap stdout/stderr in BufWriter so large outputs (e.g. `read --json`
     // on a 200k-line file) don't take one syscall per write — serde_json
     // emits many small writes per record, and a fresh `io::stdout()` handle
@@ -113,6 +119,12 @@ fn main() {
     // closed pipe fails at process exit.
     let _ = stdout.flush();
     let _ = stderr.flush();
+
+    // Best-effort outdated-version notice, after all command output. Gated
+    // on a terminal stderr so agent pipelines keep byte-identical output.
+    if exit_code == 0 && update_notice_allowed {
+        hashline::update::maybe_print_update_notice(io::stderr().is_terminal());
+    }
 
     std::process::exit(exit_code);
 }
@@ -340,7 +352,7 @@ fn command_to_tool_name(command: &Commands) -> &'static str {
         Commands::FindBlock(_) => "find_block",
         Commands::Remove(_) => "remove",
         Commands::Rename(_) => "rename",
-        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => {
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) | Commands::Update(_) => {
             unreachable!()
         }
     }
@@ -618,7 +630,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
         Commands::FindBlock(cmd) => serde_json::to_value(cmd),
         Commands::Remove(cmd) => serde_json::to_value(cmd),
         Commands::Rename(cmd) => serde_json::to_value(cmd),
-        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) => {
+        Commands::Guide(_) | Commands::Serve(_) | Commands::Mcp(_) | Commands::Update(_) => {
             unreachable!()
         }
     }

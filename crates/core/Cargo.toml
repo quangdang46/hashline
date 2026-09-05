@@ -23,9 +23,10 @@ autobenches = false
 default = []
 # Enable SHA-256 window-hash anchor support — used by external tools
 # (notably jcode pre-0.2.x) that need to call into hashline as a
-# library while keeping their existing anchor schema. Pulls in the
-# `sha2` crate. Disabled by default to keep the lean library footprint.
-sha256-anchors = ["dep:sha2"]
+# library while keeping their existing anchor schema. `sha2` is always
+# compiled (the self-update path uses it to verify release checksums);
+# this flag only gates the module.
+sha256-anchors = []
 
 [lib]
 name = "hashline"
@@ -54,8 +55,9 @@ once_cell = "1.19"
 # Daemon (serve mode): fork, PID file, socket locking
 libc = "0.2"
 
-# Optional SHA-256 backward-compat anchors (gated by `sha256-anchors` feature)
-sha2 = { version = "0.10", optional = true }
+# Self-update: HTTPS to GitHub Releases (rustls) + release checksum verification
+ureq = "3.4"
+sha2 = "0.10"
 
 [dev-dependencies]
 assert_cmd = "2"

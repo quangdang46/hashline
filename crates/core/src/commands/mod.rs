@@ -6,4 +6,5 @@ pub mod read;
 pub mod remove;
 pub mod rename;
 pub mod serve;
+pub mod update;
 pub mod write;

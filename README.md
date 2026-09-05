@@ -172,6 +172,8 @@ cargo install --path crates/core
 
 The installers auto-detect your platform, fetch the matching binary from GitHub Releases, verify the SHA-256, and atomically install to `~/.local/bin/hashline`. They also auto-detect supported MCP hosts (claude-code, codex, cursor, windsurf, vscode, gemini, opencode) and upsert a `hashline` MCP server entry for each.
 
+After installing, `hashline update` upgrades in place from GitHub Releases with the same checksum verification. Once a day, interactive commands print a one-line notice to stderr when a newer release is available — disable it with `HASHLINE_NO_UPDATE_CHECK=1`.
+
 ---
 
 ## Agent Host Integrations
@@ -268,6 +270,7 @@ EOF
 | `guide` | Interactive user guide — always matches your binary | built-in |
 | `serve` | daemon over Unix socket or HTTP | `hashline guide` → _Daemon Mode_ |
 | `mcp` | MCP stdio server (6 tools) | `hashline guide` → _MCP Mode_ |
+| `update` | Self-update the binary from GitHub Releases (SHA-256 verified) | `hashline update --check` |
 
 ---
 
