@@ -26,3 +26,4 @@ integration/*
 
 # rustc Internal Compiler Error dumps
 rustc-ice-*.txt
+.omo/
