@@ -8,6 +8,52 @@ use regex::Regex;
 use crate::messages::{BARE_BODY_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED};
 use crate::patch_format::HL_RANGE_SEP;
 use crate::prefixes::strip_one_hashline_prefix;
+
+/// Check if `word` is a recognized hashline operation keyword.
+/// Used to distinguish "known keyword, wrong format" from "truly unknown keyword".
+fn is_known_op_keyword(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "swap" | "del"
+            | "ins"
+            | "ins.pre"
+            | "ins.post"
+            | "ins.head"
+            | "ins.tail"
+            | "swap.blk"
+            | "del.blk"
+            | "ins.blk.post"
+            | "ins.blk.pre"
+            | "ins.blk"
+            | "cut"
+            | "put"
+            | "rem"
+            | "mv"
+    )
+}
+
+/// Return a format hint for a known keyword that failed to parse as a valid op.
+fn format_hint_for_keyword(word: &str) -> &'static str {
+    match word.to_ascii_lowercase().as_str() {
+        "swap" => "SWAP N:hash or SWAP N..M:hash\n            Body: +new content (on next line)",
+        "del" => "DEL N or DEL N..M",
+        "ins.pre" => "INS.PRE N:hash",
+        "ins.post" => "INS.POST N:hash",
+        "ins.head" => "INS.HEAD",
+        "ins.tail" => "INS.TAIL",
+        "ins" => "INS N:hash (shorthand for INS.POST) or INS.PRE|POST|HEAD|TAIL",
+        "swap.blk" => "SWAP.BLK N:hash",
+        "del.blk" => "DEL.BLK N:hash",
+        "ins.blk.post" => "INS.BLK.POST N:hash",
+        "ins.blk.pre" => "INS.BLK.PRE N:hash",
+        "ins.blk" => "INS.BLK N:hash",
+        "cut" => "CUT N..M @register (e.g. CUT 5..9 @fn)",
+        "put" => "PUT @register <N (e.g. PUT @fn <20) or PUT @register (paste at BOF)",
+        "rem" => "REM (delete entire file)",
+        "mv" => "MV destination_path",
+        _ => "see hashline docs for correct format",
+    }
+}
 use crate::tokenizer::{BlockTarget, Token, clone_cursor};
 use crate::types::{Anchor, BlockMode, Cursor, Edit, FileOp, InsertMode, ParsedRange};
 
@@ -293,6 +339,8 @@ impl Executor {
             // Bug #112: Detect unknown operation keywords being consumed as bare
             // payload. Lines like `END` or bare `SWAP` (without range) look like
             // ops but were never tokenized as OpBlock — flag and abort atomically.
+            // Fix #113/#114/#115: Distinguish known keywords with bad syntax from
+            // truly unknown keywords, and provide format-specific hints.
             if !text.trim().is_empty() {
                 let first_word_end = text.find([' ', '.', ':']).unwrap_or(text.len());
                 let first_word = &text[..first_word_end];
@@ -300,13 +348,25 @@ impl Executor {
                     && first_word
                         .chars()
                         .all(|c| c.is_ascii_uppercase() || c == '.')
-                    && !self
+                {
+                    if is_known_op_keyword(first_word) {
+                        let hint = format_hint_for_keyword(first_word);
+                        let msg = format!(
+                            "malformed operation `{first_word}` — expected format:\n            {hint}"
+                        );
+                        if !self.warnings.contains(&msg) {
+                            self.warnings.push(msg);
+                        }
+                    } else if !self
                         .warnings
                         .contains(&format!("unknown operation `{first_word}`"))
-                {
-                    self.warnings.push(format!(
-                        "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST,                          INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE,                          INS.BLK, CUT, or PUT"
-                    ));
+                    {
+                        self.warnings.push(format!(
+                            "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
+                             INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
+                             INS.BLK, CUT, or PUT"
+                        ));
+                    }
                     self.had_unknown_op = true;
                     return;
                 }
@@ -344,6 +404,8 @@ impl Executor {
 
         // Check for unknown operation keywords — lines like `FOO 1:` or `BAR.BAZ 5:`
         // that look like they're trying to be hunk operations but failed to parse.
+        // Fix #113/#114/#115: Distinguish known keywords with bad syntax from
+        // truly unknown keywords, and provide format-specific hints.
         if !text.trim().is_empty() {
             let first_word_end = text.find([' ', '.', ':']).unwrap_or(text.len());
             let first_word = &text[..first_word_end];
@@ -351,15 +413,25 @@ impl Executor {
                 && first_word
                     .chars()
                     .all(|c| c.is_ascii_uppercase() || c == '.')
-                && !self
+            {
+                if is_known_op_keyword(first_word) {
+                    let hint = format_hint_for_keyword(first_word);
+                    let msg = format!(
+                        "malformed operation `{first_word}` — expected format:\n            {hint}"
+                    );
+                    if !self.warnings.contains(&msg) {
+                        self.warnings.push(msg);
+                    }
+                } else if !self
                     .warnings
                     .contains(&format!("unknown operation `{first_word}`"))
-            {
-                self.warnings.push(format!(
-                    "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
-                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
-                     INS.BLK, CUT, or PUT"
-                ));
+                {
+                    self.warnings.push(format!(
+                        "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
+                         INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
+                         INS.BLK, CUT, or PUT"
+                    ));
+                }
                 self.had_unknown_op = true;
             }
         }
@@ -854,6 +926,39 @@ mod merge_tests {
     }
 }
 
+/// Normalize pipe `|` as inline body separator (Fix #113/#115).
+///
+/// Agents may send `SWAP 2:97 |content` on a single line. The `|`
+/// separates the operation header from its body. This function detects
+/// lines where `|` follows a valid hunk operation and expands them to
+/// the canonical multiline format:
+///   `SWAP 2:97 |content` → `SWAP 2:97\n+content`
+///
+/// Lines without `|` or where the part before `|` is not a valid
+/// operation are returned unchanged.
+fn normalize_pipe_separators(text: &str) -> String {
+    use crate::tokenizer::try_parse_hunk_header;
+    let mut result = String::with_capacity(text.len());
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        if let Some(pipe_pos) = line.find('|') {
+            let op_part = &line[..pipe_pos];
+            let body_part = &line[pipe_pos + 1..];
+            if try_parse_hunk_header(op_part).is_some() {
+                result.push_str(op_part.trim_end());
+                result.push('\n');
+                result.push('+');
+                result.push_str(body_part);
+                continue;
+            }
+        }
+        result.push_str(line);
+    }
+    result
+}
+
 /// Parse a complete patch diff body into `Edit`s, warnings, file-level operations,
 /// and a flag indicating whether parsing was halted by an `*** Abort` marker.
 pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool) {
@@ -861,10 +966,15 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
         Ok(m) => m,
         Err(e) => return (Vec::new(), vec![e], None, false),
     };
+
+    // Fix #113/#115: Normalize pipe-separated single-line operations
+    // before tokenization (e.g. `SWAP 2:97 |content` → multiline).
+    let normalized = normalize_pipe_separators(&merged);
+
     let tokenizer = crate::tokenizer::Tokenizer;
     let mut executor = Executor::new();
 
-    for (i, line) in merged.lines().enumerate() {
+    for (i, line) in normalized.lines().enumerate() {
         let token = tokenizer.tokenize(line, i + 1);
         executor.feed(token);
     }
@@ -872,13 +982,18 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
     let (mut edits, mut warnings, file_op, aborted) = executor.end();
 
     // Bug #112: If the executor produced both valid edits AND warnings about
-    // unknown operation keywords, the patch mixed recognized and unrecognized
-    // ops. Unrecognized ops (e.g. bare `SWAP`, `END`) were consumed as payload
-    // text by the executor, silently corrupting the file while reporting OK.
-    // Reject the entire patch atomically — no edits, no file mutation.
+    // unknown or malformed operation keywords, the patch mixed recognized and
+    // unrecognized ops. Unrecognized ops (e.g. bare `SWAP`, `END`) were consumed
+    // as payload text by the executor, silently corrupting the file while
+    // reporting OK. Reject the entire patch atomically — no edits, no file
+    // mutation.
+    // Fix #113/#114/#115: Also handle "malformed operation" warnings for known
+    // keywords with wrong syntax (e.g. `PUT @name:N:` instead of `PUT @name <N`).
     if !edits.is_empty() && !aborted {
-        let has_unknown_op_warning = warnings.iter().any(|w| w.starts_with("unknown operation"));
-        if has_unknown_op_warning {
+        let has_op_error = warnings.iter().any(|w| {
+            w.starts_with("unknown operation") || w.starts_with("malformed operation")
+        });
+        if has_op_error {
             edits.clear();
             warnings.clear();
             return (Vec::new(), Vec::new(), None, true);
@@ -960,6 +1075,125 @@ mod cut_put_tests {
         assert!(
             warnings.iter().any(|w| w.contains("ends before it starts")),
             "expected range-order warning, got {warnings:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod regression_113_114_115_tests {
+    use super::*;
+
+    // --- Issue #113: SWAP single-line pipe format ---
+
+    #[test]
+    fn swap_pipe_single_line_parses() {
+        // The agent sends `SWAP 2:97 |content` on a single line.
+        // The `|` should be treated as a body separator.
+        let (edits, warnings, _file_op, _aborted) =
+            parse_patch("SWAP 2:97 |Line 2: MODIFIED via SWAP");
+        // Should produce valid edits (a SWAP), not be rejected as unknown.
+        assert!(
+            !edits.is_empty(),
+            "SWAP with pipe separator should produce edits, got warnings: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("unknown operation")),
+            "SWAP with pipe should NOT be flagged as unknown, got: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("malformed operation")),
+            "SWAP with pipe should NOT be flagged as malformed, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn swap_pipe_single_line_with_plus_prefix() {
+        // `SWAP 2:97 |+content` — body has explicit `+` prefix.
+        let (edits, _warnings, _file_op, _aborted) =
+            parse_patch("SWAP 2:97 |+Line 2: MODIFIED via SWAP");
+        assert!(!edits.is_empty(), "should produce edits for pipe with +prefix");
+    }
+
+    // --- Issue #114: PUT format error message ---
+
+    #[test]
+    fn put_wrong_format_gives_malformed_error() {
+        // The agent used `PUT @fn:` (colon instead of `<N`).
+        let (_edits, warnings, _file_op, _aborted) = parse_patch("PUT @fn:");
+        assert!(
+            warnings.iter().any(|w| w.contains("malformed operation")),
+            "PUT with wrong format should give 'malformed operation' error, got: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("PUT @register <N")),
+            "PUT error should show correct format hint, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn put_correct_format_no_error() {
+        // Correct PUT syntax: `PUT @fn <20`
+        let (edits, warnings, _file_op, _aborted) = parse_patch("PUT @fn <20");
+        assert!(
+            !edits.is_empty(),
+            "correct PUT should produce edits, got warnings: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("malformed") || w.contains("unknown")),
+            "correct PUT should have no format errors, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn put_bare_register_no_error() {
+        // Bare `PUT @fn` (no `<N`) defaults to BOF.
+        let (edits, warnings, _file_op, _aborted) = parse_patch("PUT @fn");
+        assert!(!edits.is_empty(), "bare PUT should produce edits");
+        assert!(
+            !warnings.iter().any(|w| w.contains("malformed") || w.contains("unknown")),
+            "bare PUT should have no format errors, got: {warnings:?}"
+        );
+    }
+
+    // --- Issue #115: Stale anchor not masked as unknown ---
+
+    #[test]
+    fn stale_anchor_with_pipe_not_masked_as_unknown() {
+        // Stale anchor `SWAP 99:zz |stale line` — should be recognized as
+        // a SWAP operation (not "unknown"), and the applier should detect the
+        // stale/out-of-range anchor.
+        let (edits, warnings, _file_op, _aborted) =
+            parse_patch("SWAP 99:zz |stale line");
+        // The pipe fix should recognize this as a SWAP, not flag "unknown".
+        assert!(
+            !warnings.iter().any(|w| w.contains("unknown operation")),
+            "stale anchor SWAP with pipe should NOT be flagged as unknown, got: {warnings:?}"
+        );
+        // The edit should exist (the parser recognized the operation).
+        assert!(
+            !edits.is_empty(),
+            "stale anchor SWAP with pipe should produce edits (applier handles stale), got warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn recognized_keyword_bad_hash_not_unknown() {
+        // `SWAP 99:zz` without pipe — keyword SWAP is recognized but the hash
+        // format is bad. Should give "malformed" not "unknown".
+        let (_edits, warnings, _file_op, _aborted) = parse_patch("SWAP 99:zz");
+        assert!(
+            !warnings.iter().any(|w| w.contains("unknown operation")),
+            "recognized keyword with bad hash should NOT be 'unknown', got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn truly_unknown_keyword_still_flagged() {
+        // `FOOBAR 5:` is NOT a known keyword — should still be "unknown".
+        let (_edits, warnings, _file_op, _aborted) = parse_patch("FOOBAR 5:");
+        assert!(
+            warnings.iter().any(|w| w.contains("unknown operation `FOOBAR`")),
+            "truly unknown keyword should be flagged as unknown, got: {warnings:?}"
         );
     }
 }

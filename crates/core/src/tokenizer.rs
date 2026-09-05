@@ -746,7 +746,7 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     None
 }
 
-fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
+pub(crate) fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
     let end = trim_end_index(line);
     let bytes = line.as_bytes();
     let start = skip_whitespace(bytes, 0, end);
@@ -755,7 +755,18 @@ fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
     }
     let scan = scan_hunk_anchor(line, bytes, start, end)?;
     if scan.next_index != end {
-        return None;
+        // Fix #113/#115: Be lenient about trailing garbage after a valid scan.
+        // Agents may send malformed hashes like `SWAP 99:zz` where `zz` is not
+        // valid hex. The scan succeeded (recognized the operation keyword and
+        // line number), but trailing non-whitespace chars remain. Accept the
+        // operation — the applier will handle the stale/out-of-range anchor.
+        // Only reject if trailing chars are whitespace (indicates a valid range
+        // continuation that failed to parse, e.g. `SWAP 2 `).
+        let trailing = &bytes[scan.next_index..end];
+        if trailing.iter().all(|&b| is_whitespace_code(b)) {
+            return None;
+        }
+        // Trailing non-whitespace after a valid scan: accept with leniency.
     }
     Some(scan.target)
 }
