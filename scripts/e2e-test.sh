@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hashline e2e test suite — happy cases, edge cases, and regression tests
-# Covers issues #66–#107 and all patch operations.
+# Covers issues #66–#115 and all patch operations.
 # Usage: bash e2e-test.sh [path-to-hashline-binary]
 
 set -euo pipefail
@@ -663,6 +663,62 @@ OUT=$($HASHLINE patch "$TMPDIR/boundary.txt" "SWAP 1:${HA}..3:${HC}:
 # Should either succeed (with warning) or error — but not corrupt
 CONTENT=$(cat "$TMPDIR/boundary.txt")
 assert_contains "boundary keeps Line A" "$CONTENT" "Line A"
+
+# ── 11. Regression: Issue #113, #114, #115 ───────────────────────────
+
+echo "=== 47. SWAP pipe single-line (#113) ==="
+
+create_file "pipe_swap.txt" "Line A
+Line B
+Line C"
+READ=$($HASHLINE read "$TMPDIR/pipe_swap.txt" 2>&1)
+HB=$(get_hash "$READ" "Line B")
+OUT=$($HASHLINE patch "$TMPDIR/pipe_swap.txt" "SWAP 2:${HB} |Line B-PIPE" 2>&1)
+assert_contains "pipe SWAP shows OK" "$OUT" "OK"
+CONTENT=$(cat "$TMPDIR/pipe_swap.txt")
+assert_contains "pipe SWAP modifies file" "$CONTENT" "Line B-PIPE"
+
+echo "=== 48. PUT format error shows hint (#114) ==="
+
+create_file "put_err.txt" "Line A"
+OUT=$($HASHLINE patch "$TMPDIR/put_err.txt" "PUT @fn:" 2>&1 || true)
+assert_contains "PUT bad format shows malformed" "$OUT" "malformed"
+assert_contains "PUT bad format shows hint" "$OUT" "PUT @register <N"
+
+echo "=== 49. PUT correct format recognized (#114) ==="
+
+create_file "put_ok.txt" "Line A"
+OUT=$($HASHLINE patch "$TMPDIR/put_ok.txt" "PUT @fn <1" 2>&1 || true)
+assert_not_contains "PUT correct format not malformed" "$OUT" "malformed"
+
+echo "=== 50. Stale anchor with pipe not masked (#115) ==="
+
+create_file "stale_pipe.txt" "Line A
+Line B
+Line C"
+READ=$($HASHLINE read "$TMPDIR/stale_pipe.txt" 2>&1)
+# Use a bogus hash to simulate stale anchor
+OUT=$($HASHLINE patch "$TMPDIR/stale_pipe.txt" "SWAP 99:zz |stale" 2>&1 || true)
+assert_contains "stale pipe shows error" "$OUT" "ERR"
+assert_not_contains "stale pipe not unknown op" "$OUT" "unknown operation"
+
+echo "=== 51. Recognized keyword bad hash not unknown (#115) ==="
+
+create_file "bad_hash.txt" "Line A"
+OUT=$($HASHLINE patch "$TMPDIR/bad_hash.txt" "SWAP 99:zz
++stale" 2>&1 || true)
+assert_contains "bad hash shows error" "$OUT" "ERR"
+assert_not_contains "bad hash not unknown op" "$OUT" "unknown operation"
+
+echo "=== 52. Truly unknown keyword still flagged ==="
+
+create_file "unknown_op.txt" "Line A"
+ORIG=$(cat "$TMPDIR/unknown_op.txt")
+OUT=$($HASHLINE patch "$TMPDIR/unknown_op.txt" "FOOBAR 5:
++content" 2>&1 || true)
+assert_contains "unknown keyword shows warning" "$OUT" "unknown operation"
+CONTENT=$(cat "$TMPDIR/unknown_op.txt")
+assert_eq "unknown keyword does not modify file" "$ORIG" "$CONTENT"
 
 # ── Summary ──────────────────────────────────────────────────────────
 
