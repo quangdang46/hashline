@@ -277,28 +277,30 @@ EOF
 ## Architecture
 
 ```
-                    ┌─────────────────┐
-                    │  hashline read   │
-                    │  [file#1A2B]     │
-                    │  1:a1|content    │
-                    └────────┬────────┘
-                             │ copy anchor
-                             ▼
-              ┌──────────────────────────┐
-              │  Build patch string       │
-              │  SWAP 2:b2:               │
-              │  +new content             │
-              └────────┬─────────────────┘
-                       │
-              ┌────────▼─────────┐   ┌──────────────┐
-              │  hashline patch  │──│  --dry-run    │
-              │  file.patch      │   │  preview      │
-              └────────┬─────────┘   └──────────────┘
-                       │
-              ┌────────▼─────────┐
-              │  File updated     │
-              │  (atomic write)   │
-              └──────────────────┘
+┌─────────────────────────────┐
+│ 1. hashline read            │
+│    [file#1A2B]              │
+│    1:a1|content             │
+└──────────────┬──────────────┘
+               │ copy anchor
+               ▼
+┌─────────────────────────────┐
+│ 2. Build patch string       │
+│    SWAP 2:b2:               │
+│    + new content            │
+└──────────────┬──────────────┘
+               │
+               ▼
+┌─────────────────────────────┐        ┌──────────────┐
+│ 3. hashline patch file      ├───────>│ --dry-run    │
+│    (stdin for multi-op)     │        │ preview only │
+└──────────────┬──────────────┘        └──────────────┘
+               │ apply
+               ▼
+┌─────────────────────────────┐
+│ 4. File updated             │
+│    (atomic write)           │
+└─────────────────────────────┘
 ```
 
 Block-aware resolution by extension:
