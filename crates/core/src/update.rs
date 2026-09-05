@@ -670,26 +670,37 @@ mod tests {
         }
     }
 
+    /// The package version with its patch component bumped — keeps tests
+    /// that need a strictly newer release correct after version bumps.
+    fn newer_than_current() -> String {
+        let mut components: Vec<u64> = current_version()
+            .split('.')
+            .map(|p| p.parse().expect("numeric version component"))
+            .collect();
+        *components.last_mut().expect("semver has components") += 1;
+        components
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
     #[test]
     fn notice_status_uses_fresh_cache_without_fetching() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("update-check.json");
+        let latest = newer_than_current();
         write_notice_cache(
             &cache,
             &NoticeCache {
                 last_check_epoch: epoch_now(),
-                latest_version: "0.9.16".into(),
+                latest_version: latest.clone(),
             },
         );
         let status = notice_status(&cache, epoch_now(), || -> Result<Release, String> {
             panic!("fetch must not run while the cache is fresh")
         });
-        assert_eq!(
-            status,
-            UpdateStatus::Outdated {
-                latest: "0.9.16".into()
-            }
-        );
+        assert_eq!(status, UpdateStatus::Outdated { latest });
     }
 
     #[test]
@@ -700,18 +711,19 @@ mod tests {
             &cache,
             &NoticeCache {
                 last_check_epoch: epoch_now() - NOTICE_REFRESH_INTERVAL - 1,
-                latest_version: "0.9.15".into(),
+                latest_version: "0.0.1".into(),
             },
         );
-        let status = notice_status(&cache, epoch_now(), || Ok(Release::from_version("0.9.20")));
+        let latest = newer_than_current();
+        let status = notice_status(&cache, epoch_now(), || Ok(Release::from_version(&latest)));
         assert_eq!(
             status,
             UpdateStatus::Outdated {
-                latest: "0.9.20".into()
+                latest: latest.clone()
             }
         );
         let refreshed = read_notice_cache(&cache).unwrap();
-        assert_eq!(refreshed.latest_version, "0.9.20");
+        assert_eq!(refreshed.latest_version, latest);
     }
 
     #[test]
