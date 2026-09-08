@@ -514,10 +514,27 @@ The version you asked for ($Version) does not include $archive. Either:
                     Write-Ok "replaced $dstFile"
                     Remove-Item -LiteralPath $oldFile -Force -ErrorAction SilentlyContinue
                 } else {
-                    # Restore old binary if move failed
-                    Move-Item -LiteralPath $oldFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
                     Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
-                    Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+                    # Likely blocked by permissions (e.g. Program Files) — retry
+                    # the rename+copy in an elevated child process via UAC.
+                    Write-Info "permission denied — retrying with elevation (UAC prompt)"
+                    $elevated = $false
+                    try {
+                        $inner = "Copy-Item -LiteralPath '$srcFile' -Destination '$oldFile.new' -Force; " +
+                                 "Rename-Item -LiteralPath '$dstFile' -NewName '$oldFile' -ErrorAction SilentlyContinue; " +
+                                 "Copy-Item -LiteralPath '$oldFile.new' -Destination '$dstFile' -Force; " +
+                                 "Remove-Item -LiteralPath '$oldFile.new','$oldFile' -Force -ErrorAction SilentlyContinue"
+                        $proc = Start-Process powershell -ArgumentList @('-NoProfile','-Command', $inner) -Verb RunAs -Wait -PassThru -ErrorAction Stop
+                        $elevated = ($proc.ExitCode -eq 0) -and (Test-Path -LiteralPath $dstFile)
+                    } catch {
+                        $elevated = $false
+                    }
+                    if ($elevated -and (Test-Path -LiteralPath $dstFile)) {
+                        Write-Ok "replaced $dstFile (elevated)"
+                    } else {
+                        Move-Item -LiteralPath $oldFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
+                        Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+                    }
                 }
             } catch {
                 Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue

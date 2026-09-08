@@ -544,6 +544,15 @@ main() {
             log_info "also updating existing $BINARY_NAME at $existing_bin"
             if cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
                 log_success "replaced $existing_bin"
+            elif command -v sudo >/dev/null 2>&1 && sudo -n cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+                log_success "replaced $existing_bin (via passwordless sudo)"
+            elif command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then
+                log_info "need elevated permission to replace $existing_bin — you may be prompted for your password"
+                if sudo cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+                    log_success "replaced $existing_bin (via sudo)"
+                else
+                    log_warn "could not update $existing_bin even with sudo — remove it manually"
+                fi
             else
                 log_warn "could not update $existing_bin — you may need sudo or remove it manually"
             fi
