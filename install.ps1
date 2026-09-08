@@ -560,32 +560,41 @@ The version you asked for ($Version) does not include $archive. Either:
         if ($v) { Write-Host "   version: $v" }
     } catch { }
 
-    # Final sanity check: does `hashline` on PATH *in a fresh process* still
-    # resolve to an older copy? Get-Command in *this* process may already
-    # see the new $Dest binary even though a separate old copy elsewhere on
-    # PATH never got overwritten (permission failure above, or it comes
-    # first in PATH order) -- check both possibilities explicitly instead of
-    # letting the user believe --verify or the banner above proves it.
+    # Hunt down stale copies: any other `hashline` on PATH whose version
+    # differs from what we just installed is an outdated shadow -- delete it
+    # so the new binary always wins regardless of PATH order. Deleting a
+    # running .exe fails on Windows, so rename out of the way first, then
+    # delete. Best-effort only: leftover copies just warn.
     try {
-        $newVer = & (Join-Path $Dest $BinaryFile) --version 2>$null
+        $newBin = Join-Path $Dest $BinaryFile
+        $newVer = & $newBin --version 2>$null
         $allOnPath = Get-Command $BinaryName -All -ErrorAction SilentlyContinue
         foreach ($cmd in $allOnPath) {
             $cmdDirNorm = (Split-Path $cmd.Source -Parent).TrimEnd('\').ToLower()
-            if ($cmdDirNorm -ne $Dest.TrimEnd('\').ToLower()) {
-                $otherVer = & $cmd.Source --version 2>$null
-                if ($otherVer -ne $newVer) {
-                    Write-Host ""
-                    Write-Warn "===================================================="
-                    Write-Warn "  Another '$BinaryName' still exists on PATH and was"
-                    Write-Warn "  NOT updated -- running '$BinaryName' may still use"
-                    Write-Warn "  the OLD version depending on PATH order."
-                    Write-Warn ""
-                    Write-Warn "  old copy      : $($cmd.Source) ($otherVer)"
-                    Write-Warn "  just installed: $Dest\$BinaryFile ($newVer)"
-                    Write-Warn ""
-                    Write-Warn "  Fix: delete the old copy, or run as admin, then"
-                    Write-Warn "  open a NEW terminal (PATH changes need a restart)."
-                    Write-Warn "===================================================="
+            if ($cmdDirNorm -eq $Dest.TrimEnd('\').ToLower()) { continue }
+            $otherVer = $null
+            try { $otherVer = & $cmd.Source --version 2>$null } catch { }
+            if ($otherVer -and ($otherVer -ne $newVer)) {
+                Write-Info "removing stale $BinaryName ($otherVer) at $($cmd.Source)"
+                $removed = $false
+                try {
+                    # Rename-then-delete: a running .exe can be renamed even
+                    # though it cannot be deleted/overwritten directly.
+                    $staleOld = [string]$cmd.Source + ".stale." + [string]$PID
+                    Rename-Item -LiteralPath $cmd.Source -NewName (Split-Path $staleOld -Leaf) -ErrorAction Stop
+                    Remove-Item -LiteralPath $staleOld -Force -ErrorAction SilentlyContinue
+                    if (-not (Test-Path -LiteralPath $cmd.Source)) { $removed = $true }
+                } catch { }
+                if (-not $removed) {
+                    try {
+                        Remove-Item -LiteralPath $cmd.Source -Force -ErrorAction Stop
+                        $removed = $true
+                    } catch { }
+                }
+                if ($removed) {
+                    Write-Ok "removed stale copy: $($cmd.Source)"
+                } else {
+                    Write-Warn "could not remove $($cmd.Source) -- delete it manually or run as admin"
                 }
             }
         }
