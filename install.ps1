@@ -542,6 +542,37 @@ The version you asked for ($Version) does not include $archive. Either:
         $v = & (Join-Path $Dest $BinaryFile) --version 2>$null
         if ($v) { Write-Host "   version: $v" }
     } catch { }
+
+    # Final sanity check: does `hashline` on PATH *in a fresh process* still
+    # resolve to an older copy? Get-Command in *this* process may already
+    # see the new $Dest binary even though a separate old copy elsewhere on
+    # PATH never got overwritten (permission failure above, or it comes
+    # first in PATH order) -- check both possibilities explicitly instead of
+    # letting the user believe --verify or the banner above proves it.
+    try {
+        $newVer = & (Join-Path $Dest $BinaryFile) --version 2>$null
+        $allOnPath = Get-Command $BinaryName -All -ErrorAction SilentlyContinue
+        foreach ($cmd in $allOnPath) {
+            $cmdDirNorm = (Split-Path $cmd.Source -Parent).TrimEnd('\').ToLower()
+            if ($cmdDirNorm -ne $Dest.TrimEnd('\').ToLower()) {
+                $otherVer = & $cmd.Source --version 2>$null
+                if ($otherVer -ne $newVer) {
+                    Write-Host ""
+                    Write-Warn "===================================================="
+                    Write-Warn "  Another '$BinaryName' still exists on PATH and was"
+                    Write-Warn "  NOT updated -- running '$BinaryName' may still use"
+                    Write-Warn "  the OLD version depending on PATH order."
+                    Write-Warn ""
+                    Write-Warn "  old copy      : $($cmd.Source) ($otherVer)"
+                    Write-Warn "  just installed: $Dest\$BinaryFile ($newVer)"
+                    Write-Warn ""
+                    Write-Warn "  Fix: delete the old copy, or run as admin, then"
+                    Write-Warn "  open a NEW terminal (PATH changes need a restart)."
+                    Write-Warn "===================================================="
+                }
+            }
+        }
+    } catch { }
     Write-Host ""
     Write-Host "   quick start:"
     Write-Host "     $BinaryName --help"
