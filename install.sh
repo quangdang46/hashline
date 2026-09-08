@@ -534,6 +534,7 @@ main() {
 
     # Also replace any existing `hashline` on PATH at a different location
     # so `hashline --version` always shows the latest version.
+    hash -r 2>/dev/null || true
     local existing_bin
     existing_bin=$(command -v "$BINARY_NAME" 2>/dev/null || true)
     if [ -n "$existing_bin" ]; then
@@ -543,6 +544,15 @@ main() {
             log_info "also updating existing $BINARY_NAME at $existing_bin"
             if cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
                 log_success "replaced $existing_bin"
+            elif command -v sudo >/dev/null 2>&1 && sudo -n cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+                log_success "replaced $existing_bin (via passwordless sudo)"
+            elif command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then
+                log_info "need elevated permission to replace $existing_bin — you may be prompted for your password"
+                if sudo cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+                    log_success "replaced $existing_bin (via sudo)"
+                else
+                    log_warn "could not update $existing_bin even with sudo — remove it manually"
+                fi
             else
                 log_warn "could not update $existing_bin — you may need sudo or remove it manually"
             fi
@@ -551,6 +561,33 @@ main() {
 
     if [ "$VERIFY" -eq 1 ]; then
         "$DEST/$BINARY_NAME" --version >/dev/null
+    fi
+
+    # Final sanity check: does the `hashline` that PATH actually resolves to
+    # right now match what we just installed? If not, the old copy is still
+    # shadowing the new one (permission failure above, or PATH ordering) —
+    # make this loudly obvious instead of letting the user believe they're
+    # on the new version.
+    hash -r 2>/dev/null || true
+    local resolved_bin new_ver resolved_ver
+    resolved_bin=$(command -v "$BINARY_NAME" 2>/dev/null || true)
+    new_ver=$("$DEST/$BINARY_NAME" --version 2>/dev/null || true)
+    if [ -n "$resolved_bin" ]; then
+        resolved_ver=$("$resolved_bin" --version 2>/dev/null || true)
+        if [ "$resolved_bin" != "$DEST/$BINARY_NAME" ] && [ "$resolved_ver" != "$new_ver" ]; then
+            echo "" >&2
+            log_warn "===================================================="
+            log_warn "  'hashline' on your PATH still resolves to an OLDER"
+            log_warn "  copy — running it will NOT use the version just"
+            log_warn "  installed."
+            log_warn ""
+            log_warn "  PATH resolves to : $resolved_bin ($resolved_ver)"
+            log_warn "  just installed    : $DEST/$BINARY_NAME ($new_ver)"
+            log_warn ""
+            log_warn "  Fix: remove the old copy, or reorder PATH so"
+            log_warn "  '$DEST' comes first, then restart your shell."
+            log_warn "===================================================="
+        fi
     fi
 
     run_mcp_auto_install || true

@@ -514,10 +514,27 @@ The version you asked for ($Version) does not include $archive. Either:
                     Write-Ok "replaced $dstFile"
                     Remove-Item -LiteralPath $oldFile -Force -ErrorAction SilentlyContinue
                 } else {
-                    # Restore old binary if move failed
-                    Move-Item -LiteralPath $oldFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
                     Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
-                    Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+                    # Likely blocked by permissions (e.g. Program Files) — retry
+                    # the rename+copy in an elevated child process via UAC.
+                    Write-Info "permission denied — retrying with elevation (UAC prompt)"
+                    $elevated = $false
+                    try {
+                        $inner = "Copy-Item -LiteralPath '$srcFile' -Destination '$oldFile.new' -Force; " +
+                                 "Rename-Item -LiteralPath '$dstFile' -NewName '$oldFile' -ErrorAction SilentlyContinue; " +
+                                 "Copy-Item -LiteralPath '$oldFile.new' -Destination '$dstFile' -Force; " +
+                                 "Remove-Item -LiteralPath '$oldFile.new','$oldFile' -Force -ErrorAction SilentlyContinue"
+                        $proc = Start-Process powershell -ArgumentList @('-NoProfile','-Command', $inner) -Verb RunAs -Wait -PassThru -ErrorAction Stop
+                        $elevated = ($proc.ExitCode -eq 0) -and (Test-Path -LiteralPath $dstFile)
+                    } catch {
+                        $elevated = $false
+                    }
+                    if ($elevated -and (Test-Path -LiteralPath $dstFile)) {
+                        Write-Ok "replaced $dstFile (elevated)"
+                    } else {
+                        Move-Item -LiteralPath $oldFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
+                        Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+                    }
                 }
             } catch {
                 Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
@@ -541,6 +558,37 @@ The version you asked for ($Version) does not include $archive. Either:
     try {
         $v = & (Join-Path $Dest $BinaryFile) --version 2>$null
         if ($v) { Write-Host "   version: $v" }
+    } catch { }
+
+    # Final sanity check: does `hashline` on PATH *in a fresh process* still
+    # resolve to an older copy? Get-Command in *this* process may already
+    # see the new $Dest binary even though a separate old copy elsewhere on
+    # PATH never got overwritten (permission failure above, or it comes
+    # first in PATH order) -- check both possibilities explicitly instead of
+    # letting the user believe --verify or the banner above proves it.
+    try {
+        $newVer = & (Join-Path $Dest $BinaryFile) --version 2>$null
+        $allOnPath = Get-Command $BinaryName -All -ErrorAction SilentlyContinue
+        foreach ($cmd in $allOnPath) {
+            $cmdDirNorm = (Split-Path $cmd.Source -Parent).TrimEnd('\').ToLower()
+            if ($cmdDirNorm -ne $Dest.TrimEnd('\').ToLower()) {
+                $otherVer = & $cmd.Source --version 2>$null
+                if ($otherVer -ne $newVer) {
+                    Write-Host ""
+                    Write-Warn "===================================================="
+                    Write-Warn "  Another '$BinaryName' still exists on PATH and was"
+                    Write-Warn "  NOT updated -- running '$BinaryName' may still use"
+                    Write-Warn "  the OLD version depending on PATH order."
+                    Write-Warn ""
+                    Write-Warn "  old copy      : $($cmd.Source) ($otherVer)"
+                    Write-Warn "  just installed: $Dest\$BinaryFile ($newVer)"
+                    Write-Warn ""
+                    Write-Warn "  Fix: delete the old copy, or run as admin, then"
+                    Write-Warn "  open a NEW terminal (PATH changes need a restart)."
+                    Write-Warn "===================================================="
+                }
+            }
+        }
     } catch { }
     Write-Host ""
     Write-Host "   quick start:"
