@@ -74,11 +74,18 @@ Errors (stderr, exit 1):
 ```text
 ERR KIND key=val...
 HINT <teaching hint>
+REPORT https://github.com/quangdang46/hashline/issues
 ```
 `KIND` values match the `--json` kind list above (`STALE_ANCHOR file= line= expected= actual=`,
 `EMPTY_PATCH reason=`, `HASH_NOT_FOUND hash= file=`, `AMBIGUOUS_HASH hash= count= lines= file=`,
 `INVALID_ANCHOR anchor=`, `BINARY_FILE`, `IO`, ...). Legacy `Error:`/`Hint:` text is the
 `--verbose` form; wrappers should accept both.
+
+The `REPORT` line is **optional and only present for errors that look like a hashline defect**
+(unexpected I/O kinds, serialization/parse failures, internal invariant breaches). Routine,
+user-actionable errors — stale anchors, missing files, bad anchors, rejected patches — omit it
+deliberately, so do not treat its absence as an error. It never appears on its own: an error has
+`HINT` (or is a bare `ERR KIND`), and `REPORT` follows.
 - `0` — success, no-op patch, or `*** Abort`. stdout = data; stderr = diagnostics.
 - `1` — **any error**, including logical ones: stale anchor, empty patch, invalid anchor,
   ambiguous hash, infrastructure failure (I/O, invalid UTF-8, binary file).
@@ -93,8 +100,10 @@ Hint: re-read the file with `hashline read <file>`; ...
 
 ### `--json` errors
 ```json
-{ "kind": "STALE_ANCHOR", "error": "line 2 content changed ...", "hint": "...", "command": "patch" }
+{ "kind": "STALE_ANCHOR", "error": "line 2 content changed ...", "hint": "...", "command": "patch", "report_url": null }
 ```
+`report_url` is a string (the issues URL) only for errors that look like a hashline defect — the
+same set that emits the compact `REPORT` line — and `null` otherwise.
 `kind` values: `STALE_ANCHOR`, `STALE_FILE`, `NOOP_LOOP`, `EMPTY_PATCH`, `AMBIGUOUS_HASH`,
 `HASH_NOT_FOUND`, `INVALID_ANCHOR`, `BLOCK_UNRESOLVED`, `BINARY_FILE`, `INVALID_UTF8`,
 `FILE_NOT_FOUND`, `MISSING_SNAPSHOT_TAG`, `CANNOT_RECOVER`, `CLIPBOARD`, `IO`, `PATCH_FAILED`.
