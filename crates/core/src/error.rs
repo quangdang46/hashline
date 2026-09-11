@@ -2,6 +2,10 @@
 
 use thiserror::Error;
 
+/// Where users report unexpected hashline failures. One canonical URL so the
+/// CLI, the JSON payload, and any wrapper all point at the same place.
+pub const ISSUES_URL: &str = "https://github.com/quangdang46/hashline/issues";
+
 #[derive(Debug, Error)]
 pub enum HashlineError {
     #[error("{command} is not implemented yet")]
@@ -361,6 +365,41 @@ impl HashlineError {
         }
     }
 
+    /// Bug-report URL for errors that suggest hashline itself misbehaved,
+    /// rather than the caller passing bad input.
+    ///
+    /// Routine, user-actionable failures — stale anchors, missing files, bad
+    /// anchors, rejected patches — deliberately return `None`. A stale anchor
+    /// is normal control flow, not a defect, and sending someone to the issue
+    /// tracker for one is noise that buries the reports that matter.
+    pub fn report_url(&self) -> Option<&'static str> {
+        let unexpected = match self {
+            // Most I/O failures are the caller's path or permissions, not a
+            // defect — "file not found" and "access denied" are routine, and
+            // a missing file surfaces as `Io`, not `FileNotFound`. Only the
+            // kinds we cannot explain that way are worth a bug report.
+            HashlineError::Io(err) => !matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::AlreadyExists
+                    | std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::IsADirectory
+                    | std::io::ErrorKind::NotADirectory
+            ),
+            HashlineError::Json(_)
+            | HashlineError::ParseError { .. }
+            | HashlineError::ServerError { .. }
+            | HashlineError::CannotRecover { .. }
+            | HashlineError::MutationIndexOutOfBounds { .. }
+            | HashlineError::InvalidMutationRange { .. } => true,
+            #[cfg(feature = "sha256-anchors")]
+            HashlineError::Sha256Anchor(_) => true,
+            _ => false,
+        };
+        unexpected.then_some(ISSUES_URL)
+    }
+
     /// Machine-readable error kind for structured (JSON) error output. This is
     /// the stable contract agents key on — it does NOT change with message
     /// wording. Backward-compatible: the text/hint fields stay, `kind` is new.
@@ -472,7 +511,7 @@ impl HashlineError {
 
 #[cfg(test)]
 mod tests {
-    use super::HashlineError;
+    use super::{HashlineError, ISSUES_URL};
 
     #[test]
     fn error_kind_is_machine_readable() {
@@ -500,6 +539,78 @@ mod tests {
             .kind(),
             "BINARY_FILE"
         );
+    }
+
+    #[test]
+    fn only_unexpected_errors_offer_a_bug_report_url() {
+        let reportable = [
+            HashlineError::Io(std::io::Error::other("boom")),
+            HashlineError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
+            HashlineError::ParseError {
+                line: 1,
+                message: "bad".into(),
+            },
+            HashlineError::ServerError {
+                message: "connection refused".into(),
+                kind: "not_running".into(),
+            },
+            HashlineError::CannotRecover {
+                path: "broken.txt".into(),
+            },
+            HashlineError::MutationIndexOutOfBounds { index: 5, len: 2 },
+            HashlineError::InvalidMutationRange {
+                start: 3,
+                end: 1,
+                len: 2,
+            },
+        ];
+        for error in reportable {
+            assert_eq!(
+                error.report_url(),
+                Some(ISSUES_URL),
+                "expected a report URL for: {error:?}"
+            );
+        }
+
+        // Routine, user-actionable errors must not point at the tracker.
+        let routine = [
+            HashlineError::StaleAnchor {
+                anchor: "2:aa".into(),
+                line: 2,
+                expected: "aa".into(),
+                actual: "bb".into(),
+                path: "demo.txt".into(),
+                relocated_suffix: "".into(),
+            },
+            HashlineError::InvalidAnchor {
+                anchor: "bogus".into(),
+            },
+            HashlineError::HashNotFound {
+                hash: "ff".into(),
+                path: "demo.txt".into(),
+            },
+            HashlineError::FileNotFound {
+                path: "missing.txt".into(),
+            },
+            // A missing or unreadable path arrives as `Io`, not
+            // `FileNotFound`, and must not be treated as a hashline defect.
+            HashlineError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file",
+            )),
+            HashlineError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "access denied",
+            )),
+            HashlineError::EmptyPatch,
+        ];
+        for error in routine {
+            assert_eq!(
+                error.report_url(),
+                None,
+                "routine errors must not offer a report URL: {error:?}"
+            );
+        }
     }
 
     #[test]
