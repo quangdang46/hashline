@@ -132,4 +132,22 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          # generate_release_notes hits the "generate release notes" API,
+          # which intermittently 500s (killed v0.9.17 publish 3x). Keep
+          # notes static instead; body below is always available.
+          generate_release_notes: false
+          body: |
+            ## hashline ${{ github.ref_name }}
+
+            Hash-anchored line editing for AI coding agents.
+
+            ### Install
+
+            ```bash
+            # Linux / macOS
+            curl -fsSL "https://raw.githubusercontent.com/quangdang46/hashline/main/install.sh" | bash
+            # Windows
+            irm "https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1" | iex
+            ```
+
+            Verify checksums with the accompanying `.sha256` files.
