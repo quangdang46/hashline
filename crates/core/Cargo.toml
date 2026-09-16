@@ -1,6 +1,6 @@
 [package]
 name = "hashline"
-version = "0.9.17"
+version = "0.9.18"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
