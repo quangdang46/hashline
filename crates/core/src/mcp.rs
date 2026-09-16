@@ -149,7 +149,8 @@ fn tool_list() -> ToolList {
                     "properties": {
                         "file": {"type": "string"},
                         "patch": {"type": "string", "description": "Hashline patch string"},
-                        "dry_run": {"type": "boolean"}
+                        "dry_run": {"type": "boolean"},
+                        "return_updated_anchors": {"type": "boolean", "description": "Opt-in (issue #119): append the full fresh anchor listing ([path#HASH] + N:hh|content) to the result so follow-up edits can reuse anchors without an extra read call"}
                     },
                     "required": ["file", "patch"]
                 })),
@@ -548,7 +549,12 @@ fn handle_rename_file(src: &str, dst: &str, json: bool) -> String {
     }
 }
 
-fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
+fn handle_patch(
+    file: &str,
+    patch_str: &str,
+    dry_run: bool,
+    return_updated_anchors: bool,
+) -> String {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
         Ok(fc) => fc,
@@ -626,6 +632,14 @@ fn handle_patch(file: &str, patch_str: &str, dry_run: bool) -> String {
                 }
                 if !warning_line.is_empty() {
                     out.push_str(&warning_line);
+                }
+                // Opt-in (issue #119): full fresh anchor listing in `read`
+                // format so the caller can chain edits without re-reading.
+                if return_updated_anchors || crate::commands::patch::emit_anchors_from_env() {
+                    out.push_str(&format!("\n[{}#{}]", file, changeset.file_hash));
+                    for line in &changeset.updated_anchors {
+                        out.push_str(&format!("\n{}:{}|{}", line.line, line.hash, line.content));
+                    }
                 }
                 out
             }
@@ -716,8 +730,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("dry_run")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let return_updated_anchors = args
+                .get("return_updated_anchors")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             Ok(
-                serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run)}]}),
+                serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run, return_updated_anchors)}]}),
             )
         }
         "write" | "hashline_write" => {

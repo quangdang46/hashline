@@ -110,6 +110,11 @@ pub fn run<W: Write, E: Write>(
         crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
     }
 
+    // Opt-in (issue #119): also hand back fresh anchors so the caller can
+    // chain a follow-up edit without an extra `read` round-trip. Flag or
+    // `HASHLINE_RETURN_ANCHORS=1`. Off by default to keep output token-minimal.
+    let emit_anchors = cmd.emit_anchors || emit_anchors_from_env();
+
     // Render output based on output mode.
     match ctx.output_mode() {
         crate::context::OutputMode::Compact => {
@@ -145,6 +150,9 @@ pub fn run<W: Write, E: Write>(
             }
             for &line_num in &changeset.deleted {
                 writeln!(ctx.stdout(), "-{}", line_num)?;
+            }
+            if emit_anchors {
+                write_updated_anchors(ctx.stdout(), &cmd.file.display().to_string(), &changeset)?;
             }
         }
         crate::context::OutputMode::Verbose => {
@@ -195,13 +203,38 @@ pub fn run<W: Write, E: Write>(
                     })
                 }))
                 .collect();
-            let payload = serde_json::json!({
-                "success": true,
-                "file": cmd.file.display().to_string(),
-                "hash": changeset.file_hash,
-                "edits_applied": changeset.edits_applied,
-                "changed": changed,
-            });
+            let payload = if emit_anchors {
+                // `updated_anchors`: full fresh anchor listing in `read`
+                // JSON shape ({line, hash, text}) so agents can chain edits
+                // without an extra `read` call (issue #119).
+                let updated_anchors: Vec<serde_json::Value> = changeset
+                    .updated_anchors
+                    .iter()
+                    .map(|l| {
+                        serde_json::json!({
+                            "line": l.line,
+                            "hash": l.hash,
+                            "text": l.content,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "success": true,
+                    "file": cmd.file.display().to_string(),
+                    "hash": changeset.file_hash,
+                    "edits_applied": changeset.edits_applied,
+                    "changed": changed,
+                    "updated_anchors": updated_anchors,
+                })
+            } else {
+                serde_json::json!({
+                    "success": true,
+                    "file": cmd.file.display().to_string(),
+                    "hash": changeset.file_hash,
+                    "edits_applied": changeset.edits_applied,
+                    "changed": changed,
+                })
+            };
             writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
         }
         crate::context::OutputMode::Ndjson => {
@@ -238,9 +271,41 @@ pub fn run<W: Write, E: Write>(
             for &line_num in &changeset.deleted {
                 writeln!(ctx.stdout(), "-{}", line_num)?;
             }
+            if emit_anchors {
+                write_updated_anchors(ctx.stdout(), &cmd.file.display().to_string(), &changeset)?;
+            }
         }
     }
 
+    Ok(())
+}
+
+/// True when `HASHLINE_RETURN_ANCHORS` is set to a truthy value
+/// (`1`, `true`, `yes`, `on`). Lets agents opt in without touching argv.
+pub fn emit_anchors_from_env() -> bool {
+    match std::env::var("HASHLINE_RETURN_ANCHORS") {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Write the full fresh anchor listing from the changeset in `read` output
+/// format so a follow-up patch can reuse the anchors directly
+/// (`[path#HASH]` + `N:hh|content`). Hashes come from
+/// [`ChangeSet::updated_anchors`], computed with the same position-seeded
+/// hash the `read` path uses.
+fn write_updated_anchors<W: Write>(
+    stdout: &mut W,
+    path: &str,
+    changeset: &ChangeSet,
+) -> std::io::Result<()> {
+    writeln!(stdout, "[{path}#{}]", changeset.file_hash)?;
+    for line in &changeset.updated_anchors {
+        writeln!(stdout, "{}:{}|{}", line.line, line.hash, line.content)?;
+    }
     Ok(())
 }
 
@@ -496,6 +561,19 @@ fn compute_changeset(
     };
     let file_hash = compute_file_hash(&final_text);
 
+    // Full fresh anchor listing (issue #119): every result line with its new
+    // number + new hash, computed with the same position-seeded hash the
+    // `read` path uses so anchors are directly reusable.
+    let updated_anchors: Vec<ChangedLine> = final_lines
+        .iter()
+        .enumerate()
+        .map(|(i, content)| ChangedLine {
+            line: i + 1,
+            hash: crate::hash::format_short_hash(short_hash_value_indexed(content, i + 1)),
+            content: content.clone(),
+        })
+        .collect();
+
     ChangeSet {
         edits_applied: edits_count,
         modified,
@@ -503,6 +581,7 @@ fn compute_changeset(
         deleted,
         file_hash,
         line_count: final_lines.len(),
+        updated_anchors,
     }
 }
 
@@ -2362,5 +2441,166 @@ mod tests {
         // trigger the abort.
         let result = apply_text("line1\nline2\nline3", "SWAP 2:\n+REPLACED");
         assert_eq!(result, "line1\nREPLACED\nline3");
+    }
+
+    // ---- Issue #119: opt-in updated anchors ----
+
+    /// Drive the full CLI `patch::run` against a temp file and capture stdout.
+    fn run_patch_stdout(
+        dir: &std::path::Path,
+        name: &str,
+        content: &str,
+        patch_text: &str,
+        emit_anchors: bool,
+        json: bool,
+    ) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        let cmd = crate::cli::PatchCmd {
+            file: path.clone(),
+            patch: patch_text.to_string(),
+            dry_run: false,
+            safe: false,
+            json,
+            verbose: false,
+            emit_anchors,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut ctx = crate::context::CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            crate::context::output_mode_for(&crate::cli::Commands::Patch(cmd.clone())),
+        );
+        super::run(&mut ctx, cmd).expect("patch should succeed");
+        String::from_utf8(stdout).unwrap()
+    }
+
+    #[test]
+    fn issue119_default_output_has_no_anchor_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_stdout(
+            dir.path(),
+            "a.txt",
+            "line one\nline two\nline three\n",
+            "SWAP 2:\n+replaced",
+            false,
+            false,
+        );
+        assert!(out.starts_with("OK "), "{out}");
+        assert!(!out.contains("[a.txt#") && !out.contains("]#"), "{out}");
+    }
+
+    #[test]
+    fn issue119_emit_anchors_lists_fresh_anchors_for_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_stdout(
+            dir.path(),
+            "a.txt",
+            "line one\nline two\nline three\n",
+            "INS.POST 2:\n+inserted line",
+            true,
+            false,
+        );
+        // Summary first, then a read-compatible full anchor listing.
+        let header = out.lines().find(|l| l.starts_with('[')).expect("{out}");
+        let anchors: Vec<&str> = out
+            .lines()
+            .skip_while(|l| !l.starts_with('['))
+            .skip(1)
+            .collect();
+        assert_eq!(anchors.len(), 4, "{out}");
+        // Line numbers are fresh post-edit positions...
+        assert!(anchors[2].starts_with("3:"), "{out}");
+        assert!(anchors[3].starts_with("4:"), "{out}");
+        // ...and the listing parses as `N:hh|content`.
+        for a in &anchors {
+            assert!(a.contains(':') && a.contains('|'), "{a}");
+        }
+        // The shifted line keeps its content+hash, so the anchor is reusable.
+        assert!(anchors[3].ends_with("|line three"), "{out}");
+        let _ = header;
+    }
+
+    #[test]
+    fn issue119_emit_anchors_matches_read_for_symbol_lines() {
+        // Symbol-only lines are position-seeded: the emitted anchors must
+        // equal what a fresh `read` reports, or chained edits go stale.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.rs");
+        std::fs::write(&path, "fn f() {\n    let x = 1;\n}\n").unwrap();
+        let cmd = crate::cli::PatchCmd {
+            file: path.clone(),
+            patch: "INS.POST 1:\n+// comment".to_string(),
+            dry_run: false,
+            safe: false,
+            json: false,
+            verbose: false,
+            emit_anchors: true,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut ctx = crate::context::CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            crate::context::OutputMode::Compact,
+        );
+        super::run(&mut ctx, cmd).expect("patch should succeed");
+        let emitted = String::from_utf8(stdout).unwrap();
+
+        let read_cmd = crate::cli::ReadCmd {
+            file: path,
+            json: false,
+            no_cache: false,
+        };
+        let mut r_out = Vec::new();
+        let mut r_err = Vec::new();
+        let mut r_ctx = crate::context::CommandContext::new(
+            &mut r_out,
+            &mut r_err,
+            crate::context::OutputMode::Compact,
+        );
+        crate::commands::read::run(&mut r_ctx, read_cmd).unwrap();
+        let read_out = String::from_utf8(r_out).unwrap();
+
+        let emitted_block = emitted
+            .split_once('[')
+            .map(|(_, rest)| format!("[{rest}"))
+            .unwrap();
+        assert_eq!(emitted_block.trim_end(), read_out.trim_end());
+    }
+
+    #[test]
+    fn issue119_json_emit_adds_updated_anchors_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_stdout(
+            dir.path(),
+            "a.txt",
+            "line one\nline two\n",
+            "SWAP 2:\n+replaced",
+            true,
+            true,
+        );
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        let anchors = v.get("updated_anchors").expect("{v}");
+        assert_eq!(anchors.as_array().unwrap().len(), 2, "{v}");
+        assert_eq!(anchors[1]["line"], 2);
+        assert_eq!(anchors[1]["text"], "replaced");
+        assert!(anchors[1]["hash"].as_str().unwrap().len() == 2);
+    }
+
+    #[test]
+    fn issue119_json_default_has_no_updated_anchors_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_stdout(
+            dir.path(),
+            "a.txt",
+            "line one\nline two\n",
+            "SWAP 2:\n+replaced",
+            false,
+            true,
+        );
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert!(v.get("updated_anchors").is_none(), "{v}");
     }
 }

@@ -143,6 +143,7 @@ mod tests {
             safe: false,
             json: false,
             verbose: false,
+            emit_anchors: false,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Compact);

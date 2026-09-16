@@ -43,6 +43,8 @@ hashline patch <file> <patch-string>
 hashline patch <file> -                # patch string from stdin
 hashline patch <file> '<patch>' --dry-run
 hashline patch <file> '<patch>' --json
+hashline patch <file> '<patch>' --emit-anchors   # opt-in (issue #119): append full fresh anchors
+HASHLINE_RETURN_ANCHORS=1 hashline patch <file> '<patch>'  # same via env (MCP: return_updated_anchors=true)
 ```
 
 ### Op syntax (anchor format `N:hh`)
@@ -67,6 +69,17 @@ OK <path>#<4hex> edits=<n> changed=<n>
 ~<line>:<hh>|content      # modified
 +<line>:<hh>|content      # inserted
 -<line>                   # deleted
+```
+Opt-in fresh anchors (issue #119) — `--emit-anchors`, `HASHLINE_RETURN_ANCHORS=1`,
+or MCP `return_updated_anchors: true` appends the full `read`-compatible listing
+after the summary (compact) or an `updated_anchors: [{line, hash, text}]` array
+(`--json`), so follow-up edits reuse anchors without an extra `read`:
+```text
+OK <path>#<4hex> edits=<n> changed=<n>
+~<line>:<hh>|content      # modified (as above)
+[<path>#<4hex>]
+N:hh|content              # every line, fresh anchors
+...
 ```
 `write`: `OK <path>#<hash> lines=<n>`. `remove`: `OK <path>`. `rename`: `OK <src>><dst>`.
 `find-block`: `OK file=<p> lang=<l> lines=<n>` + block lines. Use `--verbose` for the old full-file dumps.

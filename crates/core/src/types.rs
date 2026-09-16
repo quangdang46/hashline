@@ -186,6 +186,12 @@ pub struct ChangeSet {
     pub file_hash: String,
     /// Total line count after patch.
     pub line_count: usize,
+    /// Full fresh anchor listing of the result file (issue #119): every
+    /// visible line with its new line number + new hash. Populated always
+    /// (cheap — hashes are already computed); only *rendered* when the
+    /// caller opts in (`--emit-anchors` / `return_updated_anchors` / env).
+    #[serde(default)]
+    pub updated_anchors: Vec<ChangedLine>,
 }
 
 /// Per-patch clipboard carrying lines captured by `CUT` ops so later `PUT`

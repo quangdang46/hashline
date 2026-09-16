@@ -89,6 +89,7 @@ mod tests {
             safe: false,
             json: false,
             verbose: false,
+            emit_anchors: false,
         });
         assert_eq!(command_name(&cmd), "patch");
     }

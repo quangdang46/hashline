@@ -55,6 +55,14 @@ pub struct PatchCmd {
         help = "Use atomic temp-file + fsync (crash-safe but slower; default is fast direct write)"
     )]
     pub safe: bool,
+    /// Opt-in (issue #119): append a fresh `read`-compatible anchor listing
+    /// (`[path#HASH]` + `N:hh|content` for every line) after the patch
+    /// summary so agents can chain edits without an extra `read` call.
+    /// Also enabled via `HASHLINE_RETURN_ANCHORS=1`. In `--json` mode this
+    /// adds an `updated_anchors` array instead.
+    #[arg(long)]
+    #[serde(default)]
+    pub emit_anchors: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
