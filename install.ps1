@@ -233,37 +233,43 @@ function Update-UserPath {
 
 function Install-BinaryAtomic {
     param([string] $SourcePath, [string] $DestPath)
-    $tmp = "$DestPath.tmp.$PID"
-    Copy-Item -LiteralPath $SourcePath -Destination $tmp -Force
+    $id = [guid]::NewGuid().ToString('N')
+    $tmp = "$DestPath.tmp.$id"
+    $oldPath = "$DestPath.old.$id"
+    $retired = $false
+    $promoted = $false
+    try {
+        $expected = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256 -ErrorAction Stop).Hash
+        Copy-Item -LiteralPath $SourcePath -Destination $tmp -ErrorAction Stop
+        if ((Get-FileHash -LiteralPath $tmp -Algorithm SHA256 -ErrorAction Stop).Hash -ne $expected) {
+            throw 'staged binary checksum mismatch'
+        }
 
-    $destDir = Split-Path -Parent $DestPath
-    $oldName = "$BinaryFile.old.$PID"
-    $oldPath = Join-Path $destDir $oldName
-
-    # Phase 1: try a direct replace (works when the old binary is not in use).
-    # $ErrorActionPreference is 'Continue', so Move-Item failures do NOT
-    # terminate — we check Test-Path afterward.
-    Remove-Item -LiteralPath $DestPath -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $tmp -Destination $DestPath -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $DestPath) { return }
-
-    # Phase 2: the old binary is likely in use. Windows allows renaming a
-    # running executable even though it cannot be deleted/overwritten.
-    # Rename the old file out of the way, then copy the new one into place.
-    # Use Copy-Item (not Move-Item) because Copy-Item works on locked files.
-    Rename-Item -LiteralPath $DestPath -NewName $oldName -ErrorAction SilentlyContinue
-    Copy-Item -LiteralPath $tmp -Destination $DestPath -Force -ErrorAction SilentlyContinue
-
-    if (-not (Test-Path -LiteralPath $DestPath)) {
-        # Restore the old binary and die.
-        Move-Item -LiteralPath $oldPath -Destination $DestPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
-        Die "failed to write $DestPath"
+        # Retain the old image until verification succeeds. Running Windows
+        # executables can often be renamed, but never assume that succeeded.
+        if (Test-Path -LiteralPath $DestPath) {
+            Move-Item -LiteralPath $DestPath -Destination $oldPath -ErrorAction Stop
+            $retired = $true
+        }
+        Move-Item -LiteralPath $tmp -Destination $DestPath -ErrorAction Stop
+        $promoted = $true
+        if ((Get-FileHash -LiteralPath $DestPath -Algorithm SHA256 -ErrorAction Stop).Hash -ne $expected) {
+            throw 'installed binary checksum mismatch'
+        }
+    } catch {
+        $failure = $_.Exception.Message
+        try {
+            if ($promoted) { Remove-Item -LiteralPath $DestPath -Force -ErrorAction Stop }
+            if ($retired) { Move-Item -LiteralPath $oldPath -Destination $DestPath -ErrorAction Stop }
+        } catch {
+            throw "failed to install ${DestPath}: $failure; rollback failed: $($_.Exception.Message); backup: $oldPath"
+        }
+        throw "failed to install ${DestPath}: $failure"
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     }
-
-    # Clean up the *.old file. If still held by a running process the
-    # remove will fail silently; it'll be cleaned on the next upgrade.
-    Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue
+    # A running process may still hold the retired image; retain it if locked.
+    if ($retired) { Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue }
 }
 
 # ============================================================================
@@ -275,6 +281,111 @@ function Install-BinaryAtomic {
 # Failures here just print a hint; the binary install has already succeeded.
 # ============================================================================
 
+function ConvertFrom-JsonRaw {
+    # PS 7: ConvertFrom-Json -AsHashtable is exact-case and lossless.
+    # Windows PowerShell 5.1 lacks it; DataContractJsonSerializer's XML
+    # reader round-trips case-distinct keys through a hashtable instead of
+    # PSCustomObject (which would collapse them).
+    param([string]$Raw)
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return ($Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop)
+    }
+    Add-Type -AssemblyName System.Runtime.Serialization
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Raw)
+    $reader = [System.Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader(
+        $bytes, [System.Xml.XmlDictionaryReaderQuotas]::Max)
+    $xml = New-Object System.Xml.XmlDocument
+    try {
+        $xml.Load($reader)
+    } finally {
+        $reader.Dispose()
+    }
+    return ConvertFrom-JsonXmlNode -Value $xml.DocumentElement
+}
+
+function ConvertFrom-JsonXmlNode {
+    param($Value)
+    switch ($Value.GetAttribute('type')) {
+        'object' {
+            $table = New-Object System.Collections.Specialized.OrderedDictionary
+            foreach ($child in $Value.ChildNodes) {
+                # The JSON XML reader mangles keys with slashes/colons into a
+                # namespaced <a:item item="original"> element; recover the
+                # original name from the `item` attribute.
+                $name = $child.LocalName
+                if ($child.LocalName -eq 'item' -and $child.NamespaceURI -eq 'item') {
+                    $name = $child.GetAttribute('item')
+                }
+                $table[$name] = ConvertFrom-JsonXmlNode -Value $child
+            }
+            return $table
+        }
+        'array' {
+            $items = @()
+            foreach ($child in $Value.ChildNodes) {
+                $items += , (ConvertFrom-JsonXmlNode -Value $child)
+            }
+            return $items
+        }
+        'null' { return $null }
+        'boolean' { return ($Value.InnerText -eq 'true') }
+        'number' { return [double]$Value.InnerText }
+        default {
+            # Numbers encode as 1 / 0 in the XML text; honor the type hint.
+            $t = $Value.GetAttribute('type')
+            if ($t -eq 'number') { return [double]$Value.InnerText }
+            return $Value.InnerText
+        }
+    }
+}
+
+function ConvertTo-JsonRawHashtable {
+    param($Value)
+    if ($Value -is [System.Collections.IDictionary]) {
+        $pairs = foreach ($key in $Value.Keys) {
+            '{0}: {1}' -f (ConvertTo-Json -InputObject ([string]$key) -Compress), (
+                ConvertTo-JsonRawHashtable -Value $Value[$key]
+            )
+        }
+        return '{' + ($pairs -join ',') + '}'
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        $items = foreach ($item in $Value) { ConvertTo-JsonRawHashtable -Value $item }
+        return '[' + ($items -join ',') + ']'
+    }
+    if ($Value -is [bool]) { return $(if ($Value) { 'true' } else { 'false' }) }
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal] -or $Value -is [float] -or $Value -is [int16] -or $Value -is [byte]) {
+        return ([string]$Value)
+    }
+    return (ConvertTo-Json -InputObject ([string]$Value) -Compress)
+}
+
+function Test-EntryDeepEqual {
+    param($Left, $Right)
+    if (($null -eq $Left) -ne ($null -eq $Right)) { return $false }
+    if ($null -eq $Left) { return $true }
+    if (($Left -is [System.Collections.IDictionary]) -ne ($Right -is [System.Collections.IDictionary])) { return $false }
+    if ($Left -is [System.Collections.IDictionary]) {
+        if ($Left.Keys.Count -ne $Right.Keys.Count) { return $false }
+        foreach ($key in $Left.Keys) {
+            if (-not $Right.Contains($key)) { return $false }
+            if (-not (Test-EntryDeepEqual -Left $Left[$key] -Right $Right[$key])) { return $false }
+        }
+        return $true
+    }
+    if (($Left -is [System.Collections.IEnumerable]) -and -not ($Left -is [string]) -and
+        ($Right -is [System.Collections.IEnumerable]) -and -not ($Right -is [string])) {
+        $l = @($Left); $r = @($Right)
+        if ($l.Count -ne $r.Count) { return $false }
+        for ($i = 0; $i -lt $l.Count; $i++) {
+            if (-not (Test-EntryDeepEqual -Left $l[$i] -Right $r[$i])) { return $false }
+        }
+        return $true
+    }
+    return ("$Left" -eq "$Right")
+}
+
 function Update-HashlineMcpConfig {
     param(
         [string]$Path,
@@ -282,55 +393,60 @@ function Update-HashlineMcpConfig {
         [string]$BinaryPath
     )
 
-    $entry = [pscustomobject]@{
+    $managed = @{
         command = $BinaryPath
         args    = @('mcp')
     }
 
-    # Load existing config (or start empty).
+    # Load existing config (or start empty). Hashtable keeps exact-case keys
+    # so case-distinct project entries survive the round trip.
     $config = $null
     $status = 'installed'
     if (Test-Path $Path) {
         try {
             $raw = Get-Content -Path $Path -Raw -ErrorAction Stop
             if ($raw.Trim().Length -gt 0) {
-                $config = $raw | ConvertFrom-Json -ErrorAction Stop
+                $config = ConvertFrom-JsonRaw -Raw $raw
             }
         } catch {
             Write-Warn "Skipping $Path (invalid JSON: $($_.Exception.Message))"
             return $null
         }
     }
-    if ($null -eq $config) { $config = [pscustomobject]@{} }
+    if ($null -eq $config) { $config = @{} }
 
-    # Ensure servers container exists.
-    $servers = $config.PSObject.Properties[$ServersKey]
-    if ($null -eq $servers) {
-        Add-Member -InputObject $config -MemberType NoteProperty `
-            -Name $ServersKey -Value ([pscustomobject]@{}) -Force
-    }
-    $serversObj = $config.$ServersKey
-
-    # Compare existing entry (if any) for unchanged/updated signal.
-    $existing = $serversObj.PSObject.Properties['hashline']
-    if ($existing) {
-        $existingJson = $existing.Value | ConvertTo-Json -Compress
-        $entryJson    = $entry          | ConvertTo-Json -Compress
-        if ($existingJson -eq $entryJson) {
-            return @{ Status = 'unchanged'; Path = $Path }
+    # Ensure servers container exists (dotted keys like amp.mcpServers).
+    $parts = $ServersKey.Split('.')
+    $cursor = $config
+    foreach ($part in $parts) {
+        if (-not $cursor.Contains($part) -or -not ($cursor[$part] -is [System.Collections.IDictionary])) {
+            $cursor[$part] = @{}
         }
-        $status = 'updated'
+        $cursor = $cursor[$part]
     }
+    $serversObj = $cursor
 
-    # Upsert entry and write file (pretty JSON for human inspection).
-    Add-Member -InputObject $serversObj -MemberType NoteProperty `
-        -Name 'hashline' -Value $entry -Force
+    # Merge first, then deep-compare: unchanged means the merged entry is
+    # identical to what is already on disk, regardless of key order or how
+    # the equality would look field-by-field.
+    $existing = $serversObj['hashline']
+    if ($existing -is [System.Collections.IDictionary]) {
+        foreach ($key in @($existing.Keys)) { if (-not $managed.Contains($key)) { $managed[$key] = $existing[$key] } }
+    }
+    $serversObj['hashline'] = $managed
+    if (Test-EntryDeepEqual -Left $existing -Right $managed) {
+        return @{ Status = 'unchanged'; Path = $Path }
+    }
+    $status = if ($existing) { 'updated' } else { 'installed' }
 
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path $dir)) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
     }
-    $config | ConvertTo-Json -Depth 32 | Set-Content -Path $Path -Encoding UTF8
+    $json = ConvertTo-JsonRawHashtable -Value $config
+    $staged = "$Path.tmp.$PID"
+    Set-Content -LiteralPath $staged -Value $json -Encoding UTF8
+    Move-Item -LiteralPath $staged -Destination $Path -Force
 
     return @{ Status = $status; Path = $Path }
 }
@@ -488,9 +604,9 @@ The version you asked for ($Version) does not include $archive. Either:
 
     # -----------------------------------------------------------------------
     # Also replace any existing `hashline` on PATH at a different location
-    # so `hashline --version` always shows the latest version.
-    # On Windows, a running .exe can't be overwritten but CAN be renamed,
-    # so we rename the old one out of the way first.
+    # so `hashline --version` always shows the latest version. Source is the
+    # extracted release binary -- never the primary destination, which may
+    # be stale if its own replace failed. Best-effort: report, don't die.
     # -----------------------------------------------------------------------
     $existingOnPath = Get-Command $BinaryName -ErrorAction SilentlyContinue
     if ($existingOnPath) {
@@ -499,46 +615,11 @@ The version you asked for ($Version) does not include $archive. Either:
         $destDirNorm = $Dest.TrimEnd('\').ToLower()
         if ($existingDirNorm -ne $destDirNorm) {
             Write-Info "also updating existing $BinaryName at $($existingOnPath.Source)"
-            $srcFile = Join-Path $Dest $BinaryFile
-            $dstFile = $existingOnPath.Source
-            $tmpFile = "$dstFile.tmp.$PID"
-            # Copy new binary to a temp name next to the old one
             try {
-                Copy-Item -LiteralPath $srcFile -Destination $tmpFile -Force
-                # Rename old binary out of the way (Windows allows renaming running exes)
-                $oldFile = "$dstFile.old.$PID"
-                Rename-Item -LiteralPath $dstFile -NewName $oldFile -ErrorAction SilentlyContinue
-                # Copy new binary into place (Copy-Item works on locked files)
-                Copy-Item -LiteralPath $tmpFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
-                if (Test-Path -LiteralPath $dstFile) {
-                    Write-Ok "replaced $dstFile"
-                    Remove-Item -LiteralPath $oldFile -Force -ErrorAction SilentlyContinue
-                } else {
-                    Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
-                    # Likely blocked by permissions (e.g. Program Files) — retry
-                    # the rename+copy in an elevated child process via UAC.
-                    Write-Info "permission denied — retrying with elevation (UAC prompt)"
-                    $elevated = $false
-                    try {
-                        $inner = "Copy-Item -LiteralPath '$srcFile' -Destination '$oldFile.new' -Force; " +
-                                 "Rename-Item -LiteralPath '$dstFile' -NewName '$oldFile' -ErrorAction SilentlyContinue; " +
-                                 "Copy-Item -LiteralPath '$oldFile.new' -Destination '$dstFile' -Force; " +
-                                 "Remove-Item -LiteralPath '$oldFile.new','$oldFile' -Force -ErrorAction SilentlyContinue"
-                        $proc = Start-Process powershell -ArgumentList @('-NoProfile','-Command', $inner) -Verb RunAs -Wait -PassThru -ErrorAction Stop
-                        $elevated = ($proc.ExitCode -eq 0) -and (Test-Path -LiteralPath $dstFile)
-                    } catch {
-                        $elevated = $false
-                    }
-                    if ($elevated -and (Test-Path -LiteralPath $dstFile)) {
-                        Write-Ok "replaced $dstFile (elevated)"
-                    } else {
-                        Move-Item -LiteralPath $oldFile -Destination $dstFile -Force -ErrorAction SilentlyContinue
-                        Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
-                    }
-                }
+                Install-BinaryAtomic -SourcePath $bin.FullName -DestPath $existingOnPath.Source
+                Write-Ok "replaced $($existingOnPath.Source)"
             } catch {
-                Remove-Item -LiteralPath $tmpFile -ErrorAction SilentlyContinue
-                Write-Warn "could not update $dstFile — you may need to run as admin or remove it manually"
+                Write-Warn "could not update $($existingOnPath.Source) -- you may need to run as admin or remove it manually ($($_.Exception.Message))"
             }
         }
     }
@@ -553,12 +634,17 @@ The version you asked for ($Version) does not include $archive. Either:
     # MCP install runs last so failures don't undo the binary install above.
     Invoke-McpAutoInstall
 
+    # Final gate: the installed binary must report the requested version.
+    # Never print [OK] on a stale destination again.
+    $destBin = Join-Path $Dest $BinaryFile
+    $v = $null
+    try { $v = & $destBin --version 2>$null } catch { }
+    if (-not $v -or ($v -notmatch [regex]::Escape($Version.TrimStart('v')))) {
+        Die "installed binary reports '$v' but requested $Version at $destBin"
+    }
     Write-Host ""
-    Write-Host "[OK] $BinaryName installed -> $(Join-Path $Dest $BinaryFile)" -ForegroundColor Green
-    try {
-        $v = & (Join-Path $Dest $BinaryFile) --version 2>$null
-        if ($v) { Write-Host "   version: $v" }
-    } catch { }
+    Write-Host "[OK] $BinaryName installed -> $destBin" -ForegroundColor Green
+    Write-Host "   version: $v"
 
     # Hunt down stale copies: any other `hashline` on PATH whose version
     # differs from what we just installed is an outdated shadow -- delete it

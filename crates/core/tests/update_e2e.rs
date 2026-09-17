@@ -138,13 +138,57 @@ fn binary_name() -> &'static str {
     }
 }
 
-fn marker_content(tag: &str) -> String {
-    format!("#!/bin/sh\necho 'hashline test binary {tag}'\n")
+/// Compile a native executable on every platform, not a script masquerading
+/// as a Windows executable. It can fail only after promotion to test rollback.
+fn compile_binary(dir: &Path, tag: &str, mode: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let source = dir.join("fixture.rs");
+    let binary = dir.join(binary_name());
+    let version = tag.trim_start_matches('v');
+    std::fs::write(
+        &source,
+        format!(
+            r#"
+fn main() {{
+    if std::env::args().nth(1).as_deref() == Some("--hold") {{
+        std::fs::write(std::env::args().nth(2).unwrap(), "ready").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        return;
+    }}
+    assert_eq!(std::env::args().nth(1).as_deref(), Some("--version"));
+    println!("hashline {version}");
+    let installed = std::env::current_exe().unwrap().file_name().unwrap() == {name:?};
+    if {mode:?} == "nonzero" || ({mode:?} == "fail-installed" && installed) {{
+        std::process::exit(7);
+    }}
+}}
+"#,
+            name = binary_name()
+        ),
+    )
+    .unwrap();
+    let output = StdCommand::new("rustc")
+        .arg("--crate-name")
+        .arg("update_fixture")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("compile native release fixture");
+    assert!(
+        output.status.success(),
+        "rustc: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary
 }
 
-/// Build a release archive named exactly like the real release asset for
-/// the host platform, containing a fake `hashline` binary.
 fn build_fixture(tag: &str, dir: &Path) -> PathBuf {
+    build_fixture_mode(tag, tag, "ok", dir)
+}
+
+/// Package a real executable under the host's release asset name.
+fn build_fixture_mode(tag: &str, payload_tag: &str, mode: &str, dir: &Path) -> PathBuf {
     let platform = update::release_platform().expect("host platform has a release asset");
     // Mirrors update.rs archive_ext (kept private there).
     let ext = if platform.starts_with("windows") {
@@ -156,8 +200,13 @@ fn build_fixture(tag: &str, dir: &Path) -> PathBuf {
     let asset_path = dir.join(&asset_name);
 
     let stage = dir.join("stage");
+    let payload = compile_binary(
+        &dir.join(format!("payload-{mode}-{payload_tag}")),
+        payload_tag,
+        mode,
+    );
     std::fs::create_dir_all(&stage).expect("create stage dir");
-    std::fs::write(stage.join(binary_name()), marker_content(tag)).expect("write fake binary");
+    std::fs::copy(&payload, stage.join(binary_name())).expect("stage real executable");
 
     if cfg!(windows) {
         let script = format!(
@@ -295,6 +344,129 @@ fn cli_check_fails_cleanly_when_mirror_unreachable() {
     assert!(output.stdout.is_empty(), "stdout must stay clean");
 }
 
+fn temporary_cli(dir: &Path) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(binary_name());
+    std::fs::copy(assert_cmd::cargo::cargo_bin("hashline"), &path).unwrap();
+    path
+}
+
+fn run_update(exe: &Path, home: &Path, mirror: &Mirror) -> std::process::Output {
+    StdCommand::new(exe)
+        .args(["update", "--json"])
+        .env("HASHLINE_RELEASES_BASE_URL", &mirror.base)
+        .env("HASHLINE_NO_UPDATE_CHECK", "1")
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .output()
+        .expect("run temporary CLI self-update")
+}
+
+fn assert_version(exe: &Path, tag: &str) {
+    let output = StdCommand::new(exe).arg("--version").output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("hashline {}", tag.trim_start_matches('v'))
+    );
+}
+
+#[test]
+fn cli_self_update_verifies_bytes_version_and_exact_path_without_touching_other_installs() {
+    let temp = tempfile::tempdir().unwrap();
+    let tag = next_version_tag();
+    let fixture = build_fixture(&tag, temp.path());
+    let mirror = spawn_mirror(MirrorConfig {
+        tag: tag.clone(),
+        fixture: Some(fixture),
+        fail_api: false,
+    });
+    let exe = temporary_cli(&temp.path().join("invoked"));
+    let other = temporary_cli(&temp.path().join("other"));
+    let old_bytes = std::fs::read(&other).unwrap();
+    let output = run_update(&exe, temp.path(), &mirror);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "updated");
+    assert_eq!(json["current"], tag.trim_start_matches('v'));
+    assert_eq!(
+        std::fs::canonicalize(json["path"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(&exe).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(&exe).unwrap(),
+        std::fs::read(temp.path().join("stage").join(binary_name())).unwrap()
+    );
+    assert_version(&exe, &tag);
+    assert_eq!(std::fs::read(&other).unwrap(), old_bytes);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("other installations are unchanged"));
+    assert!(stderr.contains("Restart/reconnect"));
+}
+
+#[test]
+fn cli_rejects_mismatched_and_nonzero_candidates_without_false_success() {
+    for (payload, mode, expected_error) in [
+        (current_version_tag(), "ok", "version mismatch"),
+        (next_version_tag(), "nonzero", "--version failed"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let tag = next_version_tag();
+        let fixture = build_fixture_mode(&tag, &payload, mode, temp.path());
+        let mirror = spawn_mirror(MirrorConfig {
+            tag: tag.clone(),
+            fixture: Some(fixture),
+            fail_api: false,
+        });
+        let exe = temporary_cli(&temp.path().join("invoked"));
+        let before = std::fs::read(&exe).unwrap();
+        let output = run_update(&exe, temp.path(), &mirror);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected_error),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("\"status\":\"updated\""));
+        assert_eq!(std::fs::read(&exe).unwrap(), before);
+        assert_version(&exe, &current_version_tag());
+        // This cache means release observed, not successfully installed.
+        let cache: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(temp.path().join(".hashline/update-check.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cache["latest_version"], tag.trim_start_matches('v'));
+    }
+}
+
+#[test]
+fn cli_rolls_back_when_installed_version_probe_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let tag = next_version_tag();
+    let fixture = build_fixture_mode(&tag, &tag, "fail-installed", temp.path());
+    let mirror = spawn_mirror(MirrorConfig {
+        tag,
+        fixture: Some(fixture),
+        fail_api: false,
+    });
+    let exe = temporary_cli(&temp.path().join("invoked"));
+    let before = std::fs::read(&exe).unwrap();
+    let output = run_update(&exe, temp.path(), &mirror);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("original restored"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("\"status\":\"updated\""));
+    assert_eq!(std::fs::read(&exe).unwrap(), before);
+    assert_version(&exe, &current_version_tag());
+}
+
 // ── Library end-to-end ───────────────────────────────────────────────
 
 #[test]
@@ -318,17 +490,122 @@ fn library_download_verifies_and_replaces_target() {
     assert_eq!(report.current, tag.trim_start_matches('v'));
     assert!(report.checksum_verified, "checksum must be verified");
     assert_eq!(report.path, target);
+    assert!(
+        report.retained_backup.is_none(),
+        "clean install keeps no backup"
+    );
 
-    let installed = std::fs::read(&target).expect("read replaced binary");
+    // Verify this test copies a real native executable before the bytes are
+    // promoted: run it directly rather than trusting release metadata.
+    let output = StdCommand::new(&target)
+        .arg("--version")
+        .output()
+        .expect("execute installed payload");
+    assert!(output.status.success());
     assert_eq!(
-        String::from_utf8_lossy(&installed),
-        marker_content(&tag),
-        "target must contain the new binary payload"
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("hashline {}", tag.trim_start_matches('v'))
     );
 
     // The API path of fetch_latest_release works against the same mirror.
     let latest = update::fetch_latest_release().expect("fetch latest release");
     assert_eq!(latest.version, tag.trim_start_matches('v'));
+}
+
+#[cfg(windows)]
+struct RunningFixture(std::process::Child);
+
+#[cfg(windows)]
+impl RunningFixture {
+    fn start(exe: &Path, ready: &Path) -> Self {
+        let child = StdCommand::new(exe)
+            .arg("--hold")
+            .arg(ready)
+            .spawn()
+            .unwrap();
+        let fixture = Self(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture did not start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fixture
+    }
+}
+
+#[cfg(windows)]
+impl Drop for RunningFixture {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_repeated_update_with_running_images_and_legacy_backup() {
+    let temp = tempfile::tempdir().unwrap();
+    let tag = next_version_tag();
+    let fixture = build_fixture(&tag, temp.path());
+    let mirror = spawn_mirror(MirrorConfig {
+        tag: tag.clone(),
+        fixture: Some(fixture),
+        fail_api: false,
+    });
+    let (_env, _lock) = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
+    let target = compile_binary(&temp.path().join("installed"), &current_version_tag(), "ok");
+    let legacy = target.with_extension("exe.old");
+    std::fs::copy(&target, &legacy).unwrap();
+    let legacy_bytes = std::fs::read(&legacy).unwrap();
+    let _legacy_process = RunningFixture::start(&legacy, &temp.path().join("legacy-ready"));
+    let _first_process = RunningFixture::start(&target, &temp.path().join("first-ready"));
+    let first = update::download_and_install_into(&Release::from_version(&tag), &target).unwrap();
+    assert_version(&target, &tag);
+    let _second_process = RunningFixture::start(&target, &temp.path().join("second-ready"));
+    let second = update::download_and_install_into(&Release::from_version(&tag), &target).unwrap();
+    assert_version(&target, &tag);
+    assert_eq!(std::fs::read(&legacy).unwrap(), legacy_bytes);
+    // Windows may allow delete-pending images, so retained files are optional;
+    // if both remain, they must belong to distinct attempts.
+    if let (Some(first), Some(second)) = (first.retained_backup, second.retained_backup) {
+        assert_ne!(first, second);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_retirement_failure_preserves_target_and_returns_error() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let tag = next_version_tag();
+    let fixture = build_fixture(&tag, temp.path());
+    let mirror = spawn_mirror(MirrorConfig {
+        tag: tag.clone(),
+        fixture: Some(fixture),
+        fail_api: false,
+    });
+    let (_env, _lock) = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
+    let target = temporary_cli(&temp.path().join("installed"));
+    let before = std::fs::read(&target).unwrap();
+    // FILE_SHARE_READ but deliberately no FILE_SHARE_DELETE: a real OS-level
+    // retirement failure, not a mocked rename result.
+    let _locked = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&target)
+        .unwrap();
+    let error =
+        update::download_and_install_into(&Release::from_version(&tag), &target).unwrap_err();
+    assert!(error.contains("cannot retire"), "{error}");
+    assert_eq!(std::fs::read(&target).unwrap(), before);
+    assert_eq!(
+        std::fs::read_dir(target.parent().unwrap()).unwrap().count(),
+        1,
+        "failed attempt should be cleaned"
+    );
 }
 
 #[test]

@@ -166,6 +166,7 @@ pub fn run<W: Write, E: Write>(
   Other flags:
   hashline patch <file> <patch> --dry-run    Preview only
   hashline patch <file> <patch> --safe       Atomic temp-file + fsync
+  hashline patch <file> <patch> --emit-anchors  Append fresh anchors (chain edits without re-read; or HASHLINE_RETURN_ANCHORS=1 / MCP return_updated_anchors)
   hashline read  <file>         --no-cache   Skip snapshot cache
   hashline find-block <f> <a>   --pretty     Pretty-print JSON (with --json)
   hashline write <file> <cont> --force       Overwrite existing file
@@ -258,6 +259,15 @@ pub fn run<W: Write, E: Write>(
   ~20:f1|  pub fn new(name: String) -> Self {
   ~25:7c|      Self { name, enabled: true }
 
+  # Chain edits without re-reading: the [file#hash] anchor block after
+  # the summary lists fresh N:hh|content lines — copy anchors from there.
+  $ hashline patch config.rs --emit-anchors 'SWAP 10:c3:
+  +  pub const TIMEOUT: u64 = 5000;'
+  OK config.rs#9a1b edits=1 changed=1
+  ~10:b1|  pub const TIMEOUT: u64 = 5000;
+  [config.rs#9a1b]
+  10:b1|  pub const TIMEOUT: u64 = 5000;
+
   # Human-readable output (full file after patch)
   $ hashline patch config.rs --verbose 'SWAP 10:
   +  pub const TIMEOUT: u64 = 5000;'
@@ -273,6 +283,7 @@ pub fn run<W: Write, E: Write>(
   • Use --verbose for human-readable full file dump after mutations
   • Use --json for structured output with changed lines array
   • Always read before editing — anchors change when files change
+  • --emit-anchors (or MCP return_updated_anchors) appends fresh anchors so follow-up patches skip the re-read
   • Use --dry-run to preview patches before writing
   • An anchor like "42:a3" refers to line 42 with xxh32 hash a3
   • If an anchor fails, re-read the file for fresh hashes

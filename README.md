@@ -173,7 +173,9 @@ cargo install --path crates/core
 
 The installers auto-detect your platform, fetch the matching binary from GitHub Releases, verify the SHA-256, and atomically install to `~/.local/bin/hashline`. They also auto-detect supported MCP hosts (claude-code, codex, cursor, windsurf, vscode, gemini, opencode) and upsert a `hashline` MCP server entry for each.
 
-After installing, `hashline update` upgrades in place from GitHub Releases with the same checksum verification. Once a day, interactive commands print a one-line notice to stderr when a newer release is available — disable it with `HASHLINE_NO_UPDATE_CHECK=1`.
+An **update-available notice does not install anything**. `hashline update --check` only checks; `hashline update` downloads and installs a release, verifying the candidate's version and the installed executable's bytes and version before reporting success. Release archive checksums are verified when published.
+
+Self-update replaces **only the invoked executable** (`current_exe`), whose exact path is reported; it does not update other PATH copies or edit MCP configuration. Restart/reconnect already-running MCP sessions to load the updated binary, and update other installations separately using their explicit executable paths. Interactive commands check for a notice at most once a day; disable notices with `HASHLINE_NO_UPDATE_CHECK=1`.
 
 ---
 
