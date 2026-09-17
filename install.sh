@@ -286,12 +286,48 @@ install_binary_atomic() {
     local src="$1"
     local dest="$2"
     local tmp="${dest}.tmp.$$"
+    local backup="${dest}.old.$$"
+    local expected staged="" retired=0
 
-    install -m 0755 "$src" "$tmp"
-    mv -f "$tmp" "$dest" || {
+    expected=$(checksum_file "$src") || die "cannot checksum $src"
+
+    install -m 0755 "$src" "$tmp" || {
         rm -f "$tmp"
-        die "Failed to install binary"
+        die "Failed to stage $src"
     }
+
+    if [ ! -f "$tmp" ] || [ "$(checksum_file "$tmp")" != "$expected" ]; then
+        rm -f "$tmp"
+        die "Staged binary verification failed for $dest"
+    fi
+
+    # Retain the old image until the new one verifies in place.
+    if [ -e "$dest" ]; then
+        mv -f "$dest" "$backup" || {
+            rm -f "$tmp"
+            die "Failed to retire $dest"
+        }
+        retired=1
+    fi
+
+    if mv -f "$tmp" "$dest"; then
+        staged=1
+    fi
+
+    if [ -n "$staged" ] && [ -f "$dest" ] && [ "$(checksum_file "$dest")" = "$expected" ]; then
+        rm -f "$backup" 2>/dev/null || true
+        return 0
+    fi
+
+    # Roll back to the retained copy before failing loudly.
+    rm -f "$dest" 2>/dev/null || true
+    if [ "$retired" = "1" ]; then
+        if mv -f "$backup" "$dest" 2>/dev/null; then
+            die "Failed to install $dest — restored previous binary from $backup"
+        fi
+        die "Failed to install $dest — could not replace or restore it; backup: $backup"
+    fi
+    die "Failed to install $dest"
 }
 
 maybe_add_path() {
@@ -520,6 +556,9 @@ main() {
             fi
 
             extract_archive "$TMP/$archive"
+            # Keep the extracted release payload around: secondary PATH copies
+            # must be sourced from the release, never from the primary
+            # destination (which may still be stale after a failed replace).
             binary_path=$(find_extracted_binary "$platform")
             install_binary_atomic "$binary_path" "$DEST/$BINARY_NAME"
         else
@@ -542,13 +581,19 @@ main() {
         existing_dir=$(dirname "$existing_bin")
         if [ "$(cd "$existing_dir" && pwd)" != "$(cd "$DEST" && pwd)" ]; then
             log_info "also updating existing $BINARY_NAME at $existing_bin"
-            if cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+            # Never source from $DEST/$BINARY_NAME: a failed primary replace
+            # leaves it stale. Fall back to the verified destination, or the
+            # extracted release payload when the primary replace failed.
+            if [ -n "${binary_path:-}" ] && [ -f "$binary_path" ]; then
+                update_source="$binary_path"
+            else
+                update_source="$DEST/$BINARY_NAME"
+            fi
+            if install_binary_atomic "$update_source" "$existing_bin" 2>/dev/null; then
                 log_success "replaced $existing_bin"
-            elif command -v sudo >/dev/null 2>&1 && sudo -n cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
-                log_success "replaced $existing_bin (via passwordless sudo)"
             elif command -v sudo >/dev/null 2>&1 && [ -t 0 ]; then
                 log_info "need elevated permission to replace $existing_bin — you may be prompted for your password"
-                if sudo cp -f "$DEST/$BINARY_NAME" "$existing_bin" 2>/dev/null; then
+                if sudo sh -c "install_binary_atomic '$update_source' '$existing_bin'" 2>/dev/null; then
                     log_success "replaced $existing_bin (via sudo)"
                 else
                     log_warn "could not update $existing_bin even with sudo — remove it manually"

@@ -323,6 +323,8 @@ pub struct UpdateReport {
     pub current: String,
     pub path: PathBuf,
     pub checksum_verified: bool,
+    /// A still-running old image may prevent cleanup on Windows.
+    pub retained_backup: Option<PathBuf>,
 }
 
 /// Download `release`, verify its checksum, and replace the running binary.
@@ -371,31 +373,80 @@ pub fn download_and_install_into(release: &Release, target: &Path) -> Result<Upd
     extract_archive(&archive_path, &extract_dir)?;
     let new_binary = find_binary(&extract_dir)?;
 
-    replace_binary(&new_binary, target)?;
+    let (current, retained_backup) = replace_binary(&new_binary, target, &release.version)?;
     Ok(UpdateReport {
         previous: current_version().to_string(),
-        current: release.version.clone(),
+        current,
         path: target.to_path_buf(),
         checksum_verified,
+        retained_backup,
     })
 }
 
-fn replace_binary(new_binary: &Path, target: &Path) -> Result<(), String> {
+/// Execute the payload rather than trusting release metadata or file existence.
+fn verify_binary(
+    path: &Path,
+    expected_version: &str,
+    expected_hash: &str,
+) -> Result<String, String> {
+    let verify_hash = || {
+        if sha256_hex(path)? != expected_hash {
+            return Err(format!(
+                "installed payload checksum mismatch at {}",
+                path.display()
+            ));
+        }
+        Ok(())
+    };
+    verify_hash()?;
+    let output = Command::new(path)
+        .arg("--version")
+        .env("HASHLINE_NO_UPDATE_CHECK", "1")
+        .output()
+        .map_err(|e| format!("cannot verify {} --version: {e}", path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} --version failed ({}): {}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut words = stdout.split_whitespace();
+    let name = words.next();
+    let version = words.next().unwrap_or_default();
+    if name != Some("hashline") || version != expected_version || words.next().is_some() {
+        return Err(format!(
+            "version mismatch at {}: expected 'hashline {expected_version}', got {:?}",
+            path.display(),
+            stdout.trim()
+        ));
+    }
+    // Also catch a payload changed while the version command was running.
+    verify_hash()?;
+    Ok(version.to_string())
+}
+
+fn replace_binary(
+    new_binary: &Path,
+    target: &Path,
+    expected_version: &str,
+) -> Result<(String, Option<PathBuf>), String> {
     let target_dir = target
         .parent()
         .ok_or_else(|| format!("invalid binary path {}", target.display()))?;
     fs::create_dir_all(target_dir)
         .map_err(|e| format!("cannot create {}: {e}", target_dir.display()))?;
-    let staged_name = format!(
-        ".{}.update-{}",
-        target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("hashline"),
-        std::process::id()
-    );
-    let staged = target_dir.join(staged_name);
-
+    // A unique, same-filesystem directory reserves both names. Never touch
+    // another attempt's backup: an old MCP process may still be using it.
+    let attempt = tempfile::Builder::new()
+        .prefix(".hashline-update-")
+        .tempdir_in(target_dir)
+        .map_err(|e| format!("cannot stage update beside {}: {e}", target.display()))?;
+    let staged = attempt.path().join("candidate.exe");
+    let retired = attempt.path().join("retired.exe");
+    let expected_hash = sha256_hex(new_binary)?;
     fs::copy(new_binary, &staged).map_err(|e| format!("cannot stage new binary: {e}"))?;
     #[cfg(unix)]
     {
@@ -403,25 +454,73 @@ fn replace_binary(new_binary: &Path, target: &Path) -> Result<(), String> {
         fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("cannot chmod staged binary: {e}"))?;
     }
-    if let Ok(staged_file) = fs::File::open(&staged) {
-        let _ = staged_file.sync_all();
-    }
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&staged)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| format!("cannot flush staged binary: {e}"))?;
+    verify_binary(&staged, expected_version, &expected_hash)?;
 
-    // Windows keeps the running exe locked: move the old image aside first,
-    // then put the new binary in place and best-effort delete the old one
-    // (the delete succeeds on a later run once the process is gone).
-    #[cfg(windows)]
-    let retired = {
-        let retired = target.with_extension("exe.old");
-        let _ = fs::rename(target, &retired);
-        retired
+    // From this point automatic temp cleanup must not remove the only backup
+    // if rollback fails. Keep this attempt until promotion has been verified.
+    let attempt_path = attempt.keep();
+    let had_target = match fs::rename(target, &retired) {
+        Ok(()) => true,
+        Err(e) if e.kind() == io::ErrorKind::NotFound && !target.exists() => false,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&attempt_path);
+            return Err(format!(
+                "cannot retire {} (original left in place): {e}",
+                target.display()
+            ));
+        }
     };
-    fs::rename(&staged, target).map_err(|e| format!("cannot replace {}: {e}", target.display()))?;
-    #[cfg(windows)]
-    {
-        let _ = fs::remove_file(&retired);
+    let mut promoted = false;
+    let result = (|| {
+        fs::rename(&staged, target)
+            .map_err(|e| format!("cannot promote new binary to {}: {e}", target.display()))?;
+        promoted = true;
+        verify_binary(target, expected_version, &expected_hash)
+    })();
+    match result {
+        Ok(version) => {
+            let retained = fs::remove_dir_all(&attempt_path).err().map(|_| retired);
+            Ok((version, retained))
+        }
+        Err(error) => {
+            // Rename (rather than delete) a failed image, including on Windows.
+            // Never overwrite or discard the working backup on a rollback error.
+            let rollback = (|| -> io::Result<()> {
+                if promoted {
+                    fs::rename(target, &staged)?;
+                }
+                if had_target {
+                    fs::rename(&retired, target)?;
+                }
+                Ok(())
+            })();
+            if let Err(e) = rollback {
+                return Err(format!(
+                    "{error}; rollback failed for {}: {e}; recovery files retained at {}",
+                    target.display(),
+                    attempt_path.display()
+                ));
+            }
+            let cleanup = fs::remove_dir_all(&attempt_path);
+            let recovery = if had_target {
+                "original restored"
+            } else {
+                "failed installation removed"
+            };
+            match cleanup {
+                Ok(()) => Err(format!("{error}; {recovery}")),
+                Err(e) => Err(format!(
+                    "{error}; {recovery}; cleanup failed at {}: {e}",
+                    attempt_path.display()
+                )),
+            }
+        }
     }
-    Ok(())
 }
 
 // ── Periodic update notice ──────────────────────────────────────────
@@ -556,7 +655,7 @@ pub fn maybe_print_update_notice(stderr_is_terminal: bool) {
     let status = notice_status(&cache_path, epoch_now(), fetch_latest_release);
     if let UpdateStatus::Outdated { latest } = status {
         eprintln!(
-            "NOTE update available: latest={latest} installed={} (run `hashline update`)",
+            "NOTE update available: latest={latest} installed={} (notice only; run `hashline update` to install)",
             current_version()
         );
     }

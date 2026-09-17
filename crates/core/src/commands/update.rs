@@ -50,6 +50,19 @@ pub fn run<W: Write, E: Write>(
         )?;
     }
 
+    writeln!(
+        ctx.stderr(),
+        "NOTE updated only {}; other installations are unchanged. Restart/reconnect running MCP sessions to load this executable.",
+        report.path.display()
+    )?;
+    if let Some(backup) = &report.retained_backup {
+        writeln!(
+            ctx.stderr(),
+            "NOTE old image retained at {}; remove it after old processes exit",
+            backup.display()
+        )?;
+    }
+
     match ctx.output_mode() {
         OutputMode::Json => {
             let output = serde_json::json!({
