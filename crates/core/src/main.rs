@@ -369,6 +369,41 @@ fn get_url_env() -> Option<String> {
     std::env::var("HASHLINE_URL").ok()
 }
 
+/// Emit a daemon tool result and return the exit code the CLI should use.
+///
+/// The daemon answers with the MCP `CallToolResult` shape. A tool failure is
+/// flagged with the MCP `isError` field: its text belongs on stderr and the
+/// command must fail. Without this, a routed command reports exit 0 for
+/// every error and writes the error text into the machine-readable stdout
+/// stream, so a caller sees a failed edit as a successful one.
+fn emit_daemon_result(result: &Value) -> i32 {
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut text = String::new();
+    if let Some(items) = result.get("content").and_then(|c| c.as_array()) {
+        for item in items {
+            if let Some(chunk) = item.get("text").and_then(|v| v.as_str()) {
+                text.push_str(chunk);
+            }
+        }
+    }
+
+    if is_error {
+        if !text.is_empty() {
+            eprint!("{text}");
+        }
+        1
+    } else {
+        if !text.is_empty() {
+            print!("{text}");
+        }
+        0
+    }
+}
+
 /// Route a CLI command through a Unix socket daemon.
 #[cfg(unix)]
 fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
@@ -425,10 +460,21 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
     // Extract structured content from the response
     let result = response.get("result");
     if let Some(content) = result.and_then(|r| r.get("structuredContent")) {
+        // A daemon may also flag the whole call as failed via the MCP
+        // `isError` field. In that case the payload is an error message, not
+        // command output: it belongs on stderr and the command must fail.
+        let is_error = result
+            .and_then(|r| r.get("isError"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         // Print stdout if present
         if let Some(stdout_text) = content.get("stdout").and_then(|v| v.as_str()) {
             if !stdout_text.is_empty() {
-                print!("{stdout_text}");
+                if is_error {
+                    eprint!("{stdout_text}");
+                } else {
+                    print!("{stdout_text}");
+                }
             }
         }
         // Print stderr if present
@@ -467,17 +513,9 @@ fn route_via_socket(cli: &Cli, socket_path: &Path) -> Result<i32, String> {
             .get("exit_code")
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
-        Ok(exit_code)
-    } else if let Some(content_arr) = result
-        .and_then(|r| r.get("content"))
-        .and_then(|c| c.as_array())
-    {
-        for item in content_arr {
-            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                print!("{text}");
-            }
-        }
-        Ok(0)
+        Ok(if is_error { 1 } else { exit_code })
+    } else if let Some(result) = result {
+        Ok(emit_daemon_result(result))
     } else {
         Ok(0)
     }
@@ -568,13 +606,24 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
     //    exit_code, data }` envelope. Honor stdout/stderr verbatim and
     //    fall back to `data` JSON when stdout is empty.
     if let Some(content) = result.and_then(|r| r.get("structuredContent")) {
+        // A daemon may also flag the whole call as failed via the MCP
+        // `isError` field. In that case the payload is an error message, not
+        // command output: it belongs on stderr and the command must fail.
+        let is_error = result
+            .and_then(|r| r.get("isError"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let has_stdout = !content
             .get("stdout")
             .and_then(|v| v.as_str())
             .is_none_or(|s| s.is_empty());
         if let Some(stdout_text) = content.get("stdout").and_then(|v| v.as_str()) {
             if !stdout_text.is_empty() {
-                print!("{stdout_text}");
+                if is_error {
+                    eprint!("{stdout_text}");
+                } else {
+                    print!("{stdout_text}");
+                }
             }
         }
         if let Some(stderr_text) = content.get("stderr").and_then(|v| v.as_str()) {
@@ -599,23 +648,15 @@ fn route_via_http(cli: &Cli, url: &str) -> Result<i32, String> {
             .get("exit_code")
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
-        return Ok(exit_code);
+        return Ok(if is_error { 1 } else { exit_code });
     }
 
     // 3. Daemon returned the raw MCP `content` array
     //    (`{"result": {"content": [{"type": "text", "text": "..."}]}}`).
     //    This is the shape produced by `serve.rs handle_http` for the
     //    `/rpc` endpoint, and the shape the legacy 0.7.5 fix relied on.
-    if let Some(content_arr) = result
-        .and_then(|r| r.get("content"))
-        .and_then(|c| c.as_array())
-    {
-        for item in content_arr {
-            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                print!("{text}");
-            }
-        }
-        return Ok(0);
+    if let Some(result) = result {
+        return Ok(emit_daemon_result(result));
     }
 
     Ok(0)
@@ -638,7 +679,7 @@ fn serialize_command_args(command: &Commands) -> Result<Value, serde_json::Error
 
 #[cfg(test)]
 mod tests {
-    use super::{default_log_path, run, tracing_filter};
+    use super::{default_log_path, emit_daemon_result, run, tracing_filter};
     use hashline::cli::{Cli, Commands, ReadCmd};
     use std::path::PathBuf;
 
@@ -687,5 +728,34 @@ mod tests {
         let filter = tracing_filter().unwrap();
         let rendered = filter.to_string();
         assert!(rendered.contains("info"));
+    }
+
+    // ---- Daemon routing must preserve failures (bd-bx2) --------------------
+    //
+    // A command routed through a daemon used to exit 0 for every error and
+    // write the error text into stdout, so a caller could not tell a failed
+    // edit from a successful one.
+
+    #[test]
+    fn daemon_error_result_exits_non_zero() {
+        let result = serde_json::json!({
+            "content": [{"type": "text", "text": "Error: file not found: missing.txt"}],
+            "isError": true,
+        });
+        assert_eq!(emit_daemon_result(&result), 1);
+    }
+
+    #[test]
+    fn daemon_success_result_exits_zero() {
+        let result = serde_json::json!({
+            "content": [{"type": "text", "text": "OK file.txt#abcd lines=1"}],
+        });
+        assert_eq!(emit_daemon_result(&result), 0);
+    }
+
+    #[test]
+    fn daemon_result_without_content_exits_zero() {
+        let result = serde_json::json!({});
+        assert_eq!(emit_daemon_result(&result), 0);
     }
 }

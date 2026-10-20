@@ -59,7 +59,7 @@ hashline patch src/auth.js 'DEL 3' --dry-run
 - stdout = data only (file content, patch result, JSON)
 - stderr = diagnostics, warnings (`ERR KIND key=val` + `HINT ...` in compact mode)
 - unexpected errors add `REPORT https://github.com/quangdang46/hashline/issues` — routine errors (stale anchor, missing file) deliberately don't
-- exit 0 = success, exit 1 = stale-read rejection or no-op
+- exit 0 = success, exit 1 = any failure (stale-read rejection, rejected patch, missing file, …)
 
 ---
 

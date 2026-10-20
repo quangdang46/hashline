@@ -124,6 +124,9 @@ pub enum HashlineError {
     #[error("patch produced no edits: {reason}")]
     EmptyPatchWithReason { reason: Box<str> },
 
+    #[error("patch rejected: {reason}")]
+    PatchRejected { reason: Box<str> },
+
     #[error(
         "no-op loop detected: {attempts} consecutive identical no-op patches on '{path}' — re-read the file and re-anchor, or change the patch"
     )]
@@ -304,6 +307,9 @@ impl HashlineError {
             HashlineError::EmptyPatchWithReason { .. } => Some(
                 "verify the patch syntax and re-run. The warning above may explain what was rejected.",
             ),
+            HashlineError::PatchRejected { .. } => Some(
+                "fix the rejected operation and re-run — the patch was rejected atomically, so no lines were changed",
+            ),
             HashlineError::MultiLineContentUnsupported => Some(
                 "use a range anchor like '2:f1..4:9c' for multi-line replacement, or use `hashline patch` for mixed edits",
             ),
@@ -412,6 +418,8 @@ impl HashlineError {
                 "CLIPBOARD"
             }
             HashlineError::EmptyPatch | HashlineError::EmptyPatchWithReason { .. } => "EMPTY_PATCH",
+            HashlineError::PatchRejected { .. } => "PATCH_REJECTED",
+            HashlineError::TargetExists { .. } => "TARGET_EXISTS",
             HashlineError::AmbiguousHash { .. } => "AMBIGUOUS_HASH",
             HashlineError::HashNotFound { .. } => "HASH_NOT_FOUND",
             HashlineError::InvalidAnchor { .. }
@@ -469,6 +477,7 @@ impl HashlineError {
             | HashlineError::PatchFailed { .. }
             | HashlineError::EmptyPatch
             | HashlineError::EmptyPatchWithReason { .. }
+            | HashlineError::PatchRejected { .. }
             | HashlineError::NoopLoop { .. }
             | HashlineError::MultiLineContentUnsupported
             | HashlineError::MutationIndexOutOfBounds { .. }

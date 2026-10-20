@@ -35,13 +35,23 @@ pub fn merge_texts(base: &str, target: &str, current: &str) -> MergeResult {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum DiffOp {
+pub(crate) enum DiffOp {
     Equal(usize),
     Delete(usize),
     Insert(usize),
 }
 
-fn diff_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
+/// Compute a line-level diff between two texts.
+///
+/// Exposed crate-wide so the patch changelog renderer can reuse the same
+/// LCS alignment the merge path uses. Callers that need to report *why* a
+/// line changed (insert vs. modify) should pair adjacent delete/insert
+/// runs — see [`DiffOp`].
+///
+/// `max_cells` bounds the LCS dynamic-programming table (`m * n` cells).
+/// Beyond it the middle section is reported as a wholesale delete + insert
+/// rather than paying quadratic time and memory.
+pub(crate) fn diff_ops_with_budget(old: &[&str], new: &[&str], max_cells: usize) -> Vec<DiffOp> {
     let prefix = old
         .iter()
         .zip(new.iter())
@@ -63,7 +73,7 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
         (0, 0) => {}
         (_, 0) => ops.push(DiffOp::Delete(mid_old.len())),
         (0, _) => ops.push(DiffOp::Insert(mid_new.len())),
-        (m, n) if m * n <= 200_000 => lcs_diff(mid_old, mid_new, &mut ops),
+        (m, n) if m * n <= max_cells => lcs_diff(mid_old, mid_new, &mut ops),
         _ => {
             ops.push(DiffOp::Delete(mid_old.len()));
             ops.push(DiffOp::Insert(mid_new.len()));
@@ -75,6 +85,11 @@ fn diff_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
     }
     merge_adjacent(&mut ops);
     ops
+}
+
+/// Diff with the merge path's original LCS budget.
+fn diff_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
+    diff_ops_with_budget(old, new, 200_000)
 }
 
 fn lcs_diff(old: &[&str], new: &[&str], ops: &mut Vec<DiffOp>) {

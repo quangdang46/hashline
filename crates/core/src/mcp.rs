@@ -595,7 +595,7 @@ fn handle_patch(
         &entries,
         path,
         &edits,
-        edits.len(),
+        crate::commands::patch::count_operations(&edits),
     ) {
         Ok(cs) => cs,
         Err(e) => return format!("Error: {e}"),
@@ -707,6 +707,20 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+/// Build an MCP `CallToolResult` from a tool handler's text output.
+///
+/// Handlers report failures as text beginning with `Error: `. The MCP spec's
+/// `isError` flag marks those results as failures, so a client — including
+/// the CLI's daemon routing — can tell "the tool failed" from "the tool
+/// succeeded and produced this text" without sniffing the payload.
+fn tool_result(text: String) -> Value {
+    if text.starts_with("Error: ") {
+        serde_json::json!({"content": [{"type": "text", "text": text}], "isError": true})
+    } else {
+        serde_json::json!({"content": [{"type": "text", "text": text}]})
+    }
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "read" | "hashline_read" => {
@@ -715,7 +729,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'file'")?;
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::json!({"content": [{"type": "text", "text": handle_read(file, json)}]}))
+            Ok(tool_result(handle_read(file, json)))
         }
         "patch" | "hashline_patch" => {
             let file = args
@@ -734,9 +748,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("return_updated_anchors")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            Ok(
-                serde_json::json!({"content": [{"type": "text", "text": handle_patch(file, patch, dry_run, return_updated_anchors)}]}),
-            )
+            Ok(tool_result(handle_patch(
+                file,
+                patch,
+                dry_run,
+                return_updated_anchors,
+            )))
         }
         "write" | "hashline_write" => {
             let file = args
@@ -749,9 +766,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .ok_or("missing 'content'")?;
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(
-                serde_json::json!({"content": [{"type": "text", "text": handle_write(file, content, force, json)}]}),
-            )
+            Ok(tool_result(handle_write(file, content, force, json)))
         }
         "find_block" | "hashline_find_block" => {
             let file = args
@@ -762,9 +777,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("anchor")
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'anchor'")?;
-            Ok(
-                serde_json::json!({"content": [{"type": "text", "text": handle_find_block(file, anchor)}]}),
-            )
+            Ok(tool_result(handle_find_block(file, anchor)))
         }
         "remove_file" => {
             let file = args
@@ -772,9 +785,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'file'")?;
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(
-                serde_json::json!({"content": [{"type": "text", "text": handle_remove_file(file, json)}]}),
-            )
+            Ok(tool_result(handle_remove_file(file, json)))
         }
         "rename_file" => {
             let src = args
@@ -786,9 +797,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'dst'")?;
             let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(
-                serde_json::json!({"content": [{"type": "text", "text": handle_rename_file(src, dst, json)}]}),
-            )
+            Ok(tool_result(handle_rename_file(src, dst, json)))
         }
         _ => Err(format!("unknown tool: {name}")),
     }
@@ -967,6 +976,41 @@ pub fn run(_cmd: McpCmd) -> Result<(), HashlineError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ---- Tool results must flag failures (bd-bx2) -------------------------
+    //
+    // The daemon answers with the MCP `CallToolResult` shape. A tool failure
+    // has to be distinguishable from a success, otherwise a CLI command
+    // routed through the daemon reports exit 0 for every error.
+
+    #[test]
+    fn tool_result_flags_failures_with_is_error() {
+        let failed = tool_result("Error: file not found: missing.txt".to_string());
+        assert_eq!(failed["isError"], json!(true));
+
+        let ok = tool_result("OK file.txt#abcd lines=1".to_string());
+        assert!(
+            ok.get("isError").is_none(),
+            "success must not be flagged: {ok}"
+        );
+    }
+
+    #[test]
+    fn tool_call_on_missing_file_sets_is_error() {
+        let args = json!({"file": "/nonexistent/path/does/not/exist.txt"});
+        let result = call_tool("read", &args).expect("call_tool should return a result");
+        assert_eq!(result["isError"], json!(true), "{result}");
+    }
+
+    #[test]
+    fn tool_call_success_has_no_is_error_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+        let args = json!({"file": path.to_string_lossy()});
+        let result = call_tool("read", &args).expect("call_tool should return a result");
+        assert!(result.get("isError").is_none(), "{result}");
+    }
 
     #[test]
     fn initialize_includes_instructions() {

@@ -28,7 +28,19 @@ pub fn run<W: Write, E: Write>(
 
     if edits.is_empty() {
         if aborted {
-            return Ok(());
+            // The patch was rejected atomically — it mixed a valid operation
+            // with an unknown/malformed one, or carried an explicit abort
+            // marker. Nothing was written, so report failure: exiting 0 here
+            // tells the caller the edit landed when it did not.
+            let reason = warnings
+                .first()
+                .map(|w| w.lines().next().unwrap_or(w).to_string())
+                .unwrap_or_else(|| {
+                    "the patch was rejected before any edits were applied".to_string()
+                });
+            return Err(HashlineError::PatchRejected {
+                reason: reason.into_boxed_str(),
+            });
         }
         if warnings.is_empty() {
             return Err(HashlineError::EmptyPatch);
@@ -47,17 +59,7 @@ pub fn run<W: Write, E: Write>(
 
     let entries = fc.lines_with_hashes();
     // Count unique high-level operations (each has a distinct line_num).
-    let op_count: usize = edits
-        .iter()
-        .map(|e| match e {
-            Edit::Insert { line_num, .. } => *line_num,
-            Edit::Delete { line_num, .. } => *line_num,
-            Edit::Block { line_num, .. } => *line_num,
-            Edit::Cut { line_num, .. } => *line_num,
-            Edit::Paste { line_num, .. } => *line_num,
-        })
-        .collect::<std::collections::HashSet<_>>()
-        .len();
+    let op_count = count_operations(&edits);
     let changeset = apply_edits_tracked(&mut lines, &entries, &cmd.file, &edits, op_count)?;
 
     let result = if had_trailing_newline && !lines.is_empty() {
@@ -442,6 +444,27 @@ pub fn apply_edits_pure(
     })
 }
 
+/// Count the high-level operations in a parsed patch.
+///
+/// One operation can expand into several [`Edit`] variants — a `SWAP` with a
+/// three-line body yields one `Insert` per body line plus a `Delete` — so the
+/// operation count is the number of distinct `line_num` ownership keys. The
+/// CLI and the MCP server must agree on this number, otherwise the same patch
+/// reports a different `edits=` depending on which interface ran it.
+pub fn count_operations(edits: &[Edit]) -> usize {
+    edits
+        .iter()
+        .map(|e| match e {
+            Edit::Insert { line_num, .. }
+            | Edit::Delete { line_num, .. }
+            | Edit::Block { line_num, .. }
+            | Edit::Cut { line_num, .. }
+            | Edit::Paste { line_num, .. } => *line_num,
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+}
+
 /// Apply parsed edits to a mutable lines vector.
 ///
 /// Each [`Edit`] references original 1-indexed line numbers from the
@@ -476,6 +499,20 @@ pub fn apply_edits_tracked(
 /// Compute a [`ChangeSet`] by comparing original entries against the final lines.
 /// Uses the original entries as the pre-edit snapshot and the final lines as
 /// the post-edit result. The `edits_count` is the number of parsed edit operations.
+///
+/// The original and result lines are aligned with an LCS diff so that each
+/// changed line is classified by *what actually happened*:
+///
+/// * a line present in the result but absent from the original is **inserted**;
+/// * a line present in the original but absent from the result is **deleted**;
+/// * a delete run immediately followed by an insert run is a **rewrite** of
+///   that many lines (`SWAP`, `SWAP.BLK`), so those lines are paired up and
+///   reported as **modified**.
+///
+/// A pure content-match heuristic cannot tell "insert a new line" from
+/// "rewrite that line" — both look like one line replaced by one different
+/// line — which made insert operations report the new line as modified and
+/// an untouched neighbour as inserted.
 fn compute_changeset(
     entries: &[crate::document::LineEntry],
     final_lines: &[String],
@@ -498,61 +535,64 @@ fn compute_changeset(
         .map(|(_, e)| e)
         .collect();
 
-    // Build a map of original content → original line indices.
-    let mut orig_content_map: std::collections::HashMap<String, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (i, entry) in visible_entries.iter().enumerate() {
-        orig_content_map
-            .entry(entry.content.clone())
-            .or_default()
-            .push(i);
-    }
+    let old_lines: Vec<&str> = visible_entries.iter().map(|e| e.content.as_str()).collect();
+    let new_lines: Vec<&str> = final_lines.iter().map(|s| s.as_str()).collect();
 
-    // Track which original lines are still present (by content match).
-    let mut orig_used: Vec<bool> = vec![false; visible_entries.len()];
+    // A patch normally touches a small region, so the LCS table stays tiny.
+    // The budget is generous enough to align a few thousand rewritten lines
+    // exactly; past that a wholesale delete+insert is reported instead.
+    const MAX_LCS_CELLS: usize = 4_000_000;
+    let ops = crate::merge::diff_ops_with_budget(&old_lines, &new_lines, MAX_LCS_CELLS);
 
-    // For each final line, check if it existed in the original.
-    for (final_idx, content) in final_lines.iter().enumerate() {
-        let line_num = final_idx + 1;
-        let hash = crate::hash::format_short_hash(short_hash_value_indexed(content, line_num));
+    let mut orig_idx = 0usize; // 0-based cursor into old_lines
+    let mut final_idx = 0usize; // 0-based cursor into final_lines
+    // Original line numbers (1-indexed) removed by a delete run that has not
+    // been classified yet. Held back so an immediately following insert run
+    // can pair with them (a rewrite) rather than reporting a delete + insert.
+    let mut pending_deletes: Vec<usize> = Vec::new();
 
-        if let Some(orig_indices) = orig_content_map.get(content) {
-            // Find the first unused original occurrence.
-            if let Some(&orig_idx) = orig_indices.iter().find(|&&i| !orig_used[i]) {
-                orig_used[orig_idx] = true;
-                // Line existed and is unchanged — skip.
-                continue;
+    for op in ops {
+        match op {
+            crate::merge::DiffOp::Equal(count) => {
+                // A delete run not followed by an insert run is a plain deletion.
+                deleted.append(&mut pending_deletes);
+                orig_idx += count;
+                final_idx += count;
             }
-            // Content matches but all occurrences used — treat as insertion.
-            inserted.push(ChangedLine {
-                line: line_num,
-                hash,
-                content: content.clone(),
-            });
-        } else if final_idx < visible_entries.len() {
-            // Same position exists in original but content differs — modification.
-            orig_used[final_idx] = true; // Mark original as consumed
-            modified.push(ChangedLine {
-                line: line_num,
-                hash,
-                content: content.clone(),
-            });
-        } else {
-            // Beyond original bounds — insertion.
-            inserted.push(ChangedLine {
-                line: line_num,
-                hash,
-                content: content.clone(),
-            });
+            crate::merge::DiffOp::Delete(count) => {
+                for _ in 0..count {
+                    pending_deletes.push(orig_idx + 1);
+                    orig_idx += 1;
+                }
+            }
+            crate::merge::DiffOp::Insert(count) => {
+                // The first lines of the insert run rewrite the pending
+                // deletes; the surplus is a genuine insertion.
+                let paired = pending_deletes.len().min(count);
+                let _rewritten: Vec<usize> = pending_deletes.drain(..paired).collect();
+                deleted.append(&mut pending_deletes);
+                for offset in 0..count {
+                    let line_num = final_idx + offset + 1;
+                    let content = &new_lines[final_idx + offset];
+                    let hash =
+                        crate::hash::format_short_hash(short_hash_value_indexed(content, line_num));
+                    let entry = ChangedLine {
+                        line: line_num,
+                        hash,
+                        content: content.to_string(),
+                    };
+                    if offset < paired {
+                        modified.push(entry);
+                    } else {
+                        inserted.push(entry);
+                    }
+                }
+                final_idx += count;
+            }
         }
     }
-
-    // Collect deleted lines — original lines that weren't matched.
-    for (i, used) in orig_used.iter().enumerate() {
-        if !used {
-            deleted.push(i + 1); // 1-indexed
-        }
-    }
+    // Trailing deletes with no insert run left to pair with.
+    deleted.append(&mut pending_deletes);
 
     let final_text = if final_lines.is_empty() {
         String::new()
@@ -2602,5 +2642,249 @@ mod tests {
         );
         let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert!(v.get("updated_anchors").is_none(), "{v}");
+    }
+
+    // ---- ChangeSet classification (bd-his) --------------------------------
+    //
+    // A content-match heuristic cannot tell "insert a new line" from
+    // "rewrite that line" — both look like one line replaced by one
+    // different line. The heuristic reported the *inserted* line as
+    // modified and an *untouched* neighbour as inserted, so the `~`/`+`
+    // prefixes and the `changed=` count were wrong for every insert
+    // operation. These tests pin the classification to the operation that
+    // actually ran.
+
+    /// Apply a patch and return the resulting [`ChangeSet`].
+    fn apply_changeset(original: &str, patch_text: &str) -> ChangeSet {
+        apply_changeset_ext(original, patch_text, "rs")
+    }
+
+    fn apply_changeset_ext(original: &str, patch_text: &str, ext: &str) -> ChangeSet {
+        let (edits, _warnings, _file_op, _aborted) = parse_patch(patch_text);
+        let mut lines: Vec<String> = original.split('\n').map(|s| s.to_string()).collect();
+        let path_str = format!("test.{ext}");
+        let entries_with_content: Vec<crate::document::LineEntry> = lines
+            .iter()
+            .map(|s| crate::document::LineEntry {
+                content: s.clone(),
+                short_hash: crate::hash::short_hash_value(s),
+            })
+            .collect();
+        apply_edits_tracked(
+            &mut lines,
+            &entries_with_content,
+            std::path::Path::new(&path_str),
+            &edits,
+            count_operations(&edits),
+        )
+        .expect("edit should succeed")
+    }
+
+    #[test]
+    fn changeset_reports_insert_post_as_inserted() {
+        let cs = apply_changeset("line1\nline2\nline3", "INS.POST 1:\n+NEW");
+        assert_eq!(cs.inserted.len(), 1, "one line inserted: {cs:?}");
+        assert_eq!(cs.inserted[0].content, "NEW");
+        assert_eq!(cs.inserted[0].line, 2);
+        assert!(cs.modified.is_empty(), "nothing rewritten: {cs:?}");
+        assert!(cs.deleted.is_empty(), "nothing deleted: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_insert_pre_as_inserted() {
+        let cs = apply_changeset("line1\nline2\nline3", "INS.PRE 2:\n+NEW");
+        assert_eq!(cs.inserted.len(), 1, "one line inserted: {cs:?}");
+        assert_eq!(cs.inserted[0].content, "NEW");
+        assert_eq!(cs.inserted[0].line, 2);
+        assert!(cs.modified.is_empty(), "nothing rewritten: {cs:?}");
+        assert!(cs.deleted.is_empty(), "nothing deleted: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_insert_head_as_inserted() {
+        let cs = apply_changeset("line1\nline2\nline3", "INS.HEAD:\n+NEW");
+        assert_eq!(cs.inserted.len(), 1, "one line inserted: {cs:?}");
+        assert_eq!(cs.inserted[0].content, "NEW");
+        assert_eq!(cs.inserted[0].line, 1);
+        assert!(cs.modified.is_empty(), "nothing rewritten: {cs:?}");
+        assert!(cs.deleted.is_empty(), "nothing deleted: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_swap_as_modified() {
+        let cs = apply_changeset("line1\nline2\nline3", "SWAP 2:\n+REPLACED");
+        assert_eq!(cs.modified.len(), 1, "one line rewritten: {cs:?}");
+        assert_eq!(cs.modified[0].content, "REPLACED");
+        assert_eq!(cs.modified[0].line, 2);
+        assert!(cs.inserted.is_empty(), "nothing inserted: {cs:?}");
+        assert!(cs.deleted.is_empty(), "nothing deleted: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_delete_as_deleted() {
+        let cs = apply_changeset("line1\nline2\nline3", "DEL 2");
+        assert_eq!(cs.deleted, vec![2], "one line deleted: {cs:?}");
+        assert!(cs.modified.is_empty(), "nothing rewritten: {cs:?}");
+        assert!(cs.inserted.is_empty(), "nothing inserted: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_block_swap_as_modified_plus_deleted() {
+        let original = "fn outer() {\n    let a = 1;\n    let b = 2;\n}\nfn other() {}";
+        let cs = apply_changeset_ext(original, "SWAP.BLK 1:\n+fn replaced() {}", "rs");
+        assert_eq!(cs.modified.len(), 1, "block replaced by one line: {cs:?}");
+        assert_eq!(cs.modified[0].content, "fn replaced() {}");
+        assert_eq!(cs.deleted.len(), 3, "rest of the block deleted: {cs:?}");
+        assert!(cs.inserted.is_empty(), "nothing inserted: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_move_as_insert_plus_delete() {
+        // CUT + PUT relocates a line: it is an insertion at the new spot and
+        // a deletion at the old one, not "nothing changed".
+        let cs = apply_changeset("aaa\nbbb\nccc\nddd", "CUT 4 @fn\nPUT @fn <1");
+        assert_eq!(cs.inserted.len(), 1, "line pasted: {cs:?}");
+        assert_eq!(cs.inserted[0].content, "ddd");
+        assert_eq!(cs.inserted[0].line, 1);
+        assert_eq!(
+            cs.deleted,
+            vec![4],
+            "line removed from its old spot: {cs:?}"
+        );
+        assert!(cs.modified.is_empty(), "nothing rewritten: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_reports_a_swapped_pair_as_one_delete_and_one_insert() {
+        // Swapping two lines admits two equally-valid minimal edit scripts —
+        // either line can be the one that "moved". The diff picks one; what
+        // matters is that the change is reported at all rather than as
+        // "nothing changed".
+        let cs = apply_changeset("line1\nline2\nline3\nline4", "CUT 2 @fn\nPUT @fn <1");
+        assert_eq!(cs.inserted.len(), 1, "one line pasted: {cs:?}");
+        assert_eq!(cs.deleted.len(), 1, "one line removed: {cs:?}");
+        assert!(cs.modified.is_empty(), "nothing rewritten: {cs:?}");
+    }
+
+    #[test]
+    fn changeset_changed_count_matches_classified_lines() {
+        for patch in [
+            "INS.POST 1:\n+NEW",
+            "INS.PRE 2:\n+NEW",
+            "INS.HEAD:\n+NEW",
+            "SWAP 2:\n+REPLACED",
+            "DEL 2",
+        ] {
+            let cs = apply_changeset("line1\nline2\nline3", patch);
+            let classified = cs.modified.len() + cs.inserted.len() + cs.deleted.len();
+            assert_eq!(classified, 1, "one line changed for {patch:?}: {cs:?}");
+        }
+    }
+
+    // ---- Operation counting (bd-41p) --------------------------------------
+
+    #[test]
+    fn count_operations_counts_operations_not_edits() {
+        // A three-line SWAP body expands into three Insert edits plus a
+        // Delete, but it is one operation. The CLI and the MCP server must
+        // report the same number.
+        let (edits, _warnings, _file_op, _aborted) = parse_patch("SWAP 2:\n+a\n+b\n+c");
+        assert!(
+            edits.len() > 1,
+            "the body should expand into several edits, got {:?}",
+            edits.len()
+        );
+        assert_eq!(count_operations(&edits), 1);
+    }
+
+    #[test]
+    fn count_operations_counts_distinct_operations() {
+        let (edits, _warnings, _file_op, _aborted) = parse_patch("SWAP 1:\n+x\nDEL 3");
+        assert_eq!(count_operations(&edits), 2);
+    }
+
+    // ---- Rejected patches must fail (bd-5x5) ------------------------------
+
+    /// Run the patch command and return the error it produced, if any.
+    fn run_patch_result(
+        dir: &std::path::Path,
+        name: &str,
+        content: &str,
+        patch_text: &str,
+    ) -> Result<String, HashlineError> {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        let cmd = crate::cli::PatchCmd {
+            file: path.clone(),
+            patch: patch_text.to_string(),
+            dry_run: false,
+            safe: false,
+            json: false,
+            verbose: false,
+            emit_anchors: false,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut ctx = crate::context::CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            crate::context::OutputMode::Compact,
+        );
+        super::run(&mut ctx, cmd)?;
+        Ok(String::from_utf8(stdout).unwrap())
+    }
+
+    #[test]
+    fn rejected_patch_with_unknown_op_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = "line1\nline2\n";
+        let err = run_patch_result(dir.path(), "a.txt", original, "TOTALLY BOGUS")
+            .expect_err("an unknown operation must be an error, not a silent success");
+        assert_eq!(err.kind(), "PATCH_REJECTED");
+        // The file must be untouched.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn rejected_patch_with_malformed_op_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = "line1\nline2\n";
+        let err = run_patch_result(dir.path(), "a.txt", original, "PUT 1:\n+payload")
+            .expect_err("a malformed operation must be an error");
+        assert_eq!(err.kind(), "PATCH_REJECTED");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn rejected_patch_mixing_valid_and_unknown_ops_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = "line1\nline2\n";
+        let err = run_patch_result(
+            dir.path(),
+            "a.txt",
+            original,
+            "SWAP 1:\n+VALID\nBOGUSOP 2:\n+X",
+        )
+        .expect_err("a patch mixing valid and unknown operations must be rejected");
+        assert_eq!(err.kind(), "PATCH_REJECTED");
+        // The whole patch is rejected atomically — the valid op must not land.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn empty_patch_still_reports_empty_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_patch_result(dir.path(), "a.txt", "line1\n", "")
+            .expect_err("an empty patch must be an error");
+        assert_eq!(err.kind(), "EMPTY_PATCH");
     }
 }

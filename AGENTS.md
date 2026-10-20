@@ -188,6 +188,11 @@ Hint: re-read the file with `hashline read <file>`; ...
 
 **Fix:** `hashline read <file>` → use the new hash → retry.
 
+**Exit codes:** `0` = success, `1` = any failure. A patch that is rejected
+(e.g. an unknown or malformed operation) is applied atomically — nothing is
+written and the command exits `1` with `ERR PATCH_REJECTED` on stderr, so a
+rejected edit is never mistaken for a successful one.
+
 ### Common Pitfalls
 
 - **Stale anchor:** Content changed since last read → re-run `hashline read`

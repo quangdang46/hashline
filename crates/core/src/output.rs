@@ -132,6 +132,9 @@ pub fn write_error<W: Write, E: Write>(
                 HashlineError::EmptyPatchWithReason { reason } => {
                     write!(ctx.stderr(), " reason={}", reason)?;
                 }
+                // The reason was already printed as a `warning:` line above
+                // the error, so it is not repeated here.
+                HashlineError::PatchRejected { .. } => {}
                 HashlineError::UpdateFailed { message } => {
                     write!(ctx.stderr(), " reason={}", message)?;
                 }
