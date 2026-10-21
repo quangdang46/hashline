@@ -41,7 +41,10 @@ describe("escapePayloadLine", () => {
     expect(escapePayloadLine("+plus")).toBe("++plus");
   });
   test("leading - uses the +- escape (+- dash → literal -dash)", () => {
-    expect(escapePayloadLine("-dash")).toBe("+--dash");
+    expect(escapePayloadLine("-dash")).toBe("+-dash");
+  });
+  test("a lone - is escaped, not doubled", () => {
+    expect(escapePayloadLine("-")).toBe("+-");
   });
   test("content that merely contains + or - is untouched", () => {
     expect(escapePayloadLine("a + b - c")).toBe("+a + b - c");
@@ -92,6 +95,18 @@ describe("translateEdit — op to patch grammar", () => {
     expect(translateEdit({ op: "append", lines: ["z"] })).toEqual([
       "INS.TAIL:\n+z",
     ]);
+  });
+
+  test("append a markdown bullet → INS.POST with the +- escape", () => {
+    // Regression for GH #121: a payload line starting with `-` must be
+    // escaped as `+-bullet`, not `+--bullet` (which decodes to `--bullet`).
+    expect(
+      translateEdit({
+        op: "append",
+        pos: "5:da",
+        lines: ["- bullet item"],
+      }),
+    ).toEqual(["INS.POST 5:da:\n+- bullet item"]);
   });
 
   test("prepend with pos → INS.PRE N:hh:", () => {

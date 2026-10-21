@@ -41,11 +41,16 @@ export interface EditOperation {
   lines?: string[];
 }
 
-/** Escape a payload row per the patch grammar. */
+/**
+ * Escape a payload row per the patch grammar.
+ *
+ * Body rows are always `+` + payload. The parser's escape tokens (`++` -> literal
+ * `+`, `+-` -> literal `-`; patch_format.rs) mean a payload that itself starts
+ * with `+` or `-` is written correctly by simply prefixing the row marker —
+ * `+lead` becomes `++lead`, `-lead` becomes `+-lead`. A lone `+` is a blank
+ * line. (Matches pi-hashline's escapePayloadLine.)
+ */
 export function escapePayloadLine(line: string): string {
-  if (line.length === 0) return "+";
-  if (line.startsWith("+")) return `++${line.slice(1)}`;
-  if (line.startsWith("-")) return `+-${line}`;
   return `+${line}`;
 }
 
