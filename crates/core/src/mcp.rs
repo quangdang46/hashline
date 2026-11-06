@@ -82,28 +82,56 @@ pub struct JsonRpcError {
 // ---------------------------------------------------------------------------
 
 const MCP_INSTRUCTIONS: &str = "\
-Hashline provides hash-anchored file editing with agent-first compact output.
-Read a file first to get stable anchors ([path#HASH], line:hash), then patch
-by anchor. Prefer hashline for content-anchored edits over str_replace-style
-tools: anchors survive nearby edits, and stale reads are rejected instead of
-corrupting the file.
-
-Output is agent-native compact text by default:
-- read: full file with [path#hash] header + line:hash|content
-- patch: OK path#hash edits=N changed=N + changed lines (~modified +inserted -deleted)
-- write: OK path#hash lines=N (no file re-read)
-- find_block: OK file=path lang=X lines=N + block lines
-- remove: OK path
-- rename: OK src>dst
-
+Use hashline tools for hash-anchored edits rather than str_replace-style matching.
 Workflow:
-1. hashline read <file>        — get anchors
-2. hashline patch <file> <op>  — edit by anchor (use stdin for multi-op)
-3. If stale anchor error: re-read and retry with fresh anchors.
+1. Call read with {\"file\":\"path\"} and inspect the content.
+2. Call patch with the same file and a textual patch string. Put multiple
+   operations in that string, not CLI commands or a structured edits array.
+3. Verify the result and inspect any warnings. For another edit, use the full
+   fresh listing requested with return_updated_anchors=true, or call read again.
 
-Commands: read, patch, find_block, write, remove_file, rename_file
-Patch ops: SWAP, DEL, INS.POST, INS.PRE, INS.HEAD, INS.TAIL,
-           SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, CUT, PUT";
+Critical rules:
+- Copy 1-based N:hh anchors from the latest read; never invent or adjust hashes.
+  The [path#HASH] header is a file tag, not a line anchor. Hash validation is
+  limited to supplied anchors, not every line or the whole file.
+- Prefix every payload line with + and preserve indentation after it. Do not
+  include read-output prefixes or repeat unchanged boundary lines.
+- Batch independent, non-overlapping edits using the same pre-edit coordinates.
+  Inspect block boundaries with find_block before using block operations.
+- On stale anchors or invalid targets, read again, reassess, and rebuild the
+  patch; never bypass the error by stripping hashes.
+
+Tools: read, patch, write, find_block, remove_file, rename_file.
+Use write for new files, patch for existing-file edits. See patch's parameter
+schema for grammar, payload escaping, MCP examples, results and write limits.";
+
+const MCP_PATCH_FORMAT: &str = r#"Textual operations separated by newlines. Headers use 1-based line numbers; copy N:hh from read for hash validation at N. A trailing colon introduces payload on following lines.
+
+Operations (headers below are followed by payload on separate lines unless noted):
+- Replace one original line, even when the payload has multiple lines:
+  SWAP N:hh:
+  +replacement
+- Replace the inclusive original range N through M (N <= M):
+  SWAP N:hh..M:
+  +first replacement line
+  +second replacement line
+  The hash validates N only, not M or interior lines. Use N:hh..M, not two hash-qualified endpoints. Bare N..M is accepted but has no hash protection.
+- Insert before/after N: INS.PRE N:hh: / INS.POST N:hh:, followed by payload.
+- Insert at the start/end: INS.HEAD: / INS.TAIL:, followed by payload; no anchor.
+- Delete one line/an inclusive range: DEL N:hh / DEL N:hh..M; no payload. A range hash validates only its start.
+- Replace/delete/insert before/after the enclosing block: SWAP.BLK N:hh: / DEL.BLK N:hh / INS.BLK.PRE N:hh: / INS.BLK.POST N:hh:. All except DEL.BLK take payload on following lines. Bare N is also accepted without hash validation. Boundaries use language-dependent brace/indent/end heuristics, not tree-sitter; find_block is a preview, not a guarantee of identical resolution. Prefer separate calls for block edits that interact with other changes.
+- Move an inclusive range using a patch-local register: CUT N..M @name then PUT @name <K inserts before original line K; PUT @name without <K inserts at the start. Neither takes payload.
+
+Each body line must begin with + at column 1; everything after that marker is content, including indentation. + alone inserts a blank line; ++value inserts literal +value; +-item inserts literal -item. Do not use unified-diff deletion rows or include read-output prefixes. Use DEL for deletion (SWAP without body also deletes its target).
+
+MCP tools/call params examples (anchors are illustrative: substitute anchors from your own read; JSON \n encodes an actual newline in the patch string):
+Replace line: {"name":"patch","arguments":{"file":"a.txt","patch":"SWAP 2:ab:\n+    new value"}}
+Replace range: {"name":"patch","arguments":{"file":"a.txt","patch":"SWAP 2:ab..4:\n+first\n+second"}}
+Insert: {"name":"patch","arguments":{"file":"a.txt","patch":"INS.POST 2:ab:\n+added\n+\n++literal plus\n+-literal minus"}}
+Delete: {"name":"patch","arguments":{"file":"a.txt","patch":"DEL 2:ab..4"}}
+Multiple operations: {"name":"patch","arguments":{"file":"a.txt","patch":"SWAP 2:ab:\n+replacement\nDEL 5:cd\nINS.TAIL:\n+last","return_updated_anchors":true}}
+
+All targets in a batch refer to the same pre-edit file, not intermediate output. Keep operations independent and non-overlapping. Unknown/malformed operation keywords can reject the whole patch; other parser warnings may accompany a successful edit. Parsing/application failures do not write the file; this is not a crash-safe or concurrent-write guarantee. On failure, inspect the error, read again for stale/invalid anchors, and rebuild rather than guessing or removing hashes. Success returns OK path#hash edits=N changed=N and rows (~N:hh|content modified, +N:hh|content inserted, -N deleted), plus parser warnings when present; full fresh anchors require return_updated_anchors (or server environment opt-in via HASHLINE_RETURN_ANCHORS). Writes are direct, not crash-safe transactions, and do not lock out concurrent writers."#;
 
 // ---------------------------------------------------------------------------
 // MCP protocol types
@@ -131,26 +159,26 @@ fn tool_list() -> ToolList {
         tools: vec![
             ToolDefinition {
                 name: "read".into(),
-                description: "Read a file with [path#HASH] header and numbered lines".into(),
+                description: "Read a UTF-8 text file before editing. Returns [path#HASH] and N:hh|content for every visible line; copy N:hh anchors into patch headers.".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string", "description": "Path to the file"},
-                        "json": {"type": "boolean", "description": "Output as JSON"}
+                        "file": {"type": "string", "description": "Path to the existing UTF-8 text file to read"},
+                        "json": {"type": "boolean", "description": "Return a JSON object with path, hash and lines instead of compact text; default false"}
                     },
                     "required": ["file"]
                 })),
             },
             ToolDefinition {
                 name: "patch".into(),
-                description: "Apply a hashline patch (SWAP, DEL, INS.* operations)".into(),
+                description: "Edit an existing file using a textual patch and anchors from read. Supports replacement, insertion, deletion and block operations; see the patch parameter for grammar and MCP examples.".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string"},
-                        "patch": {"type": "string", "description": "Hashline patch string"},
-                        "dry_run": {"type": "boolean"},
-                        "return_updated_anchors": {"type": "boolean", "description": "Opt-in (issue #119): append the full fresh anchor listing ([path#HASH] + N:hh|content) to the result so follow-up edits can reuse anchors without an extra read call"}
+                        "file": {"type": "string", "description": "Existing UTF-8 text file to patch; use anchors from the latest read of this file"},
+                        "patch": {"type": "string", "description": MCP_PATCH_FORMAT},
+                        "dry_run": {"type": "boolean", "description": "Default false. Validate/apply in memory and return Dry-run result: followed by the full proposed file text without writing. Not a diff; no fresh anchor listing, even if return_updated_anchors is true."},
+                        "return_updated_anchors": {"type": "boolean", "description": "Default false. After a successful non-dry-run write, append the complete [path#HASH] and N:hh|content listing for follow-up edits. Otherwise only changed rows are returned, unless the server enables HASHLINE_RETURN_ANCHORS."}
                     },
                     "required": ["file", "patch"]
                 })),
@@ -158,49 +186,49 @@ fn tool_list() -> ToolList {
             ToolDefinition {
                 name: "write".into(),
                 description:
-                    "Write content to a file (creates new file or overwrites with --force)".into(),
+                    "Create a text file, or replace its entire content with force=true. Prefer patch for edits to existing files. Returns OK path#hash lines=N by default.".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string"},
-                        "content": {"type": "string", "description": "File content to write"},
-                        "force": {"type": "boolean", "description": "Overwrite existing file if it exists"},
-                        "json": {"type": "boolean", "description": "Output as JSON"}
+                        "file": {"type": "string", "description": "Destination file path; existing files require force=true"},
+                        "content": {"type": "string", "description": "Complete file content, not a patch; CRLF is normalized to LF and a leading BOM is stripped"},
+                        "force": {"type": "boolean", "description": "Allow replacing an existing file; default false. This is a whole-file overwrite, not an anchored edit."},
+                        "json": {"type": "boolean", "description": "Return a JSON object with path, hash and lines instead of compact text; default false"}
                     },
                     "required": ["file", "content"]
                 })),
             },
             ToolDefinition {
                 name: "find_block".into(),
-                description: "Find a likely structural block around an anchor".into(),
+                description: "Preview a likely enclosing block using brace, indentation or Ruby end heuristics. Returns numbered, hashed block lines; falls back to the anchor line if no block is found. Not tree-sitter analysis.".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string"},
-                        "anchor": {"type": "string", "description": "Line:hash anchor"}
+                        "file": {"type": "string", "description": "Existing UTF-8 text file whose block boundaries should be inspected"},
+                        "anchor": {"type": "string", "description": "N:hh anchor copied from read near the desired block (1-based line number and hash)"}
                     },
                     "required": ["file", "anchor"]
                 })),
             },
             ToolDefinition {
                 name: "remove_file".into(),
-                description: "Delete a file".into(),
+                description: "Permanently delete an existing file, not individual lines. Returns OK path; no undo or anchor check.".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string", "description": "Path to the file to delete"}
+                        "file": {"type": "string", "description": "Path to the existing file to permanently delete"}
                     },
                     "required": ["file"]
                 })),
             },
             ToolDefinition {
                 name: "rename_file".into(),
-                description: "Rename (move) a file".into(),
+                description: "Move an existing file to a destination that does not exist; creates destination parent directories. Returns OK src>dst; refuses to overwrite the destination.".into(),
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "src": {"type": "string", "description": "Source file path"},
-                        "dst": {"type": "string", "description": "Destination file path"}
+                        "src": {"type": "string", "description": "Path to the existing file to move"},
+                        "dst": {"type": "string", "description": "New file path; must not already exist"}
                     },
                     "required": ["src", "dst"]
                 })),
@@ -1045,6 +1073,183 @@ mod tests {
             text.contains("stale"),
             "instructions should mention stale-read rejection"
         );
+    }
+
+    #[test]
+    fn tools_list_preserves_api_and_describes_every_parameter() {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "tools/list".into(),
+            params: None,
+            id: Some(json!(1)),
+        };
+        let response = handle_request(&request, &mut Session::new());
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        let expected = [
+            (
+                "read",
+                json!({"file": "string", "json": "boolean"}),
+                json!(["file"]),
+            ),
+            (
+                "patch",
+                json!({"file": "string", "patch": "string", "dry_run": "boolean", "return_updated_anchors": "boolean"}),
+                json!(["file", "patch"]),
+            ),
+            (
+                "write",
+                json!({"file": "string", "content": "string", "force": "boolean", "json": "boolean"}),
+                json!(["file", "content"]),
+            ),
+            (
+                "find_block",
+                json!({"file": "string", "anchor": "string"}),
+                json!(["file", "anchor"]),
+            ),
+            ("remove_file", json!({"file": "string"}), json!(["file"])),
+            (
+                "rename_file",
+                json!({"src": "string", "dst": "string"}),
+                json!(["src", "dst"]),
+            ),
+        ];
+        assert_eq!(tools.len(), expected.len());
+        for (name, parameter_types, required) in expected {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            assert!(
+                !tool["description"].as_str().unwrap().trim().is_empty(),
+                "{name}"
+            );
+            let schema = &tool["inputSchema"];
+            assert_eq!(schema["type"], "object", "{name}");
+            assert_eq!(schema["required"], required, "{name}");
+            let properties = schema["properties"].as_object().unwrap();
+            let types = parameter_types.as_object().unwrap();
+            assert_eq!(properties.len(), types.len(), "{name}");
+            for (parameter, expected_type) in types {
+                let property = &properties[parameter];
+                assert_eq!(&property["type"], expected_type, "{name}.{parameter}");
+                assert!(
+                    !property["description"].as_str().unwrap().trim().is_empty(),
+                    "{name}.{parameter}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn patch_batch_failures_leave_file_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        let original = "first\nsecond\nthird\n";
+        std::fs::write(&path, original).unwrap();
+        let file = path.to_str().unwrap();
+        let read: Value = serde_json::from_str(&handle_read(file, true)).unwrap();
+        let first_hash = read["lines"][0]["hash"].as_str().unwrap();
+        let second_hash = read["lines"][1]["hash"].as_str().unwrap();
+        let stale_hash = if second_hash == "00" { "01" } else { "00" };
+        let valid = format!("SWAP 1:{first_hash}:\n+replacement");
+        for (patch, error_fragment) in [
+            (
+                format!("{valid}\nDEL 2:{stale_hash}"),
+                "changed since last read",
+            ),
+            (format!("{valid}\nSWAP"), "patch produced no edits"),
+        ] {
+            let request = JsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                method: "tools/call".into(),
+                params: Some(json!({"name": "patch", "arguments": {"file": file, "patch": patch}})),
+                id: Some(json!(1)),
+            };
+            let response = handle_request(&request, &mut Session::new());
+            assert!(response.error.is_none());
+            let result = response.result.unwrap();
+            assert_eq!(result["isError"], true, "{result}");
+            assert!(
+                result["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(error_fragment),
+                "{result}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn advertised_patch_examples_apply_through_mcp() {
+        let original = "one\ntwo\nthree\nfour\nfive\nsix\n";
+        let expected = [
+            "one\n    new value\nthree\nfour\nfive\nsix\n",
+            "one\nfirst\nsecond\nfive\nsix\n",
+            "one\ntwo\nadded\n\n+literal plus\n-literal minus\nthree\nfour\nfive\nsix\n",
+            "one\nfive\nsix\n",
+            "one\nreplacement\nthree\nfour\nsix\nlast\n",
+        ];
+        let examples: Vec<Value> = MCP_PATCH_FORMAT
+            .lines()
+            .filter_map(|line| line.split_once(": {\"name\":").map(|(_, rest)| rest))
+            .map(|rest| serde_json::from_str(&format!("{{\"name\":{rest}")).unwrap())
+            .collect();
+        assert_eq!(examples.len(), expected.len());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        for (example, expected_text) in examples.iter().zip(expected) {
+            std::fs::write(&path, original).unwrap();
+            let read: Value =
+                serde_json::from_str(&handle_read(path.to_str().unwrap(), true)).unwrap();
+            let mut args = example["arguments"].clone();
+            args["file"] = json!(path.to_str().unwrap());
+            // The examples deliberately use placeholders, not fabricated real hashes.
+            args["patch"] = json!(
+                args["patch"]
+                    .as_str()
+                    .unwrap()
+                    .replace(
+                        "2:ab",
+                        &format!("2:{}", read["lines"][1]["hash"].as_str().unwrap())
+                    )
+                    .replace(
+                        "5:cd",
+                        &format!("5:{}", read["lines"][4]["hash"].as_str().unwrap())
+                    )
+            );
+            let result = call_tool(example["name"].as_str().unwrap(), &args).unwrap();
+            assert!(result.get("isError").is_none(), "{result}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected_text);
+        }
+    }
+
+    #[test]
+    fn patch_preview_and_anchor_opt_in_match_descriptions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "old\n").unwrap();
+        let file = path.to_str().unwrap();
+        let patch = "INS.TAIL:\n+new";
+        let preview = handle_patch(file, patch, true, true);
+        assert_eq!(preview, "Dry-run result:\nold\nnew\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+
+        let result = handle_patch(file, patch, false, false);
+        assert!(result.starts_with("OK "), "{result}");
+        if !crate::commands::patch::emit_anchors_from_env() {
+            assert!(!result.contains(&format!("\n[{file}#")), "{result}");
+        }
+        let result = handle_patch(file, "INS.HEAD:\n+first", false, true);
+        let fresh_read = handle_read(file, false);
+        // read currently includes an extra empty segment for a trailing newline.
+        let fresh_rows = fresh_read
+            .lines()
+            .skip(1)
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(result.contains(&format!("\n[{file}#")), "{result}");
+        assert!(result.ends_with(&fresh_rows), "{result}");
     }
 
     #[test]
