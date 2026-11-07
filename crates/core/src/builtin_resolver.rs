@@ -55,7 +55,12 @@ impl BlockResolver for BuiltinBlockResolver {
                 .or_else(|| resolve_indent_block(&entries, anchor_idx)),
         };
 
-        result.map(|(start, end)| BlockSpan { start, end })
+        // `find_*_block` return 0-based entry indices; `BlockSpan` is
+        // documented as a 1-indexed inclusive line span, so shift here.
+        result.map(|(start, end)| BlockSpan {
+            start: start + 1,
+            end: end + 1,
+        })
     }
 }
 
@@ -317,7 +322,17 @@ pub fn resolve_block_boundaries(
             line_no: anchor_index + 1,
         })?;
 
-    if span.start >= entries.len() || span.end >= entries.len() || span.start > span.end {
+    // `BlockSpan` is 1-indexed; this function returns 0-based indices for
+    // direct `entries` slicing.
+    if span.start == 0 || span.end < span.start {
+        return Err(HashlineError::UnbalancedBlock {
+            line_no: anchor_index + 1,
+        });
+    }
+    let start = span.start - 1;
+    let end = span.end - 1;
+
+    if start >= entries.len() || end >= entries.len() || start > end {
         return Err(HashlineError::UnbalancedBlock {
             line_no: anchor_index + 1,
         });
@@ -326,7 +341,7 @@ pub fn resolve_block_boundaries(
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let language = language_for_extension(extension);
 
-    Ok((language, span.start, span.end))
+    Ok((language, start, end))
 }
 
 fn language_for_extension(ext: &str) -> Option<String> {
@@ -436,8 +451,9 @@ mod tests {
             line: 3,
         };
         let span = resolver.resolve(&request).unwrap();
-        assert_eq!(span.start, 1);
-        assert_eq!(span.end, 3);
+        // BlockSpan is 1-indexed: `fn b()` opens on line 2 and closes on line 4.
+        assert_eq!(span.start, 2);
+        assert_eq!(span.end, 4);
     }
 
     #[test]
