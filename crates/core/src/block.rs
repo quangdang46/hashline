@@ -15,6 +15,39 @@ use crate::types::{
     Anchor, BlockMode, BlockResolver, BlockResolverRequest, BlockSpan, Cursor, Edit, InsertMode,
 };
 
+/// Why [`resolve_block_edits`] could not expand a deferred block edit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BlockResolveError {
+    /// The block could not be resolved; the string is the human-facing reason.
+    Unresolved(String),
+    /// The op carried an anchor hash that does not match the line it names.
+    /// Kept distinct from `Unresolved` so callers can surface a `StaleAnchor`
+    /// (and attempt snapshot recovery) rather than a generic block failure.
+    StaleAnchor {
+        line: usize,
+        expected: u8,
+        actual: u8,
+    },
+}
+
+impl std::fmt::Display for BlockResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unresolved(msg) => f.write_str(msg),
+            Self::StaleAnchor {
+                line,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "line {line} content changed since last read (expected hash {}, got {})",
+                crate::hash::format_short_hash(*expected),
+                crate::hash::format_short_hash(*actual)
+            ),
+        }
+    }
+}
+
 /// Returns `true` when at least one edit is a deferred block edit.
 pub fn has_block_edit(edits: &[Edit]) -> bool {
     edits.iter().any(|e| matches!(e, Edit::Block { .. }))
@@ -42,10 +75,38 @@ pub fn resolve_block_edits(
     text: &str,
     path: &str,
     resolver: Option<&dyn BlockResolver>,
-) -> Result<Vec<Edit>, String> {
+) -> Result<Vec<Edit>, BlockResolveError> {
     if !has_block_edit(edits) {
         return Ok(edits.to_vec());
     }
+
+    // Hash anchors are checked against this snapshot's per-line hashes, using
+    // the same position-seeded scheme `read` reports (so symbol-only lines
+    // validate too). Done before lowering, because the lowered edits no longer
+    // carry the anchor the caller referenced.
+    let anchor_hashes: Option<Vec<u8>> = edits
+        .iter()
+        .any(|e| {
+            matches!(
+                e,
+                Edit::Block {
+                    expected_hash: Some(_),
+                    ..
+                }
+            )
+        })
+        .then(|| {
+            let lines: Vec<&str> = if text.is_empty() {
+                Vec::new()
+            } else {
+                text.split('\n').collect()
+            };
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| crate::hash::short_hash_value_indexed(line, i + 1))
+                .collect()
+        });
 
     let mut resolved: Vec<Edit> = Vec::with_capacity(edits.len());
     let mut synth_index = 0usize;
@@ -56,12 +117,26 @@ pub fn resolve_block_edits(
             payloads,
             line_num,
             mode,
+            expected_hash,
             ..
         } = edit
         else {
             resolved.push(edit.clone());
             continue;
         };
+
+        if let (Some(expected), Some(hashes)) = (expected_hash, anchor_hashes.as_ref()) {
+            let idx = anchor.line.wrapping_sub(1);
+            if let Some(actual) = hashes.get(idx) {
+                if *expected != *actual {
+                    return Err(BlockResolveError::StaleAnchor {
+                        line: anchor.line,
+                        expected: *expected,
+                        actual: *actual,
+                    });
+                }
+            }
+        }
 
         // Determine which concrete op this block edit corresponds to.
         let op = match mode {
@@ -132,18 +207,18 @@ pub fn resolve_block_edits(
                         line_num, op, anchor.line
                     )
                 };
-                return Err(msg);
+                return Err(BlockResolveError::Unresolved(msg));
             }
             Some(BlockSpan { start, end }) => {
                 if start == end {
                     // Single-line resolution means the anchor landed on a bare
                     // statement, not a multi-line construct — reject.
-                    return Err(format!(
+                    return Err(BlockResolveError::Unresolved(format!(
                         "line {}: `{}` resolved a single-line block (line {}) — \
                          line {} is a bare statement, not the opening line of a \
                          multi-line construct. Use a concrete line range instead.",
                         line_num, op, start, line_num
-                    ));
+                    )));
                 }
 
                 if op == "insert_after" {
