@@ -1156,6 +1156,14 @@ mod tests {
                 format!("{valid}\nDEL 2:{stale_hash}"),
                 "changed since last read",
             ),
+            (
+                format!("{valid}\nINS.PRE 2:{stale_hash}:\n+added"),
+                "changed since last read",
+            ),
+            (
+                format!("{valid}\nINS.POST 2:{stale_hash}:\n+added"),
+                "changed since last read",
+            ),
             (format!("{valid}\nSWAP"), "patch produced no edits"),
         ] {
             let request = JsonRpcRequest {

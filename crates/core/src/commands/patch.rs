@@ -922,7 +922,12 @@ pub fn apply_edits_with_clipboard(
             }
 
             // ---- INS.PRE / INS.POST / INS.HEAD / INS.TAIL --------------------
-            Edit::Insert { cursor, text, .. } => {
+            Edit::Insert {
+                cursor,
+                text,
+                expected_hash,
+                ..
+            } => {
                 // Validate anchor bounds before processing (same check as
                 // SWAP/DEL/CUT — anchor must reference an existing line).
                 match &cursor {
@@ -935,6 +940,33 @@ pub fn apply_edits_with_clipboard(
                         });
                     }
                     _ => {}
+                }
+
+                // Validate against the original snapshot, not the live buffer
+                // which earlier operations in this batch may have changed.
+                if let (Cursor::BeforeAnchor(a) | Cursor::AfterAnchor(a), Some(expected)) =
+                    (cursor, expected_hash)
+                {
+                    let anchor_index = a.line.wrapping_sub(1);
+                    if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
+                    {
+                        return Err(HashlineError::StaleAnchor {
+                            anchor: format!(
+                                "{}:{}",
+                                a.line,
+                                crate::hash::format_short_hash(*expected)
+                            )
+                            .into(),
+                            line: a.line,
+                            expected: crate::hash::format_short_hash(*expected).into(),
+                            actual: crate::hash::format_short_hash(
+                                entries[anchor_index].short_hash,
+                            )
+                            .into(),
+                            path: path.display().to_string().into(),
+                            relocated_suffix: String::new().into(),
+                        });
+                    }
                 }
 
                 // Anchors address the ORIGINAL snapshot; translate to a live
@@ -1619,6 +1651,57 @@ mod tests {
 
     fn apply_text(original: &str, patch_text: &str) -> String {
         apply_text_ext(original, patch_text, "rs")
+    }
+
+    #[test]
+    fn insert_anchors_validate_original_snapshot_hashes() {
+        let original = "alpha\nbeta\ngamma\n";
+        let entries: Vec<crate::document::LineEntry> = split_normalized(original)
+            .into_iter()
+            .enumerate()
+            .map(|(i, content)| crate::document::LineEntry {
+                short_hash: crate::hash::short_hash_value_indexed(&content, i + 1),
+                content,
+            })
+            .collect();
+        let hash = entries[1].short_hash;
+        let valid_hash = crate::hash::format_short_hash(hash);
+        let stale_hash = crate::hash::format_short_hash(hash ^ 1);
+        for (op, expected) in [
+            ("INS.PRE", "alpha\nadded\nbeta\ngamma"),
+            ("INS.POST", "alpha\nbeta\nadded\ngamma"),
+        ] {
+            for address in [format!("2:{valid_hash}"), "2".to_string()] {
+                let (edits, _, _, aborted) = parse_patch(&format!("{op} {address}:\n+added"));
+                assert!(!aborted);
+                let mut lines = split_normalized(original);
+                apply_edits(&mut lines, &entries, Path::new("test.txt"), &edits).unwrap();
+                assert_eq!(lines.join("\n"), expected);
+            }
+            // Earlier operations change and shift the anchor's live content.
+            // Its hash must still be checked against the original entries.
+            let prefix = "INS.HEAD:\n+header\nSWAP 2:\n+changed";
+            let (edits, _, _, _) = parse_patch(&format!("{prefix}\n{op} 2:{valid_hash}:\n+added"));
+            let mut lines = split_normalized(original);
+            apply_edits(&mut lines, &entries, Path::new("test.txt"), &edits).unwrap();
+            assert_eq!(
+                lines.join("\n"),
+                expected
+                    .replacen("alpha", "header\nalpha", 1)
+                    .replace("beta", "changed")
+            );
+
+            let mut lines = split_normalized(original);
+            let (edits, _, _, _) = parse_patch(&format!("{op} 2:{stale_hash}:\n+added"));
+            let error =
+                apply_edits(&mut lines, &entries, Path::new("test.txt"), &edits).unwrap_err();
+            assert!(matches!(error, HashlineError::StaleAnchor { line: 2, .. }));
+            let (swap, _, _, _) = parse_patch(&format!("SWAP 2:{stale_hash}:\n+added"));
+            let swap_error =
+                apply_edits(&mut lines, &entries, Path::new("test.txt"), &swap).unwrap_err();
+            assert_eq!(error.to_string(), swap_error.to_string());
+            assert_eq!(lines, split_normalized(original));
+        }
     }
 
     #[test]
