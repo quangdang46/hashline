@@ -30,6 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::block::BlockResolveError;
 use crate::block::resolve_block_edits;
 use crate::config::HashlineConfig;
 use crate::document::FileContent;
@@ -286,10 +287,7 @@ impl Editor {
             &path.to_string_lossy(),
             self.block_resolver.as_deref(),
         )
-        .map_err(|msg| HashlineError::BlockUnresolved {
-            line: 0,
-            message: msg,
-        })?;
+        .map_err(|err| block_resolve_error(err, path))?;
 
         // Apply edits to in-memory lines. On a stale anchor, attempt
         // snapshot-based recovery (Phase 3): replay the edits against the
@@ -449,10 +447,7 @@ impl Editor {
 
         // Resolve block edits
         let resolved = resolve_block_edits(&edits, text, path, self.block_resolver.as_deref())
-            .map_err(|msg| HashlineError::BlockUnresolved {
-                line: 0,
-                message: msg,
-            })?;
+            .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
         // Build fake FileContent-like data for apply_edits
         let entries: Vec<crate::document::LineEntry> = text
@@ -505,10 +500,7 @@ impl Editor {
     ) -> Result<PatchResult, HashlineError> {
         // Resolve block edits
         let resolved = resolve_block_edits(edits, text, path, self.block_resolver.as_deref())
-            .map_err(|msg| HashlineError::BlockUnresolved {
-                line: 0,
-                message: msg,
-            })?;
+            .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
         let entries: Vec<crate::document::LineEntry> = text
             .split('\n')
@@ -675,6 +667,31 @@ fn split_normalized(text: &str) -> Vec<String> {
         parts.pop();
     }
     parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// Map a [`BlockResolveError`] onto the public error type.
+///
+/// A stale block anchor becomes `StaleAnchor` (not `BlockUnresolved`) so the
+/// caller sees the same error, recovery path, and hint that a line-op stale
+/// anchor produces. Resolution failures stay `BlockUnresolved`.
+fn block_resolve_error(err: BlockResolveError, path: &Path) -> HashlineError {
+    match err {
+        BlockResolveError::Unresolved(message) => {
+            HashlineError::BlockUnresolved { line: 0, message }
+        }
+        BlockResolveError::StaleAnchor {
+            line,
+            expected,
+            actual,
+        } => HashlineError::StaleAnchor {
+            anchor: format!("{}:{}", line, hash::format_short_hash(expected)).into(),
+            line,
+            expected: hash::format_short_hash(expected).into(),
+            actual: hash::format_short_hash(actual).into(),
+            path: path.display().to_string().into(),
+            relocated_suffix: String::new().into(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -970,5 +987,68 @@ mod tests {
         let result = ed.find_block(&path, "3").unwrap();
         let lines: Vec<usize> = result.block_lines.iter().map(|l| l.n).collect();
         assert_eq!(lines, vec![2, 3, 4]);
+    }
+
+    // ------------------------------------------------------------------
+    // Block hash validation through the library API (bd-0bz)
+    //
+    // `resolve_block_edits` lowers a deferred `Block` edit into concrete
+    // inserts/deletes. Before this fix it read `expected_hash` through `..`
+    // and hardcoded `None`, so a `N:HH` hash on a block op was silently
+    // dropped and an arbitrary hash was accepted.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn editor_block_ops_reject_stale_anchor_hash() {
+        let body = "fn a() {\n}\n";
+        let cases = [
+            "SWAP.BLK 1:ff:\n+x",
+            "DEL.BLK 1:ff",
+            "INS.BLK.POST 1:ff:\n+x",
+            "INS.BLK.PRE 1:ff:\n+x",
+        ];
+        for patch in cases {
+            let (_d, path) = temp_file(body);
+            let mut ed = Editor::without_snapshots().with_builtin_resolver();
+            let err = ed.patch(&path, patch).unwrap_err();
+            assert!(
+                matches!(err, HashlineError::StaleAnchor { line: 1, .. }),
+                "{patch}: expected StaleAnchor, got {err:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                body,
+                "{patch}: rejected patch must not touch the file"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_block_ops_accept_matching_anchor_hash() {
+        let body = "fn a() {\n}\n";
+        for patch in [
+            "SWAP.BLK 1:{h}:\n+fn z() {{\n+}}",
+            "INS.BLK.POST 1:{h}:\n+// note",
+            "INS.BLK.PRE 1:{h}:\n+// note",
+        ] {
+            let (_d, path) = temp_file(body);
+            let mut ed = Editor::without_snapshots().with_builtin_resolver();
+            let hash = ed.read(&path).unwrap().lines[0].hash.clone();
+            let patch = patch.replace("{h}", &hash);
+            let applied = ed.patch(&path, &patch);
+            assert!(
+                applied.is_ok(),
+                "{patch}: matching hash should apply, got {:?}",
+                applied.err()
+            );
+        }
+    }
+
+    #[test]
+    fn editor_block_ops_accept_hashless_anchor() {
+        let (_d, path) = temp_file("fn a() {\n}\n");
+        let mut ed = Editor::without_snapshots().with_builtin_resolver();
+        ed.patch(&path, "DEL.BLK 1").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
     }
 }
