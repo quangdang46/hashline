@@ -30,3 +30,6 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features --locked
       - run: cargo build --release --locked -p hashline
+      # CLI-level end-to-end suite (POSIX shell; skipped on Windows).
+      - if: runner.os != 'Windows'
+        run: bash scripts/e2e.sh "$PWD/target/release/hashline"

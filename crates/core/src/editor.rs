@@ -901,4 +901,74 @@ mod tests {
         ed.clear_snapshots();
         assert!(ed.snapshot_store().head(&path.to_string_lossy()).is_none());
     }
+
+    // ------------------------------------------------------------------
+    // Block ops through the library API (bd-ctw)
+    //
+    // `BuiltinBlockResolver::resolve` returns 0-based indices from the
+    // `find_*_block` helpers while `BlockSpan` is documented as 1-indexed.
+    // Treating the span as 1-based (before the fix) shifted every block op
+    // one line up, so `SWAP.BLK 3:` rewrote lines 1..2 and left line 4.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn editor_swap_blk_replaces_the_addressed_block() {
+        let (_d, path) = temp_file("fn a() {}\nfn b() {\n    let x = 1;\n}\n");
+        let mut ed = Editor::without_snapshots().with_builtin_resolver();
+        let hash = ed.read(&path).unwrap().lines[2].hash.clone();
+
+        let result = ed
+            .patch(&path, &format!("SWAP.BLK 3:{hash}:\n+    let x = 42;"))
+            .unwrap();
+
+        assert_eq!(result.text, "fn a() {}\n    let x = 42;\n");
+    }
+
+    #[test]
+    fn editor_del_blk_removes_only_the_addressed_block() {
+        let (_d, path) = temp_file("fn a() {}\nfn b() {\n    let x = 1;\n}\n");
+        let mut ed = Editor::without_snapshots().with_builtin_resolver();
+        let hash = ed.read(&path).unwrap().lines[2].hash.clone();
+
+        let result = ed.patch(&path, &format!("DEL.BLK 3:{hash}")).unwrap();
+
+        assert_eq!(result.text, "fn a() {}\n");
+    }
+
+    #[test]
+    fn editor_ins_blk_post_and_pre_land_outside_the_block() {
+        let body = "fn a() {}\nfn b() {\n    let x = 1;\n}\n";
+
+        let (_d, path) = temp_file(body);
+        let mut ed = Editor::without_snapshots().with_builtin_resolver();
+        let hash = ed.read(&path).unwrap().lines[2].hash.clone();
+        let out = ed
+            .patch(&path, &format!("INS.BLK.POST 3:{hash}:\n+    // after"))
+            .unwrap();
+        assert_eq!(
+            out.text,
+            "fn a() {}\nfn b() {\n    let x = 1;\n}\n    // after\n"
+        );
+
+        let (_d2, path2) = temp_file(body);
+        let mut ed2 = Editor::without_snapshots().with_builtin_resolver();
+        let hash2 = ed2.read(&path2).unwrap().lines[2].hash.clone();
+        let out2 = ed2
+            .patch(&path2, &format!("INS.BLK.PRE 3:{hash2}:\n+    // before"))
+            .unwrap();
+        assert_eq!(
+            out2.text,
+            "fn a() {}\n    // before\nfn b() {\n    let x = 1;\n}\n"
+        );
+    }
+
+    #[test]
+    fn find_block_reports_1_based_lines_after_span_conversion() {
+        let (_d, path) = temp_file("fn a() {}\nfn b() {\n    let x = 1;\n}\n");
+        let ed = Editor::without_snapshots().with_builtin_resolver();
+        // Line 3 sits inside `fn b()`, which spans lines 2..=4.
+        let result = ed.find_block(&path, "3").unwrap();
+        let lines: Vec<usize> = result.block_lines.iter().map(|l| l.n).collect();
+        assert_eq!(lines, vec![2, 3, 4]);
+    }
 }
