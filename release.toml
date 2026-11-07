@@ -1,0 +1,45 @@
+# cargo-release configuration for hashline.
+#
+# Releases are cut by `cargo release <level>`, which:
+#   1. bumps `version` in crates/core/Cargo.toml (+ Cargo.lock),
+#   2. commits it as `chore(release): bump to X.Y.Z`,
+#   3. creates and pushes the `v<version>` tag.
+#
+# The pushed tag is what actually ships: `.github/workflows/release.yml`
+# builds the linux/macos/windows binaries and publishes the GitHub Release.
+# Nothing is published to crates.io — the `hashline` crate there is an
+# unrelated stale 0.2.1; distribution is GitHub Releases.
+#
+# Typical use:
+#   cargo release patch                 # preview (dry run is the default)
+#   cargo release patch --execute       # do it: bump, commit, tag, push
+#   cargo release 0.9.22 --execute      # explicit version
+#   cargo release patch --execute --no-push   # stop before the tag is pushed
+#
+# Add --no-confirm for non-interactive runs.
+#
+# CHANGELOG.md is intentionally manual: each release section carries a
+# hand-written `Thanks: @user` credit line that commit tooling cannot
+# produce. Write the section before you run the release, or amend the bump
+# commit afterwards.
+
+# Distribution is GitHub Releases, not crates.io.
+publish = false
+release = true
+push = true
+
+# Tag shape must match release.yml's `v*.*.*` trigger.
+tag = true
+tag-name = "v{{version}}"
+tag-message = "hashline {{version}}"
+
+# Match the existing history: `chore(release): bump to X.Y.Z`.
+pre-release-commit-message = "chore(release): bump to {{version}}"
+
+# Signing is not configured for this repo.
+sign-tag = false
+sign-commit = false
+
+# No version strings embedded in files beyond the manifests, so there is
+# nothing to rewrite.
+pre-release-replacements = []
