@@ -172,6 +172,38 @@ INS.POST 4:6c:
 - **Update notice:** once per 24h (cached in `~/.hashline/update-check.json`), successful interactive commands print `NOTE update available: latest=<v> installed=<v> (run \`hashline update\`)` to stderr — only when stderr is a terminal, so piped/agent output stays byte-identical.
 - **Disable the notice:** set `HASHLINE_NO_UPDATE_CHECK=1`. **Mirror/test override:** set `HASHLINE_RELEASES_BASE_URL` to redirect all release lookups.
 
+### Cutting a Release
+
+Releases are driven by `cargo-release` (`release.toml`) and shipped by the tag
+push — there is **no crates.io publish** (the `hashline` crate there is an
+unrelated stale 0.2.1; distribution is GitHub Releases).
+
+1. **Write the CHANGELOG section by hand** (`CHANGELOG.md`, newest first),
+   including the `Thanks: @user` credit line. cargo-release does not generate
+   it — the credits cannot be derived from commits.
+2. **Preview:** `cargo release patch` (dry run is the default).
+3. **Release:** `cargo release patch --execute`.
+
+Steps 1–3 in practice:
+
+```bash
+# 1. edit CHANGELOG.md, commit it
+# 2. preview: shows "Upgrading hashline from X to Y" and the tag to push
+cargo release patch
+# 3. bump version + Cargo.lock, commit `chore(release): bump to X.Y.Z`,
+#    create `vX.Y.Z`, push main + tag. The tag triggers release.yml,
+#    which builds linux/macos/windows binaries and publishes the Release.
+cargo release patch --execute
+```
+
+Useful variants: `cargo release 0.9.22 --execute` (explicit version),
+`cargo release patch --execute --no-push` (stop before the tag is pushed),
+add `--no-confirm` for non-interactive runs.
+
+Do **not** hand-edit the version in `crates/core/Cargo.toml` and tag manually —
+`Cargo.lock` drift has broken `--locked` release builds before (see v0.9.17).
+`cargo release` updates the manifest and lockfile together.
+
 ### Error Recovery
 
 **Compact format (default):**
