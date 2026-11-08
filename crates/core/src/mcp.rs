@@ -177,7 +177,7 @@ fn tool_list() -> ToolList {
                     "properties": {
                         "file": {"type": "string", "description": "Existing UTF-8 text file to patch; use anchors from the latest read of this file"},
                         "patch": {"type": "string", "description": MCP_PATCH_FORMAT},
-                        "dry_run": {"type": "boolean", "description": "Default false. Validate/apply in memory and return Dry-run result: followed by the full proposed file text without writing. Not a diff; no fresh anchor listing, even if return_updated_anchors is true."},
+                        "dry_run": {"type": "boolean", "description": "Default false. Validate/apply in memory without writing. Parser warnings, when present, appear before a blank line and Dry-run result:; everything after that marker is the full proposed file text. Without warnings, the response starts with Dry-run result:. Not a diff; no fresh anchor listing, even if return_updated_anchors is true."},
                         "return_updated_anchors": {"type": "boolean", "description": "Default false. After a successful non-dry-run write, append the complete [path#HASH] and N:hh|content listing for follow-up edits. Otherwise only changed rows are returned, unless the server enables HASHLINE_RETURN_ANCHORS."}
                     },
                     "required": ["file", "patch"]
@@ -638,7 +638,14 @@ fn handle_patch(
     };
 
     if dry_run {
-        format!("Dry-run result:\n{final_text}")
+        if warning_line.is_empty() {
+            format!("Dry-run result:\n{final_text}")
+        } else {
+            format!(
+                "{}\n\nDry-run result:\n{final_text}",
+                warning_line.trim_start()
+            )
+        }
     } else {
         match crate::commands::common::fast_write(path, final_text.as_bytes()) {
             Ok(_) => {
@@ -1228,6 +1235,51 @@ mod tests {
             let result = call_tool(example["name"].as_str().unwrap(), &args).unwrap();
             assert!(result.get("isError").is_none(), "{result}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), expected_text);
+        }
+    }
+
+    #[test]
+    fn patch_preview_preserves_parser_warnings_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        let file = path.to_str().unwrap();
+        for original in ["alpha\nbeta\n", "alpha\r\nbeta\r\n"] {
+            std::fs::write(&path, original).unwrap();
+            let original_bytes = std::fs::read(&path).unwrap();
+            let read: Value = serde_json::from_str(&handle_read(file, true)).unwrap();
+            let anchor = format!("2:{}", read["lines"][1]["hash"].as_str().unwrap());
+            let patch = format!("SWAP {anchor}:\n-beta\n+added");
+            let preview = call_tool(
+                "patch",
+                &json!({"file": file, "patch": patch, "dry_run": true}),
+            )
+            .unwrap();
+            assert!(preview.get("isError").is_none(), "{preview}");
+            let preview_text = preview["content"][0]["text"].as_str().unwrap();
+            let (warnings, proposed) = preview_text.split_once("\n\nDry-run result:\n").unwrap();
+            assert!(warnings.starts_with("warnings:\n"), "{warnings}");
+            assert!(
+                warnings.contains(crate::messages::MINUS_ROW_REJECTED),
+                "{warnings}"
+            );
+            let expected = if original.contains("\r\n") {
+                "alpha\r\n-beta\r\nadded\r\n"
+            } else {
+                "alpha\n-beta\nadded\n"
+            };
+            assert_eq!(proposed, expected);
+            assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+
+            let applied = call_tool(
+                "patch",
+                &json!({"file": file, "patch": patch, "dry_run": false}),
+            )
+            .unwrap();
+            assert!(applied.get("isError").is_none(), "{applied}");
+            let applied_text = applied["content"][0]["text"].as_str().unwrap();
+            assert!(applied_text.starts_with("OK "), "{applied_text}");
+            assert!(applied_text.contains(warnings), "{applied_text}");
+            assert_eq!(std::fs::read(&path).unwrap(), proposed.as_bytes());
         }
     }
 
