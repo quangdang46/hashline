@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 Format: grouped by release tag (newest first). `Thanks` credits non-maintainer contributors/authors/co-authors in that release range.
 
+## [v0.9.22] - 2026-11-08
+- fix(editor): block ops dropped expected_hash, accepting stale anchors (#126)
+- fix(editor): block ops used 0-based span as 1-based, corrupting a page (#125)
+- fix(patch): validate hash anchors for INS.PRE and INS.POST (#123)
+- test: add CLI e2e suite (scripts/e2e.sh) covering all commands
+- chore(release): add cargo-release config (tag-driven GitHub Release)
+- docs: document the cargo-release flow (no crates.io, manual changelog)
+
 ## [v0.9.21] - 2026-11-07
 - docs(mcp): make editing instructions and patch grammar self-contained (#122) — self-contained read→patch→verify workflow, patch grammar/payload escaping, JSON examples, expanded tool/param docs, schema & behavior tests. No parser/behavior/API changes.
 - chore(release): bump to 0.9.21
