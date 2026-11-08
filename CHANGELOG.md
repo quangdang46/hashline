@@ -11,6 +11,7 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 - test: add CLI e2e suite (scripts/e2e.sh) covering all commands
 - chore(release): add cargo-release config (tag-driven GitHub Release)
 - docs: document the cargo-release flow (no crates.io, manual changelog)
+- Thanks: @cleg (Paul Dmitryev) for #123.
 
 ## [v0.9.21] - 2026-11-07
 - docs(mcp): make editing instructions and patch grammar self-contained (#122) — self-contained read→patch→verify workflow, patch grammar/payload escaping, JSON examples, expanded tool/param docs, schema & behavior tests. No parser/behavior/API changes.
