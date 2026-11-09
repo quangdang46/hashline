@@ -146,7 +146,7 @@ pub fn run<W: Write, E: Write>(
     match ctx.output_mode() {
         crate::context::OutputMode::Compact => {
             // Agent-native: OK header + changed lines only
-            let path = cmd.file.display();
+            let path = crate::output::escape_compact_field(&cmd.file.display().to_string());
             let changed_count =
                 changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
             writeln!(
@@ -266,7 +266,7 @@ pub fn run<W: Write, E: Write>(
         }
         crate::context::OutputMode::Ndjson => {
             // Same as compact for now
-            let path = cmd.file.display();
+            let path = crate::output::escape_compact_field(&cmd.file.display().to_string());
             let changed_count =
                 changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
             writeln!(
@@ -329,7 +329,12 @@ fn write_updated_anchors<W: Write>(
     path: &str,
     changeset: &ChangeSet,
 ) -> std::io::Result<()> {
-    writeln!(stdout, "[{path}#{}]", changeset.file_hash)?;
+    writeln!(
+        stdout,
+        "[{}#{}]",
+        crate::output::escape_compact_field(path),
+        changeset.file_hash
+    )?;
     for line in &changeset.updated_anchors {
         writeln!(stdout, "{}:{}|{}", line.line, line.hash, line.content)?;
     }

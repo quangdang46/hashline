@@ -21,7 +21,11 @@ pub fn run<W: Write, E: Write>(
     // 3. Output result
     match ctx.output_mode() {
         crate::context::OutputMode::Compact | crate::context::OutputMode::Ndjson => {
-            writeln!(ctx.stdout(), "OK {}", cmd.file.display())?;
+            writeln!(
+                ctx.stdout(),
+                "OK {}",
+                crate::output::escape_compact_field(&cmd.file.display().to_string())
+            )?;
         }
         crate::context::OutputMode::Verbose => {
             writeln!(ctx.stdout(), "removed '{}'", cmd.file.display())?;

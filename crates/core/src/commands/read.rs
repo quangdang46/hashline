@@ -36,7 +36,12 @@ pub fn run<W: Write, E: Write>(
         });
         writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
     } else {
-        writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
+        writeln!(
+            ctx.stdout(),
+            "[{}#{}]",
+            crate::output::escape_compact_field(&fc.path.display().to_string()),
+            fc.hash
+        )?;
         let mut hash_buf = [0u8; 2];
         for (i, entry) in entries.iter().enumerate() {
             if entry.content.is_empty() && i == raw_lines.len() - 1 && fc.trailing_newline {
