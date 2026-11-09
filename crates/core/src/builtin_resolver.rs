@@ -445,14 +445,18 @@ fn spec_for(ext: &str, path: &Path) -> Spec {
 pub(crate) fn brace_pairs_for_ext(entries: &[LineEntry], ext: &str) -> Vec<(usize, usize)> {
     let name = format!("x.{ext}");
     let path = Path::new(&name);
-    scan_all(entries, &spec_for(ext, &path)).0
+    scan_all(entries, &spec_for(ext, path)).0
 }
+
+/// Inclusive 0-based line span `(start, end)`.
+type LineSpan = (usize, usize);
+type LineSpans = Vec<LineSpan>;
 
 /// Lexically scan `entries` once, returning merged brace pairs `(start, end)`
 /// (0-based, inclusive) — pairs joined by a same-line `} … {` bridge
 /// (`} else {`, `} catch (E e) {`, `} while (…) {`) are merged into a single
 /// span — plus resolved heredoc `(operator_line, terminator_line)` ranges.
-fn scan_all(entries: &[LineEntry], spec: &Spec) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+fn scan_all(entries: &[LineEntry], spec: &Spec) -> (LineSpans, LineSpans) {
     let mut scanner = BraceScanner::new(spec);
     for (li, entry) in entries.iter().enumerate() {
         scanner.scan_line(li, &entry.content);
@@ -937,7 +941,7 @@ impl<'a> BraceScanner<'a> {
         }
     }
 
-    fn finish(self) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    fn finish(self) -> (LineSpans, LineSpans) {
         (
             merge_bridge_pairs(&self.raw_pairs, &self.bridge),
             self.heredoc_ranges,
@@ -1149,10 +1153,8 @@ fn find_comment_start(t: &str, prefix: &str) -> Option<usize> {
     let tb = t.as_bytes();
     let mut i = 0;
     while i + pb.len() <= tb.len() {
-        if &tb[i..i + pb.len()] == pb {
-            if i == 0 || tb[i - 1].is_ascii_whitespace() {
-                return Some(i);
-            }
+        if &tb[i..i + pb.len()] == pb && (i == 0 || tb[i - 1].is_ascii_whitespace()) {
+            return Some(i);
         }
         i += 1;
     }
@@ -1289,11 +1291,7 @@ fn extend_signature_up(entries: &[LineEntry], mut start: usize, spec: &Spec) -> 
         let tail = code.trim_end();
         // The block's own opening `{` (last char) is not part of the
         // signature — exclude it before measuring unmatched closers.
-        let body = if tail.ends_with('{') {
-            &tail[..tail.len() - 1]
-        } else {
-            tail
-        };
+        let body = tail.strip_suffix('{').unwrap_or(tail);
         -sig_bracket_delta(body)
     };
     while need > 0 && start > 0 && steps < 60 {

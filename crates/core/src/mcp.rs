@@ -785,10 +785,9 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> ToolOutpu
                     structured,
                 )
             }
-            Err(e) => err_output(&HashlineError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("file written but re-read for verification failed: {e}"),
-            ))),
+            Err(e) => err_output(&HashlineError::Io(std::io::Error::other(format!(
+                "file written but re-read for verification failed: {e}"
+            )))),
         }
     } else {
         // Agent-native compact: status line only, no re-read

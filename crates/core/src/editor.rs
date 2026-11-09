@@ -364,7 +364,7 @@ impl Editor {
                         file_hash,
                         edits: resolved.clone(),
                     };
-                    if let Some(recovered) = recovery.try_recover(&args, &apply_fn) {
+                    if let Some(recovered) = recovery.try_recover(&args, apply_fn) {
                         for w in &recovered.warnings {
                             eprintln!("warning: {w}");
                         }

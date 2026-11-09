@@ -379,7 +379,7 @@ impl SnapshotStore for InMemorySnapshotStore {
                 let bytes_before = snapshot_bytes(snapshot);
                 merge_seen_lines(snapshot, seen_lines);
                 // seen_lines growth is charged against max_total_bytes too.
-                self.total_bytes = self.total_bytes + (snapshot_bytes(snapshot) - bytes_before);
+                self.total_bytes += snapshot_bytes(snapshot) - bytes_before;
 
                 // Promote to front (most recent).
                 if pos != 0 {
@@ -439,7 +439,7 @@ impl SnapshotStore for InMemorySnapshotStore {
         for &line in lines {
             set.insert(line);
         }
-        self.total_bytes = self.total_bytes + (snapshot_bytes(snapshot) - bytes_before);
+        self.total_bytes += snapshot_bytes(snapshot) - bytes_before;
     }
 
     fn invalidate(&mut self, path: &str) {
