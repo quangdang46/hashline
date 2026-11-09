@@ -79,8 +79,8 @@ pub fn run<W: Write, E: Write>(
             writeln!(
                 ctx.stdout(),
                 "OK {}>{}",
-                cmd.src.display(),
-                cmd.dst.display()
+                crate::output::escape_compact_field(&cmd.src.display().to_string()),
+                crate::output::escape_compact_field(&cmd.dst.display().to_string())
             )?;
         }
         crate::context::OutputMode::Verbose => {

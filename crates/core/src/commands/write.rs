@@ -52,7 +52,7 @@ pub fn run<W: Write, E: Write>(
             writeln!(
                 ctx.stdout(),
                 "OK {}#{} lines={}",
-                cmd.file.display(),
+                crate::output::escape_compact_field(&cmd.file.display().to_string()),
                 file_hash,
                 line_count,
             )?;
@@ -105,7 +105,7 @@ pub fn run<W: Write, E: Write>(
             writeln!(
                 ctx.stdout(),
                 "OK {}#{} lines={}",
-                cmd.file.display(),
+                crate::output::escape_compact_field(&cmd.file.display().to_string()),
                 file_hash,
                 line_count,
             )?;
