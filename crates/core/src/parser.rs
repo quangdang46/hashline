@@ -1943,4 +1943,74 @@ mod inline_payload_tests {
         assert!(edits.is_empty());
         assert!(aborted);
     }
+
+    // ---- bd-trailing-garbage-c28n: trailing junk rejects atomically ----
+
+    #[test]
+    fn trailing_garbage_ops_reject_atomically() {
+        // Every repro from the regression hunt: malformed anchors with
+        // trailing junk must produce NO edits and a malformed/unknown-op
+        // warning (→ PATCH_REJECTED), never a silent unanchored apply.
+        for patch in [
+            "SWAP 1.5:\n+x",  // `.5` is junk, not a range
+            "SWAP 2 9c:\n+x", // space + junk after anchor
+            "SWAP 2xyz\n+x",  // junk fused to line number
+            "SWAP 2:67x\n+x", // junk fused to hash
+            "SWAP 2:67 junk", // bare text not `:`-anchored
+            "INS 2 9c:\n+x",
+            "INS.TAIL junk\n+x",
+            "DEL 2xyz",
+            "DEL 2 JUNK",
+            "DEL 2:67 JUNK",
+            "DEL.BLK 2 junk",
+            "CUT 5..9 junk",
+            "PUT @fn <2 junk",
+            "REM junk",
+        ] {
+            let (edits, warnings, _f, _aborted) = parse_patch(patch);
+            assert!(
+                edits.is_empty(),
+                "patch {patch:?} produced edits: {edits:?}"
+            );
+            assert!(
+                warnings.iter().any(|w| w.contains("operation")),
+                "patch {patch:?}, warnings: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_garbage_rejects_whole_patch_not_just_line() {
+        // A valid op followed by a junk-tailed op must reject the ENTIRE
+        // patch atomically — the good op must not apply either.
+        let (edits, warnings, _f, aborted) = parse_patch("SWAP 1:+ok\nSWAP 2 9c:\n+bad");
+        assert!(edits.is_empty(), "edits: {edits:?}");
+        assert!(aborted);
+        assert!(warnings.iter().any(|w| w.contains("malformed operation")));
+    }
+
+    #[test]
+    fn legal_trailing_forms_still_apply() {
+        // Sanity: the recognized inline-payload forms from afca603 are
+        // unaffected by the strict trailing check.
+        for (patch, expect_text) in [
+            ("SWAP 2:+x", "x"),
+            ("SWAP 2 +x", "x"),
+            ("SWAP 2:67:+x", "x"),
+            ("SWAP 2:67:bare", "bare"),
+            ("SWAP 2..3:67:bare", "bare"),
+            ("INS.TAIL:raw", "raw"),
+            ("INS.PRE 3:+x", "x"),
+        ] {
+            let (edits, _w, _f, aborted) = parse_patch(patch);
+            assert!(!aborted, "patch: {patch}");
+            assert!(
+                edits.iter().any(|e| matches!(
+                    e,
+                    Edit::Insert { text, .. } if text == expect_text
+                )),
+                "patch: {patch}, edits: {edits:?}"
+            );
+        }
+    }
 }

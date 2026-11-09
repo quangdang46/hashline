@@ -861,15 +861,19 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
 /// byte index where any inline payload begins (`== end` when the header
 /// consumes the whole line).
 ///
-/// Fix #113/#115: Be lenient about trailing garbage after a valid scan.
-/// Agents may send malformed hashes like `SWAP 99:zz` where `zz` is not
-/// valid hex. The scan succeeded (recognized the operation keyword and
-/// line number), but trailing non-whitespace chars remain. Accept the
-/// operation — the applier will handle the stale/out-of-range anchor.
-/// Only reject if trailing chars are whitespace (indicates a valid range
-/// continuation that failed to parse, e.g. `SWAP 2 `). For payload-taking
-/// ops that trailing text IS the inline payload — see
-/// [`inline_payload_start`].
+/// Trailing text after a complete op header is NOT freely accepted (the old
+/// Fix #113/#115 leniency let `DEL`-adjacent junk like `SWAP 2 9c:` or
+/// `SWAP 1.5:` apply with the malformed tail silently ignored — bd-trailing-
+/// garbage-c28n). It is only legal as an inline payload for payload-taking
+/// ops, and only in the two recognized forms:
+///   - `+`-prefixed literal payload: `SWAP 2:+x`, `SWAP 2 +x`, `INS.TAIL:+x`;
+///   - bare payload anchored to the header's `:` terminator (the last
+///     non-whitespace byte before the payload is `:`):
+///     `SWAP 2:67:bare`, `SWAP 2..4:67:bare`, `INS.TAIL:raw`.
+///
+/// Anything else — `SWAP 2 9c:`, `SWAP 1.5:`, `SWAP 2:67x`, `INS.TAIL junk`,
+/// or ANY tail on a no-payload op — rejects the line so it surfaces as a
+/// malformed/unknown operation and the patch fails atomically.
 fn scan_hunk(line: &str) -> Option<(BlockTarget, usize)> {
     let end = trim_end_index(line);
     let bytes = line.as_bytes();
@@ -879,11 +883,39 @@ fn scan_hunk(line: &str) -> Option<(BlockTarget, usize)> {
     }
     let scan = scan_hunk_anchor(line, bytes, start, end)?;
     if scan.next_index != end {
-        let trailing = &bytes[scan.next_index..end];
-        if trailing.iter().all(|&b| is_whitespace_code(b)) {
+        let payload_start = skip_whitespace(bytes, scan.next_index, end);
+        if payload_start == end {
+            // Only whitespace remained after the header — a dangling
+            // continuation (`SWAP 2 `), not a payload.
             return None;
         }
-        // Trailing non-whitespace after a valid scan: accept with leniency.
+        let takes_payload = matches!(
+            scan.target,
+            BlockTarget::Replace(..)
+                | BlockTarget::Block(..)
+                | BlockTarget::InsertBefore(..)
+                | BlockTarget::InsertAfter(..)
+                | BlockTarget::InsertAfterBlock(..)
+                | BlockTarget::InsertBeforeBlock(..)
+                | BlockTarget::Bof
+                | BlockTarget::Eof
+        );
+        if !takes_payload {
+            return None;
+        }
+        let first = bytes[payload_start];
+        // Bare (unprefixed) inline payload is only recognized when it is
+        // anchored to the header's `:` terminator — e.g. the `:` after the
+        // hash in `SWAP 2:67:bare` or the op colon in `INS.TAIL:raw`.
+        let colon_anchored = bytes[..payload_start]
+            .iter()
+            .rev()
+            .find(|&&b| !is_whitespace_code(b))
+            .is_some_and(|&b| b == CHAR_COLON);
+        if first != CHAR_PAYLOAD_REPLACE && !colon_anchored {
+            return None;
+        }
+        return Some((scan.target, payload_start));
     }
     Some((scan.target, scan.next_index))
 }
@@ -1603,6 +1635,76 @@ mod tests {
         match classify_op("CUT 5 @my-reg_1.2") {
             BlockTarget::Cut(_, _, reg) => assert_eq!(reg.as_deref(), Some("my-reg_1.2")),
             other => panic!("expected Cut, got {other:?}"),
+        }
+    }
+
+    // ---- bd-trailing-garbage-c28n: trailing junk after op headers ----
+
+    #[test]
+    fn trailing_junk_rejected_for_payload_ops() {
+        // Malformed anchors with trailing garbage must NOT parse as ops —
+        // they used to apply unanchored/unchecked (F1 regression hunt).
+        for bad in [
+            "SWAP 1.5:",      // `.5` is not a range separator — junk
+            "SWAP 2 9c:",     // space + junk after anchor
+            "SWAP 2xyz",      // junk fused to the line number
+            "SWAP 2:67x",     // junk fused to the hash
+            "SWAP 2:67 junk", // bare text NOT anchored to `:`
+            "INS 2 9c:",
+            "INS.PRE 3 junk",
+            "INS.TAIL junk", // no `:` terminator → not a payload
+            "INS.HEAD stray",
+            "SWAP.BLK 3 junk",
+            "INS.BLK.POST 3 junk",
+        ] {
+            let t = classify_line(bad, 1);
+            assert!(!matches!(t, Token::OpBlock { .. }), "{bad} got {t:?}");
+        }
+    }
+
+    #[test]
+    fn trailing_junk_rejected_for_no_payload_ops() {
+        for bad in [
+            "DEL 2xyz",
+            "DEL 2 JUNK",
+            "DEL 2:67 JUNK",
+            "DEL 2..3 trailing",
+            "DEL.BLK 2 junk",
+            "CUT 5..9 junk",
+            "CUT 5..9 @fn junk",
+            "PUT @fn <2 junk",
+            "REM junk",
+        ] {
+            let t = classify_line(bad, 1);
+            assert!(!matches!(t, Token::OpBlock { .. }), "{bad} got {t:?}");
+        }
+    }
+
+    #[test]
+    fn legal_inline_payload_forms_still_parse() {
+        // `+` sigil payload — with or without the hash colon.
+        for ok in [
+            "SWAP 2:+x",
+            "SWAP 2 +x",
+            "SWAP 2:67:+x",
+            "SWAP 2:67: +x",
+            "SWAP 2..3:+x",
+            "INS.PRE 3:+x",
+            "INS.TAIL:+x",
+            "INS.HEAD:+x",
+        ] {
+            let t = classify_line(ok, 1);
+            assert!(matches!(t, Token::OpBlock { .. }), "{ok} got {t:?}");
+        }
+        // Bare payload anchored to the `:` terminator.
+        for ok in [
+            "SWAP 2:67:bare",
+            "SWAP 2..4:67:bare",
+            "INS.TAIL:raw",
+            "INS.PRE 3:67:bare",
+        ] {
+            let t = classify_line(ok, 1);
+            assert!(matches!(t, Token::OpBlock { .. }), "{ok} got {t:?}");
         }
     }
 
