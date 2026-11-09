@@ -29,7 +29,7 @@ pub fn run<W: Write, E: Write>(
 
     $ hashline read src/auth.js
 
-    src/auth.js#1a2b
+    [src/auth.js#1a2b]
     1:ee|function verifyToken(token) {
     2:c6|  const decoded = jwt.verify(token, process.env.SECRET)
     3:a3|  if (!decoded.exp) throw new TokenError('missing expiry')
@@ -58,6 +58,12 @@ pub fn run<W: Write, E: Write>(
     2:c6|  if (name) {
     3:db|    console.log("Hello " + name);
     4:8f|  }
+
+    If the anchor's line number and hash disagree, find-block
+    relocates to the line that actually holds the hash: it prints
+    'warning: hash HH expected at line N, found at line M —
+    relocated' on stderr plus a WARN line on stdout, and still
+    exits 0. In --json mode the payload carries a "warning" field.
 
 ──────────────────────  PATCH OPERATIONS  ──────────────────────
 
@@ -108,13 +114,21 @@ pub fn run<W: Write, E: Write>(
   Notes:
   • Line hashes are 2 hex chars (e.g. 3:a3) — the #tag on the read
     header is a separate 4-hex file hash, not a line anchor.
-  • Payload lines MUST start on the line AFTER the header. A
-    same-line payload is ignored: 'SWAP 3: +new' has an empty body
-    and silently DELETES line 3. Write payload on following lines.
-  • SWAP/DEL with no payload deletes the target line(s).
+  • The first payload line may sit on the header line itself:
+    'SWAP 3:a3:+new' works the same as putting '+new' on the next
+    line (a space before '+' is fine). Additional payload lines
+    still go on following lines, one '+' row each.
+  • SWAP/DEL with no payload at all deletes the target line(s)
+    ('SWAP 3:' with nothing after the colon is a delete, not an
+    error).
   • Bare 'INS N:' is shorthand for 'INS.POST N:'.
   • Block ops (* .BLK) use brace/indent/end heuristics by file
     extension — best-effort, not a parser. Check find-block first.
+  • File-level ops: 'REM' deletes the whole file, 'MV <dest>'
+    renames it. Each must be the only op in its [path] section —
+    they cannot be mixed with line ops. 'MV' onto an existing
+    path fails (no --force in patch context); a relative <dest>
+    resolves against the source file's directory.
 
 ───────────────────  RANGE SYNTAX  ──────────────────────────
 
@@ -136,6 +150,10 @@ pub fn run<W: Write, E: Write>(
   still exits 1 (ERR PATCH_REJECTED), same as a failure. Check the
   exit code, not just the output text.
 
+  *** End of File ends the current file's hunks (apply_patch
+  grammar): content after it is ignored with a warning until the
+  next [path#hash] section header.
+
 ───────────────────  PATCH SOURCE MODES  ──────────────────────
 
   The patch argument accepts 3 forms:
@@ -143,12 +161,17 @@ pub fn run<W: Write, E: Write>(
     hashline patch file - <<'EOF' ... EOF     Stdin — PREFERRED for multi-op
     hashline patch file @/path/to/file.patch  File reference (rare)
 
-  Payload always goes on the lines AFTER the header:
+  Payload may start on the header line itself or on following lines:
+
+    $ hashline patch src/auth.js 'SWAP 3:a3:+  if (!decoded || !decoded.exp) throw TokenError("expired")'
+
+    or the multi-line form — one '+' row per payload line:
 
     $ hashline patch src/auth.js 'SWAP 3:a3:
     +  if (!decoded || !decoded.exp) throw TokenError("expired")'
 
-  NOT 'SWAP 3: +new' on one line — that deletes line 3 (empty body).
+  Only a truly empty body ('SWAP 3:' with nothing after ':')
+  deletes the target line(s).
 
   ✅ PREFERRED — stdin via heredoc (no disk I/O):
 
@@ -189,7 +212,6 @@ pub fn run<W: Write, E: Write>(
   hashline patch <file> <patch> --dry-run    Preview only
   hashline patch <file> <patch> --safe       Atomic temp-file + fsync
   hashline patch <file> <patch> --emit-anchors  Append fresh anchors (chain edits without re-read; or HASHLINE_RETURN_ANCHORS=1 / MCP return_updated_anchors)
-  hashline read  <file>         --no-cache   Skip snapshot cache
   hashline find-block <f> <a>   --pretty     Pretty-print JSON (with --json)
   hashline write <file> <cont> --force       Overwrite existing file
 
@@ -304,6 +326,9 @@ pub fn run<W: Write, E: Write>(
   • Default output is agent-first compact text (token-minimal)
   • Use --verbose for human-readable full file dump after mutations
   • Use --json for structured output with changed lines array
+    (patch "changed[]" entries use {"type","line","hash","content"};
+    anchor arrays like read "lines"/"updated_anchors" use
+    {"n","hash","content"} — note the line-number key differs)
   • Always read before editing — anchors change when files change
   • --emit-anchors (or MCP return_updated_anchors) appends fresh anchors so follow-up patches skip the re-read
   • Use --dry-run to preview patches before writing

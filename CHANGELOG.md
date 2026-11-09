@@ -4,13 +4,16 @@ All notable changes to this project are documented here.
 
 Format: grouped by release tag (newest first). `Thanks` credits non-maintainer contributors/authors/co-authors in that release range.
 
-> **Correction (docs audit, bd-docs-aiux-og5):** the v0.8.4 entry below claims
-> `REM`/`MV` file operations were added. The parser recognizes `REM` and
-> `MV <dest>` inside `[path#hash]` sections, but `hashline patch` (CLI, MCP,
-> and daemon paths) currently discards the parsed file-op, so a patch
-> containing only `REM`/`MV` fails with `ERR EMPTY_PATCH`. Use the dedicated
-> `hashline remove` / `hashline rename` commands instead. Documented as a
-> known gap pending a fix; not a supported feature yet.
+> **Correction (docs audit, bd-docs-aiux-og5; updated bd-docs-drift-2-i4v3):**
+> the v0.8.4 entry below claims `REM`/`MV` file operations were added. The
+> parser recognizes `REM` and `MV <dest>` inside `[path#hash]` sections, and
+> as of the verify-wave fixes `hashline patch` **does** apply them (a
+> file-level op must be the only op in its section; `MV` onto an existing
+> path fails with `ERR TARGET_EXISTS`). The dedicated `hashline remove` /
+> `hashline rename` commands remain available.
+
+## [Unreleased]
+- docs: fix verify-wave doc drift — inline `+payload` after op headers, removed retired `--no-cache` flag, corrected `ERR STALE_ANCHOR` name, bracketed `[path#hash]` read headers, documented `REM`/`MV` patch ops, `*** End of File` marker, find-block relocation warnings, and the `changed[]` vs anchor-array JSON key difference (`line` vs `n`) (bd-docs-drift-2-i4v3)
 
 ## [v0.9.22] - 2026-11-08
 - fix(editor): block ops dropped expected_hash, accepting stale anchors (#126)

@@ -20,7 +20,7 @@ Anchors are `line_number:content_hash` pairs like `3:a7`:
 
 Example output from `hashline read`:
 ```
-src/main.rs#3a58
+[src/main.rs#3a58]
 1:9b|fn main() {
 2:89|    let name = "hashline";
 3:a7|    let version = "0.9.0";
@@ -46,7 +46,7 @@ hashline CLI
 ```bash
 # read — full file with anchors (always full, already optimal)
 hashline read src/main.rs
-# src/main.rs#3a58
+# [src/main.rs#3a58]
 # 1:9b|fn main() {
 # 2:89|    let name = "hashline";
 
@@ -126,7 +126,7 @@ All editing goes through `hashline patch`. The `<patch>` argument is a string wi
 
 **Section headers & envelopes:** a patch may contain `[path#hash]` section headers grouping ops per file (consecutive same-path sections merge; for a single-file `hashline patch` the bracketed path is not enforced). `*** Begin Patch` / `*** End Patch` envelope markers are accepted. `*** End of File` (apply_patch grammar) ends the current file's hunks — content after it is ignored with a warning until the next `[path]` section header. `*** Abort` discards the whole patch — the command then exits **1** with `ERR PATCH_REJECTED` (it looks like a failure; check the exit code, not just stdout). Two range syntaxes are accepted: `N..M` and `N.=M` (oh-my-pi compatible).
 
-**File-level ops:** the parser recognizes `REM` (delete file) and `MV <dest>` (rename) inside a section, but `hashline patch` currently does **not** apply them — a patch containing only `REM`/`MV` fails with `ERR EMPTY_PATCH`. Use `hashline remove` / `hashline rename` instead.
+**File-level ops:** `REM` deletes the file and `MV <dest>` renames it — both are applied by `hashline patch`. A file-level op must be the only op in its `[path]` section: it cannot be combined with line ops (`SWAP`/`DEL`/`INS`/`*.BLK`/`CUT`/`PUT`), and only one file-level op is allowed per section. `MV` resolves a relative `<dest>` against the source file's directory and fails with `ERR TARGET_EXISTS` if the destination exists (patch has no `--force`; use `hashline rename --force` for that). Semantics mirror the dedicated `hashline remove` / `hashline rename` commands.
 
 **Example:**
 ```
@@ -176,7 +176,6 @@ PUT @tmp <12
 | `--emit-anchors` | `patch` | Append a fresh `[path#hash]` + `N:hh|content` listing after the summary so follow-up patches skip the re-read (also `HASHLINE_RETURN_ANCHORS=1`; in `--json` mode adds `updated_anchors`) |
 | `--json` | `read`, `patch`, `find-block`, `write`, `remove`, `rename`, `guide`, `update` | Structured JSON output |
 | `--verbose` | `patch`, `write`, `find-block`, `remove`, `rename` | Human-readable format (full file after mutations); conflicts with `--json` |
-| `--no-cache` | `read` | Skip snapshot cache |
 | `--pretty` | `find-block` | Formatted JSON output (with `--json`) |
 | `--force` | `write`, `rename` | Overwrite existing destination file |
 | `--detach` | `serve` | Fork to background as daemon |
@@ -231,7 +230,7 @@ Do **not** hand-edit the version in `crates/core/Cargo.toml` and tag manually �
 
 **Compact format (default):**
 ```
-ERR STALE file=sample.rs line=3 expected=a7 actual=e7
+ERR STALE_ANCHOR file=sample.rs line=3 expected=a7 actual=e7
 HINT re-read the file with `hashline read <file>`; if the hash moved, use the reported line(s) and retry with a fresh qualified anchor
 ```
 
@@ -260,6 +259,7 @@ are direct (non-atomic) unless `--safe` is passed.
 - **Leading sigil is consumed:** The `+` payload prefix is stripped; if you need a literal leading `+`, double it: `++plus` → `+plus`. Same for bare body (no `+`) lines — they're treated as body content but may trigger a warning about missing `+` prefix
 - **Boundary echo:** warning when payload first line duplicates the line above the target range
 - **Hash collisions:** line hashes are only 8 bits — `hash 'ab' matches N lines` means the bare hash is ambiguous; always use the line-qualified `N:hh` form
+- **find-block anchor relocation:** if the anchor's line number and hash disagree, find-block relocates to the line that actually holds the hash — prints `warning: hash HH expected at line N, found at line M — relocated` on stderr plus a `WARN` line on stdout, and still exits 0. In `--json` mode the payload carries a `"warning"` field. Treat the returned block as authoritative for the *hash*, not the typed line number
 - **Symbol-only anchors are position-dependent:** `}`, `)`, blank lines get position-seeded hashes that change when surrounding lines shift
 
 ### Patch Output (Compact)
@@ -291,6 +291,8 @@ hashline patch sample.rs "SWAP 3:a7:
 +replaced" --json
 # {"success":true,"file":"sample.rs","hash":"7f2a","edits_applied":1,"changed":[{"type":"modified","line":3,"hash":"b1","content":"replaced"}]}
 ```
+
+Note the two line-entry shapes: `changed[]` entries use `{"type","line","hash","content"}` (deleted entries carry only `type`+`line`), while anchor arrays (`read`'s `lines`, patch's `updated_anchors`, `find-block`'s `block_lines`) use `{"n","hash","content"}`. The line-number key differs (`line` vs `n`) — handle both when unifying.
 
 ### MCP Server
 

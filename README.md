@@ -107,7 +107,7 @@ AI coding agents (`str_replace`, `sed`, bespoke edit LLM tools) routinely botch 
 ```bash
 # 1. Read a file — every line gets a hash
 hashline read src/app.ts
-# src/app.ts#1A2B
+# [src/app.ts#1A2B]
 # 1:a1|import { verify } from 'jwt'
 # 2:b2|const token = req.headers.authorization
 # 3:c3|if (!verify(token, SECRET)) throw 401
@@ -264,7 +264,7 @@ EOF
 | Command | Description | See also |
 |---|---|---|
 | `read` | Read file with `[path#HASH]` + `LINE:hash|content` | `hashline guide` |
-| `patch` | Apply SWAP/DEL/INS/BLK edits | `hashline guide` → _Patch Operations_ |
+| `patch` | Apply SWAP/DEL/INS/BLK edits and file-level `REM`/`MV` ops | `hashline guide` → _Patch Operations_ |
 | `write` | Write content to a new file (`--force` overwrites) | |
 | `find-block` | Find enclosing brace/indent/Ruby block around anchor | |
 | `remove` | Delete a file | |
