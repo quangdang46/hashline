@@ -343,6 +343,8 @@ pub fn run<W: Write, E: Write>(
       .rb                   → keyword (def/class/end)
       unknown               → brace pairs, then indentation
     All are heuristics (best-effort), not a real parser.
+  • Block-op strategy is chosen by file extension; extensionless or
+    unrecognized names get the default (brace → indent) heuristics
   • Default writes are direct (fast, not crash-safe); --safe uses
     atomic temp-file + fsync
   • Use write to create new files: hashline write <file> <content>

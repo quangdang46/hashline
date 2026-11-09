@@ -260,6 +260,9 @@ struct Spec {
     triple_quote: bool,
     /// Shell-style heredocs `<<EOF` / `<<-'EOF'` / `<<~RUBY`.
     heredoc: bool,
+    /// PHP heredocs/nowdocs `<<<EOT` / `<<<'EOT'` / `<<<"EOT"` (the `<<<`
+    /// operator — distinct from the shell `<<` form, which PHP lacks).
+    php_heredoc: bool,
     /// PowerShell here-strings `@"…"@` / `@'…'@`.
     ps_here_string: bool,
     /// Zig multiline strings: lines starting with `\\` are string content.
@@ -289,6 +292,7 @@ impl Default for Spec {
             raw_string: false,
             triple_quote: false,
             heredoc: false,
+            php_heredoc: false,
             ps_here_string: false,
             zig_ml_string: false,
             line_start_comments: &[],
@@ -453,6 +457,7 @@ fn spec_for(ext: &str, path: &Path) -> Spec {
         },
         "php" => Spec {
             line_comments: &["//", "#"],
+            php_heredoc: true,
             ..d
         },
         _ => d,
@@ -498,7 +503,11 @@ enum Mode {
 struct PendingHeredoc {
     delim: String,
     strip_tabs: bool,
-    /// Line index containing the `<<EOF` operator.
+    /// PHP `<<<` heredoc/nowdoc: the terminator may be indented (PHP 7.3+)
+    /// and followed by `;`/`,`/`)` — matched by [`php_heredoc_terminator`]
+    /// instead of the exact/trailing-tab rules used for `<<` heredocs.
+    php: bool,
+    /// Line index containing the `<<EOF`/`<<<EOT` operator.
     start: usize,
 }
 
@@ -582,7 +591,12 @@ impl<'a> BraceScanner<'a> {
             let t = content.trim();
             let tt = content.trim_start_matches('\t');
             if let Some(front) = self.heredocs.front() {
-                if t == front.delim || (front.strip_tabs && tt == front.delim) {
+                let matched = if front.php {
+                    php_heredoc_terminator(content, &front.delim)
+                } else {
+                    t == front.delim || (front.strip_tabs && tt == front.delim)
+                };
+                if matched {
                     let start = front.start;
                     self.heredocs.pop_front();
                     self.heredoc_ranges.push((start, li));
@@ -765,12 +779,33 @@ impl<'a> BraceScanner<'a> {
             if entered_comment {
                 continue;
             }
+            // PHP heredoc/nowdoc `<<<EOT` / `<<<'EOT'` / `<<<"EOT"`.
+            // Checked before the shell `<<` form: `<<<` would otherwise be
+            // rejected by `parse_heredoc_op` (it guards `<<<` herestrings).
+            if self.spec.php_heredoc
+                && c == b'<'
+                && i + 2 < bytes.len()
+                && bytes[i + 1] == b'<'
+                && bytes[i + 2] == b'<'
+            {
+                if let Some((delim, next)) = parse_php_heredoc_op(bytes, i) {
+                    self.pending_heredocs.push(PendingHeredoc {
+                        delim,
+                        strip_tabs: false,
+                        php: true,
+                        start: li,
+                    });
+                    i = next;
+                    continue;
+                }
+            }
             // Heredoc operator `<<EOF` / `<<-'EOF'` / `<<~"EOF"`.
             if self.spec.heredoc && c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'<' {
                 if let Some((delim, strip_tabs, next)) = parse_heredoc_op(bytes, i) {
                     self.pending_heredocs.push(PendingHeredoc {
                         delim,
                         strip_tabs,
+                        php: false,
                         start: li,
                     });
                     i = next;
@@ -1150,6 +1185,54 @@ fn parse_heredoc_op(bytes: &[u8], i: usize) -> Option<(String, bool, usize)> {
         j += 1;
     }
     Some((delim, strip_tabs, j))
+}
+
+/// Parse a PHP heredoc/nowdoc operator at `i` (first `<` of `<<<`).
+/// Returns `(delimiter, index_after_operator)`. Accepts `<<<EOT`,
+/// `<<<'EOT'` (nowdoc) and `<<<"EOT"`; a quoted delimiter requires the
+/// closing quote to match the opening one.
+fn parse_php_heredoc_op(bytes: &[u8], i: usize) -> Option<(String, usize)> {
+    let mut j = i + 3;
+    if j >= bytes.len() {
+        return None;
+    }
+    let quote = match bytes[j] {
+        q @ (b'\'' | b'"') => {
+            j += 1;
+            Some(q)
+        }
+        _ => None,
+    };
+    // PHP labels start with a letter or underscore.
+    if j >= bytes.len() || !(bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
+        return None;
+    }
+    let start = j;
+    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+        j += 1;
+    }
+    let delim = String::from_utf8_lossy(&bytes[start..j]).into_owned();
+    if let Some(q) = quote {
+        if j >= bytes.len() || bytes[j] != q {
+            return None;
+        }
+        j += 1;
+    }
+    Some((delim, j))
+}
+
+/// PHP 7.3+ allows the closing marker to be indented and followed by `;`,
+/// `,`, `)` etc. (`EOT;`, `    EOT,`). Match a trimmed line that is the
+/// delimiter plus only trailing punctuation/whitespace — anything else
+/// (e.g. `EOTX`) is body content, not the terminator.
+fn php_heredoc_terminator(content: &str, delim: &str) -> bool {
+    let t = content.trim();
+    match t.strip_prefix(delim) {
+        Some(rest) => rest
+            .bytes()
+            .all(|b| matches!(b, b';' | b',' | b')' | b']' | b' ' | b'\t')),
+        None => false,
+    }
 }
 
 fn leading_ws(s: &str) -> usize {
@@ -2153,5 +2236,20 @@ mod tests {
         // Anchor on the outer alt header still gets the whole construct.
         assert_eq!(span_of(src, 2, "x.php"), Some((2, 6)));
         assert_eq!(span_of(src, 6, "x.php"), Some((2, 6)));
+    }
+
+    #[test]
+    fn php_heredoc_braces_ignored() {
+        // `<<<EOT` / `<<<"EOT"` / `<<<'EOT'` bodies are string content —
+        // braces inside must not corrupt pairing, and the terminator may
+        // be indented and followed by `;` (PHP 7.3+ flexible syntax).
+        let src = "<?php\nfunction f() {\n    $a = <<<EOT\n}\n{\n    EOT;\n    $b = <<<\"HTML\"\n<div>\n</div>\n    HTML;\n    $c = <<<'NOW'\n{\n}\nNOW;\n    return 1;\n}\n";
+        // The function is the only brace pair (lines 2-16); every heredoc
+        // body line is skipped, so stray `{`/`}` cannot split it.
+        assert_eq!(span_of(src, 15, "x.php"), Some((2, 16)));
+        // Anchors inside heredoc bodies resolve the enclosing function.
+        assert_eq!(span_of(src, 4, "x.php"), Some((2, 16)));
+        assert_eq!(span_of(src, 8, "x.php"), Some((2, 16)));
+        assert_eq!(span_of(src, 12, "x.php"), Some((2, 16)));
     }
 }

@@ -287,42 +287,46 @@ pub fn run<W: Write, E: Write>(
                     })
                 }))
                 .collect();
-            let payload = if emit_anchors {
+            if emit_anchors {
                 // `updated_anchors`: full fresh anchor listing in `read`
                 // JSON shape ({n, hash, content}) so agents can chain edits
-                // without an extra `read` call (issue #119).
-                let updated_anchors: Vec<serde_json::Value> = changeset
-                    .updated_anchors
-                    .iter()
-                    .map(|l| {
-                        // Same shape as `read --json` / `write --json` line
-                        // entries ({n, hash, content}) so agents can consume
-                        // either listing interchangeably.
-                        serde_json::json!({
-                            "n": l.line,
-                            "hash": l.hash,
-                            "content": l.content,
-                        })
-                    })
-                    .collect();
-                serde_json::json!({
-                    "success": true,
-                    "file": cmd.file.display().to_string(),
-                    "hash": changeset.file_hash,
-                    "edits_applied": changeset.edits_applied,
-                    "changed": changed,
-                    "updated_anchors": updated_anchors,
-                })
+                // without an extra `read` call (issue #119). Streamed
+                // piecewise — it is a whole-file listing, and a
+                // Vec<serde_json::Value> for it cost ~1GB of peak RSS on
+                // large files (same fix as `read --json`, commit 6adfc1a).
+                // serde_json's Map is a BTreeMap, so keys serialize in
+                // sorted order; the byte layout below matches
+                // `to_string` of the equivalent `json!` object exactly.
+                let out = ctx.stdout();
+                write!(out, "{{\"changed\":")?;
+                serde_json::to_writer(&mut *out, &changed)?;
+                write!(out, ",\"edits_applied\":{}", changeset.edits_applied)?;
+                write!(out, ",\"file\":")?;
+                serde_json::to_writer(&mut *out, &cmd.file.display().to_string())?;
+                write!(out, ",\"hash\":")?;
+                serde_json::to_writer(&mut *out, &changeset.file_hash)?;
+                write!(out, ",\"success\":true,\"updated_anchors\":[")?;
+                for (idx, l) in changeset.updated_anchors.iter().enumerate() {
+                    if idx > 0 {
+                        out.write_all(b",")?;
+                    }
+                    write!(out, "{{\"content\":")?;
+                    serde_json::to_writer(&mut *out, &l.content)?;
+                    write!(out, ",\"hash\":")?;
+                    serde_json::to_writer(&mut *out, &l.hash)?;
+                    write!(out, ",\"n\":{}}}", l.line)?;
+                }
+                writeln!(out, "]}}")?;
             } else {
-                serde_json::json!({
+                let payload = serde_json::json!({
                     "success": true,
                     "file": cmd.file.display().to_string(),
                     "hash": changeset.file_hash,
                     "edits_applied": changeset.edits_applied,
                     "changed": changed,
-                })
-            };
-            writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+                });
+                writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+            }
         }
         crate::context::OutputMode::Ndjson => {
             // Same as compact for now
