@@ -277,8 +277,14 @@ verify_checksum() {
     local checksum_path="$2"
     local expected actual
 
+    # An empty or missing sidecar must fail loudly -- never report
+    # "checksum verified" for a digest we did not actually check.
+    [ -s "$checksum_path" ] || die "checksum file missing or empty: $checksum_path"
     expected=$(awk '{print $1}' "$checksum_path")
+    [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || die "checksum file $checksum_path does not contain a sha256 digest"
     actual=$(checksum_file "$archive_path")
+    [ -n "$actual" ] || die "could not compute sha256 for $archive_path"
     [ "$expected" = "$actual" ] || die "Checksum mismatch"
 }
 
@@ -411,7 +417,6 @@ run_mcp_auto_install() {
             "windsurf|$HOME/.codeium/windsurf/mcp_config.json|mcpServers|Global scope"
             "vscode|$PWD/.vscode/mcp.json|servers|Project scope"
             "gemini|$HOME/.gemini/settings.json|mcpServers|User scope"
-            "opencode|$HOME/.opencode.json|mcpServers|User scope"
             "amp|$HOME/.config/amp/settings.json|amp.mcpServers|User scope"
             "droid|$HOME/.factory/mcp.json|mcpServers|User scope"
         )
@@ -427,7 +432,6 @@ run_mcp_auto_install() {
                 windsurf) [ -d "$HOME/.codeium/windsurf" ] || continue ;;
                 vscode) [ -d "$PWD/.vscode" ] || continue ;;
                 gemini) [ -d "$HOME/.gemini" ] || continue ;;
-                opencode) [ -e "$HOME/.opencode.json" ] || continue ;;
                 amp) [ -d "$HOME/.config/amp" ] || continue ;;
                 droid) [ -d "$HOME/.factory" ] || continue ;;
             esac
@@ -469,6 +473,52 @@ run_mcp_auto_install() {
             results+=("- $name: $status ($path) — $note")
             any_installed=1
         done
+
+        # ---- opencode: different path, key, and entry shape ----
+        # Config lives at ~/.config/opencode/opencode.json; servers sit under
+        # mcp.servers.<name> with {type:"local", command:[bin, "mcp"]}.
+        if [ -d "$HOME/.config/opencode" ]; then
+            local oc_path="$HOME/.config/opencode/opencode.json"
+            mkdir -p "$(dirname "$oc_path")"
+
+            local oc_existing='{}' oc_status='installed' oc_skip=0
+            if [ -f "$oc_path" ] && [ -s "$oc_path" ]; then
+                if oc_existing=$(jq '.' "$oc_path" 2>/dev/null); then
+                    local oc_current oc_desired
+                    oc_current=$(printf '%s' "$oc_existing" | jq -c '.mcp.servers.hashline // empty' 2>/dev/null || true)
+                    oc_desired=$(jq -nc --arg cmd "$bin" \
+                        '{type:"local",command:[$cmd,"mcp"],enabled:true}')
+                    if [ -n "$oc_current" ]; then
+                        if [ "$oc_current" = "$oc_desired" ]; then
+                            oc_status='unchanged'
+                        else
+                            oc_status='updated'
+                        fi
+                    fi
+                else
+                    log_warn "opencode: invalid JSON in $oc_path — skipped"
+                    oc_skip=1
+                fi
+            fi
+
+            if [ "$oc_skip" -eq 0 ] && [ "$oc_status" != 'unchanged' ]; then
+                local oc_updated
+                oc_updated=$(printf '%s' "$oc_existing" | jq \
+                    --arg cmd "$bin" \
+                    '.mcp.servers = (.mcp.servers // {}) | .mcp.servers.hashline = {type:"local",command:[$cmd,"mcp"],enabled:true}') \
+                    || { log_warn "opencode: jq upsert failed — skipped"; oc_skip=1; }
+                if [ "$oc_skip" -eq 0 ]; then
+                    if printf '%s\n' "$oc_updated" >"$oc_path"; then
+                        results+=("- opencode: $oc_status ($oc_path) — User scope")
+                        any_installed=1
+                    else
+                        log_warn "opencode: write to $oc_path failed"
+                    fi
+                fi
+            elif [ "$oc_skip" -eq 0 ]; then
+                results+=("- opencode: unchanged ($oc_path) — User scope")
+            fi
+        fi
     fi
 
     # ---- TOML host: codex (~/.codex/config.toml) ----
@@ -640,9 +690,19 @@ main() {
         else
             log_warn "could not remove $stale — delete it manually or reorder PATH so '$DEST' comes first"
         fi
-    done <<EOF
-$(command -v -a "$BINARY_NAME" 2>/dev/null || command -v "$BINARY_NAME" 2>/dev/null || true)
-EOF
+    done < <(
+        # `command -v -a` is not valid bash; scan PATH entries directly so
+        # every on-PATH copy of the binary is found, not just the first.
+        local _hl_dir _hl_oldifs="$IFS"
+        IFS=':'
+        for _hl_dir in $PATH; do
+            [ -n "$_hl_dir" ] || continue
+            if [ -f "$_hl_dir/$BINARY_NAME" ] && [ -x "$_hl_dir/$BINARY_NAME" ]; then
+                printf '%s\n' "$_hl_dir/$BINARY_NAME"
+            fi
+        done
+        IFS="$_hl_oldifs"
+    )
     hash -r 2>/dev/null || true
 
     run_mcp_auto_install || true

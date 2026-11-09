@@ -14,7 +14,8 @@
 set -uo pipefail
 
 HASHLINE="${1:-hashline}"
-if [ "$1" = "--list" ] || [ "${1:-}" = "-l" ]; then
+# ${1:-} throughout: bare $1 is unbound under `set -u` when run with no args.
+if [ "${1:-}" = "--list" ] || [ "${1:-}" = "-l" ]; then
     LIST_ONLY=1
     HASHLINE="${2:-hashline}"
 else

@@ -70,7 +70,10 @@ if ($System) { $Dest = "$env:ProgramFiles\$BinaryName" }
 function Write-Info { param($msg) if (-not $Quiet) { Write-Host "==> [$BinaryName] $msg" -ForegroundColor Cyan } }
 function Write-Warn { param($msg) Write-Host "!! [$BinaryName] $msg" -ForegroundColor Yellow }
 function Write-Ok   { param($msg) if (-not $Quiet) { Write-Host "[OK] $msg" -ForegroundColor Green } }
-function Die        { param($msg) Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
+# NOTE: never `exit` on failure -- under the documented `irm | iex` flow a
+# bare `exit` terminates the user's interactive shell. `throw` surfaces a
+# script-terminating error instead, which iex reports and returns from.
+function Die { param($msg) Write-Host "ERROR: $msg" -ForegroundColor Red; throw "hashline installer failed: $msg" }
 
 # ============================================================================
 # Help -- print the doc-comment block at the top of this file.
@@ -85,7 +88,7 @@ if ($Help) {
     } else {
         Write-Host "hashline installer for Windows. Run with -Help on a downloaded copy for full text."
     }
-    exit 0
+    return
 }
 
 # ============================================================================
@@ -132,10 +135,12 @@ function Invoke-Uninstall {
     }
 
     Write-Ok "uninstalled"
-    exit 0
+    # `return` (not `exit`) keeps `irm | iex` wrappers from killing the host
+    # shell; the caller below stops the script right after this returns.
+    return
 }
 
-if ($Uninstall) { Invoke-Uninstall }
+if ($Uninstall) { Invoke-Uninstall; return }
 
 # ============================================================================
 # Version resolution
@@ -415,20 +420,80 @@ function Update-HashlineMcpConfig {
     }
     if ($null -eq $config) { $config = @{} }
 
-    # Ensure servers container exists (dotted keys like amp.mcpServers).
-    $parts = $ServersKey.Split('.')
-    $cursor = $config
-    foreach ($part in $parts) {
-        if (-not $cursor.Contains($part) -or -not ($cursor[$part] -is [System.Collections.IDictionary])) {
-            $cursor[$part] = @{}
-        }
-        $cursor = $cursor[$part]
+    # Ensure the servers container exists. ServersKey is a SINGLE literal
+    # JSON key -- e.g. Amp's settings use the flat key "amp.mcpServers"
+    # (dot included), which must NOT be split into nested objects.
+    if (-not $config.Contains($ServersKey) -or -not ($config[$ServersKey] -is [System.Collections.IDictionary])) {
+        $config[$ServersKey] = @{}
     }
-    $serversObj = $cursor
+    $serversObj = $config[$ServersKey]
 
     # Merge first, then deep-compare: unchanged means the merged entry is
     # identical to what is already on disk, regardless of key order or how
     # the equality would look field-by-field.
+    $existing = $serversObj['hashline']
+    if ($existing -is [System.Collections.IDictionary]) {
+        foreach ($key in @($existing.Keys)) { if (-not $managed.Contains($key)) { $managed[$key] = $existing[$key] } }
+    }
+    $serversObj['hashline'] = $managed
+    if (Test-EntryDeepEqual -Left $existing -Right $managed) {
+        return @{ Status = 'unchanged'; Path = $Path }
+    }
+    $status = if ($existing) { 'updated' } else { 'installed' }
+
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $json = ConvertTo-JsonRawHashtable -Value $config
+    $staged = "$Path.tmp.$PID"
+    Set-Content -LiteralPath $staged -Value $json -Encoding UTF8
+    Move-Item -LiteralPath $staged -Destination $Path -Force
+
+    return @{ Status = $status; Path = $Path }
+}
+
+# OpenCode uses a different path (~/.config/opencode/opencode.json), a
+# different key (mcp.servers.<name>), and a different entry shape
+# ({type:"local", command:[bin, "mcp"], enabled:true}) than the generic
+# mcpServers hosts -- it cannot go through Update-HashlineMcpConfig.
+function Update-HashlineOpenCodeConfig {
+    param(
+        [string]$Path,
+        [string]$BinaryPath
+    )
+
+    $managed = [ordered]@{
+        type    = 'local'
+        command = @($BinaryPath, 'mcp')
+        enabled = $true
+    }
+
+    $config = $null
+    $status = 'installed'
+    if (Test-Path $Path) {
+        try {
+            $raw = Get-Content -Path $Path -Raw -ErrorAction Stop
+            if ($raw.Trim().Length -gt 0) {
+                $config = ConvertFrom-JsonRaw -Raw $raw
+            }
+        } catch {
+            Write-Warn "Skipping $Path (invalid JSON: $($_.Exception.Message))"
+            return $null
+        }
+    }
+    if ($null -eq $config) { $config = @{} }
+
+    # Ensure mcp -> servers containers exist (nested, not siblings).
+    if (-not $config.Contains('mcp') -or -not ($config['mcp'] -is [System.Collections.IDictionary])) {
+        $config['mcp'] = @{}
+    }
+    $mcpObj = $config['mcp']
+    if (-not $mcpObj.Contains('servers') -or -not ($mcpObj['servers'] -is [System.Collections.IDictionary])) {
+        $mcpObj['servers'] = @{}
+    }
+    $serversObj = $mcpObj['servers']
+
     $existing = $serversObj['hashline']
     if ($existing -is [System.Collections.IDictionary]) {
         foreach ($key in @($existing.Keys)) { if (-not $managed.Contains($key)) { $managed[$key] = $existing[$key] } }
@@ -509,10 +574,20 @@ function Invoke-McpAutoInstall {
         @{ Name = 'windsurf';    Path = "$userHome\.codeium\windsurf\mcp_config.json";  Key = 'mcpServers';     Cond = { Test-Path "$userHome\.codeium\windsurf" -PathType Container } },
         @{ Name = 'vscode';      Path = "$cwd\.vscode\mcp.json";                        Key = 'servers';        Cond = { Test-Path "$cwd\.vscode" -PathType Container } },
         @{ Name = 'gemini';      Path = "$userHome\.gemini\settings.json";              Key = 'mcpServers';     Cond = { Test-Path "$userHome\.gemini" -PathType Container } },
-        @{ Name = 'opencode';    Path = "$userHome\.opencode.json";                     Key = 'mcpServers';     Cond = { Test-Path "$userHome\.opencode.json" } },
         @{ Name = 'amp';         Path = "$userHome\.config\amp\settings.json";          Key = 'amp.mcpServers'; Cond = { Test-Path "$userHome\.config\amp" -PathType Container } },
         @{ Name = 'droid';       Path = "$userHome\.factory\mcp.json";                  Key = 'mcpServers';     Cond = { Test-Path "$userHome\.factory" -PathType Container } }
     )
+
+    # opencode is handled separately: ~/.config/opencode/opencode.json with an
+    # mcp.servers entry shape that Update-HashlineMcpConfig cannot express.
+    if (Test-Path "$userHome\.config\opencode" -PathType Container) {
+        try {
+            $r = Update-HashlineOpenCodeConfig -Path "$userHome\.config\opencode\opencode.json" -BinaryPath $bin
+            if ($r) { $results += "- opencode: $($r.Status) ($($r.Path))" }
+        } catch {
+            Write-Warn "opencode: $($_.Exception.Message)"
+        }
+    }
 
     foreach ($h in $jsonHosts) {
         if (-not (& $h.Cond)) { continue }
@@ -581,8 +656,19 @@ The version you asked for ($Version) does not include $archive. Either:
     # the first whitespace-delimited token either way.
     $sumPath = "${archivePath}.sha256"
     if (Get-FileWithRetry -Url "$base/${archive}.sha256" -OutPath $sumPath -MaxRetries 1 -TimeoutSec 30) {
-        $expected = (Get-Content -LiteralPath $sumPath -Raw).Trim().Split()[0]
-        $actual   = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLower()
+        # An empty or malformed sidecar must fail -- never report "checksum
+        # verified" for a digest we did not actually check. (Previously an
+        # empty file made .Split()[0] error out, the `if` condition evaluated
+        # to $null/false, and "checksum verified" printed anyway.)
+        $expected = $null
+        try {
+            $raw = Get-Content -LiteralPath $sumPath -Raw -ErrorAction Stop
+            if ($raw) { $expected = $raw.Trim().Split()[0] }
+        } catch { }
+        if (-not $expected -or $expected -notmatch '^[0-9a-fA-F]{64}$') {
+            Die "checksum file ${archive}.sha256 is empty or does not contain a sha256 digest"
+        }
+        $actual = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLower()
         if ($expected.ToLower() -ne $actual) {
             Die "checksum mismatch for $archive`n  expected: $expected`n  actual:   $actual"
         }
