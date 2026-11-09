@@ -463,6 +463,7 @@ mod tests {
             path: PathBuf::from("demo.txt"),
             raw: content.to_string(),
             normalized: content.to_string(),
+            bom: String::new(),
             newline: crate::document::NewlineStyle::Lf,
             trailing_newline: content.ends_with('\n'),
             hash: "abcd".into(),

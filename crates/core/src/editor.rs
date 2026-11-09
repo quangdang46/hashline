@@ -421,11 +421,12 @@ impl Editor {
         }
 
         let line_ending = detect_line_ending(&fc.raw);
-        let final_text = if line_ending == LineEnding::Crlf {
-            restore_line_endings(&result, line_ending)
-        } else {
-            result
-        };
+        // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach
+        // the BOM `FileContent::load` stripped, matching the CLI patch path.
+        let mut final_text = restore_line_endings(&result, line_ending);
+        if !fc.bom.is_empty() {
+            final_text.insert_str(0, &fc.bom);
+        }
 
         if !dry_run {
             // Same write-time stale-file guard as the CLI patch path: if the
@@ -514,7 +515,7 @@ impl Editor {
 
         // Resolve block edits against the normalized (LF, no-BOM) text —
         // the same view `patch` gives the resolver via `FileContent`.
-        let (work, entries, had_trailing_newline, line_ending) = prepare_in_memory(text);
+        let (work, entries, had_trailing_newline, line_ending, bom) = prepare_in_memory(text);
         let resolved = resolve_block_edits(&edits, &work, path, self.block_resolver.as_deref())
             .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
@@ -526,9 +527,13 @@ impl Editor {
         let result = join_lines(&lines, had_trailing_newline);
         // Hash over the LF-normalized text — the same contract
         // `FileContent::load` uses — then restore the caller's dominant
-        // line ending so CRLF input doesn't come back LF-mixed.
+        // line ending (LF/CRLF/CR) and BOM so the input's encoding
+        // conventions round-trip.
         let new_hash = hash::compute_file_hash(&result);
-        let result = restore_dominant_ending(&result, line_ending);
+        let mut result = restore_dominant_ending(&result, line_ending);
+        if !bom.is_empty() {
+            result.insert_str(0, &bom);
+        }
 
         Ok(PatchResult {
             applied_edits: resolved.len(),
@@ -556,7 +561,7 @@ impl Editor {
         path: &str,
     ) -> Result<PatchResult, HashlineError> {
         // Resolve block edits against the normalized text.
-        let (work, entries, had_trailing_newline, line_ending) = prepare_in_memory(text);
+        let (work, entries, had_trailing_newline, line_ending, bom) = prepare_in_memory(text);
         let resolved = resolve_block_edits(edits, &work, path, self.block_resolver.as_deref())
             .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
@@ -567,7 +572,10 @@ impl Editor {
 
         let result = join_lines(&lines, had_trailing_newline);
         let new_hash = hash::compute_file_hash(&result);
-        let result = restore_dominant_ending(&result, line_ending);
+        let mut result = restore_dominant_ending(&result, line_ending);
+        if !bom.is_empty() {
+            result.insert_str(0, &bom);
+        }
 
         Ok(PatchResult {
             applied_edits: resolved.len(),
@@ -602,7 +610,15 @@ impl Editor {
         let bom_result = crate::normalize::strip_bom(&normalized);
         let write_content = bom_result.text;
 
-        crate::commands::common::fast_write(path, write_content.as_bytes())?;
+        // Overwriting an existing file preserves its BOM marker and
+        // dominant line-ending style (same rule as `hashline write --force`).
+        let (bom, line_ending) = crate::document::probe_existing_style(path);
+        let mut disk_content = crate::normalize::restore_line_endings(&write_content, line_ending);
+        if !bom.is_empty() {
+            disk_content.insert_str(0, &bom);
+        }
+
+        crate::commands::common::fast_write(path, disk_content.as_bytes())?;
 
         // Record new snapshot
         if self.config.enable_snapshots {
@@ -735,10 +751,19 @@ fn join_lines(lines: &[String], had_trailing_newline: bool) -> String {
 /// symbol-only lines (`}`, `)`, blanks) and produced false `StaleAnchor`
 /// errors for anchors obtained via [`Editor::read`].
 ///
-/// Returns `(normalized_text, entries, had_trailing_newline, line_ending)`.
+/// Returns `(normalized_text, entries, had_trailing_newline, line_ending, bom)`.
 /// `entries` includes the trailing empty line from `split('\n')`, matching
-/// the disk path's `lines_with_hashes` contract.
-fn prepare_in_memory(text: &str) -> (String, Vec<crate::document::LineEntry>, bool, LineEnding) {
+/// the disk path's `lines_with_hashes` contract. `bom` is the stripped BOM
+/// marker (`"\u{FEFF}"` or empty) so callers can re-attach it on write-back.
+fn prepare_in_memory(
+    text: &str,
+) -> (
+    String,
+    Vec<crate::document::LineEntry>,
+    bool,
+    LineEnding,
+    String,
+) {
     let bom = crate::normalize::strip_bom(&crate::normalize::normalize_to_lf(text));
     let work = bom.text;
     let entries: Vec<crate::document::LineEntry> = work
@@ -751,16 +776,13 @@ fn prepare_in_memory(text: &str) -> (String, Vec<crate::document::LineEntry>, bo
         .collect();
     let had_trailing_newline = work.ends_with('\n');
     let line_ending = detect_line_ending(text);
-    (work, entries, had_trailing_newline, line_ending)
+    (work, entries, had_trailing_newline, line_ending, bom.bom)
 }
 
 /// Restore the dominant line ending detected in the caller's input text.
+/// LF is the identity; CRLF and bare-CR re-encode every `\n` separator.
 fn restore_dominant_ending(text: &str, ending: LineEnding) -> String {
-    if ending == LineEnding::Crlf {
-        restore_line_endings(text, ending)
-    } else {
-        text.to_string()
-    }
+    restore_line_endings(text, ending)
 }
 
 /// Map a [`BlockResolveError`] onto the public error type.
@@ -825,6 +847,65 @@ mod tests {
 
         let readback = fs::read_to_string(&path).unwrap();
         assert_eq!(readback, "line1\nreplaced\nline3\n");
+    }
+
+    // -- bd-eol-bom-u7h ----------------------------------------------------
+
+    #[test]
+    fn test_patch_preserves_bom_and_crlf_on_disk() {
+        let (_d, path) = temp_file("\u{FEFF}line1\r\nline2\r\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        let disk = fs::read(&path).unwrap();
+        assert_eq!(disk, "\u{FEFF}line1\r\nreplaced\r\n".as_bytes());
+    }
+
+    #[test]
+    fn test_patch_preserves_pure_cr_on_disk() {
+        let (_d, path) = temp_file("line1\rline2\r");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        ed.patch(&path, "SWAP 2:\n+replaced").unwrap();
+        let disk = fs::read(&path).unwrap();
+        assert_eq!(disk, b"line1\rreplaced\r");
+    }
+
+    #[test]
+    fn test_apply_to_text_preserves_bom_and_crlf() {
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        let result = ed
+            .apply_to_text("\u{FEFF}a\r\nb\r\n", "SWAP 2:\n+X", "mem.txt")
+            .unwrap();
+        assert_eq!(result.text, "\u{FEFF}a\r\nX\r\n");
+        // The reported hash stays over the LF-normalized, BOM-free text.
+        assert_eq!(result.hash, hash::compute_file_hash("a\nX\n"));
+    }
+
+    #[test]
+    fn test_apply_to_text_preserves_pure_cr() {
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        let result = ed
+            .apply_to_text("a\rb\r", "SWAP 2:\n+X", "mem.txt")
+            .unwrap();
+        assert_eq!(result.text, "a\rX\r");
+    }
+
+    #[test]
+    fn test_write_force_preserves_existing_style() {
+        let (_d, path) = temp_file("\u{FEFF}old\rdata\r");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        ed.write(&path, "x\ny", true).unwrap();
+        let disk = fs::read(&path).unwrap();
+        assert_eq!(disk, "\u{FEFF}x\ry".as_bytes());
     }
 
     #[test]

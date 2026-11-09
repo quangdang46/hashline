@@ -13,7 +13,7 @@ use crate::cli::McpCmd;
 use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::hash;
-use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
+use crate::normalize::{detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
 
 /// Split normalized text into lines, discarding the trailing empty segment
@@ -616,15 +616,14 @@ fn handle_patch(
 
     let result = join_lines(&lines, fc.trailing_newline);
     let line_ending = detect_line_ending(&fc.raw);
-    // `result` (LF) is kept for the dry-run diff; `final_text` restores CRLF
-    // for the on-disk write. Clone only on the non-CRLF path is avoided by
-    // borrowing where possible — the clone cost is one memcpy, far below the
-    // patch apply itself.
-    let final_text = if line_ending == LineEnding::Crlf {
-        restore_line_endings(&result, line_ending)
-    } else {
-        result.clone()
-    };
+    // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach the
+    // BOM `FileContent::load` stripped — same write-back contract as the
+    // CLI `patch` command. `result` (LF, BOM-free) is kept for the dry-run
+    // diff; `final_text` is what lands on disk.
+    let mut final_text = restore_line_endings(&result, line_ending);
+    if !fc.bom.is_empty() {
+        final_text.insert_str(0, &fc.bom);
+    }
 
     let emit_anchors = return_updated_anchors || crate::commands::patch::emit_anchors_from_env();
 
@@ -632,11 +631,9 @@ fn handle_patch(
         // Bounded output: a unified-diff-style change list (same rows as
         // `patch --dry-run`), never the entire proposed file — dumping the
         // file cost ~33KB per call where the CLI diff is ~62B.
-        let diff_text = if line_ending == LineEnding::Crlf {
-            &result
-        } else {
-            &final_text
-        };
+        // Diff the LF-normalized, BOM-free `result` — `final_text` carries
+        // the file's EOL style and BOM which would diff as spurious lines.
+        let diff_text = &result;
         let diff_lines = crate::commands::patch::format_diff(&fc.normalized, diff_text);
         let structured = serde_json::json!({
             "success": true,
@@ -749,7 +746,15 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> ToolOutpu
     let bom_result = crate::normalize::strip_bom(&normalized);
     let write_content = bom_result.text;
 
-    if let Err(e) = crate::commands::common::fast_write(path, write_content.as_bytes()) {
+    // Overwriting an existing file preserves its BOM marker and dominant
+    // line-ending style (same rule as `hashline write --force`).
+    let (bom, line_ending) = crate::document::probe_existing_style(path);
+    let mut disk_content = crate::normalize::restore_line_endings(&write_content, line_ending);
+    if !bom.is_empty() {
+        disk_content.insert_str(0, &bom);
+    }
+
+    if let Err(e) = crate::commands::common::fast_write(path, disk_content.as_bytes()) {
         return err_output(&e);
     }
 

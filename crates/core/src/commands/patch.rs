@@ -5,7 +5,7 @@ use crate::cli::PatchCmd;
 use crate::context::CommandContext;
 use crate::document::FileContent;
 use crate::error::HashlineError;
-use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
+use crate::normalize::{detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
 use crate::types::{
     BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, FileOp, InsertMode,
@@ -121,20 +121,19 @@ pub fn run<W: Write, E: Write>(
         lines.join("\n")
     };
     let line_ending = detect_line_ending(&fc.raw);
-    let final_text = if line_ending == LineEnding::Crlf {
-        restore_line_endings(&result, line_ending)
-    } else {
-        result.clone()
-    };
+    // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach the
+    // BOM that `FileContent::load` stripped, so a patch round-trips the
+    // file's encoding conventions instead of silently rewriting them.
+    let mut final_text = restore_line_endings(&result, line_ending);
+    if !fc.bom.is_empty() {
+        final_text.insert_str(0, &fc.bom);
+    }
 
     if cmd.dry_run {
-        // Use LF-only result for diff comparison so CRLF files don't show
-        // spurious \r characters in the output (Bug #101).
-        let diff_text = if line_ending == LineEnding::Crlf {
-            &result
-        } else {
-            &final_text
-        };
+        // Always diff the LF-normalized, BOM-free `result` against
+        // `fc.normalized` — `final_text` now carries the file's EOL style
+        // and BOM, which would show up as spurious diff lines (Bug #101).
+        let diff_text = &result;
         if cmd.json {
             // Return JSON diff info instead of text diff
             let diff_lines = format_diff(&fc.normalized, diff_text);
@@ -3674,6 +3673,122 @@ mod tests {
                 result, expected,
                 "round {round}\npatch:\n{patch}\noriginal:\n{original}"
             );
+        }
+    }
+
+    // -- bd-eol-bom-u7h: BOM / EOL round-trip through patch -----------------
+
+    /// Write `content` to `dir/name`, run `patch` on it, return stdout.
+    fn run_patch_on(dir: &std::path::Path, name: &str, content: &str, patch_text: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        let cmd = crate::cli::PatchCmd {
+            file: path,
+            patch: patch_text.to_string(),
+            dry_run: false,
+            safe: false,
+            json: false,
+            verbose: false,
+            emit_anchors: false,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut ctx = crate::context::CommandContext::new(
+            &mut stdout,
+            &mut stderr,
+            crate::context::OutputMode::Compact,
+        );
+        super::run(&mut ctx, cmd).expect("patch should succeed");
+        String::from_utf8(stdout).unwrap()
+    }
+
+    #[test]
+    fn patch_preserves_utf8_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        run_patch_on(
+            dir.path(),
+            "bom.txt",
+            "\u{FEFF}alpha\nbeta\n",
+            "SWAP 2:\n+gamma",
+        );
+        let disk = std::fs::read_to_string(dir.path().join("bom.txt")).unwrap();
+        assert_eq!(disk, "\u{FEFF}alpha\ngamma\n");
+    }
+
+    #[test]
+    fn patch_preserves_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        run_patch_on(dir.path(), "crlf.txt", "a\r\nb\r\n", "SWAP 2:\n+X");
+        let disk = std::fs::read(dir.path().join("crlf.txt")).unwrap();
+        assert_eq!(disk, b"a\r\nX\r\n");
+    }
+
+    #[test]
+    fn patch_preserves_pure_cr_and_trailing_terminator() {
+        let dir = tempfile::tempdir().unwrap();
+        run_patch_on(dir.path(), "cr.txt", "a\rb\r", "SWAP 2:\n+X");
+        let disk = std::fs::read(dir.path().join("cr.txt")).unwrap();
+        assert_eq!(disk, b"a\rX\r");
+    }
+
+    #[test]
+    fn patch_pure_cr_without_trailing_terminator() {
+        let dir = tempfile::tempdir().unwrap();
+        run_patch_on(dir.path(), "cr.txt", "a\rb", "SWAP 2:\n+X");
+        let disk = std::fs::read(dir.path().join("cr.txt")).unwrap();
+        assert_eq!(disk, b"a\rX");
+    }
+
+    #[test]
+    fn patch_mixed_eol_canonicalizes_to_dominant() {
+        // Documented design choice: mixed-EOL files are rewritten with the
+        // dominant ending throughout (per-line endings of untouched lines
+        // are NOT preserved — see detect_line_ending docs).
+        let dir = tempfile::tempdir().unwrap();
+        // CRLF dominant (2) over LF (1): the lone-LF line is rewritten CRLF.
+        run_patch_on(dir.path(), "mix.txt", "a\r\nb\r\nc\n", "SWAP 1:\n+A");
+        let disk = std::fs::read(dir.path().join("mix.txt")).unwrap();
+        assert_eq!(disk, b"A\r\nb\r\nc\r\n");
+
+        // LF dominant (2) over CRLF (1): the CRLF line becomes LF.
+        run_patch_on(dir.path(), "mix2.txt", "a\nb\r\nc\n", "SWAP 1:\n+A");
+        let disk2 = std::fs::read(dir.path().join("mix2.txt")).unwrap();
+        assert_eq!(disk2, b"A\nb\nc\n");
+    }
+
+    #[test]
+    fn patch_reported_hash_matches_reload_for_cr_file() {
+        // The OK line's path#hash must equal what `read`/`FileContent::load`
+        // reports after the write — for a pure-CR file this exercises the
+        // normalized-hash contract end to end.
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_on(dir.path(), "h.txt", "x\rb\r", "SWAP 2:\n+c");
+        let path = dir.path().join("h.txt");
+        // The write-back restored CR endings and kept the trailing terminator.
+        assert_eq!(std::fs::read(&path).unwrap(), b"x\rc\r");
+        let fc = crate::document::FileContent::load(&path).unwrap();
+        assert!(fc.trailing_newline);
+        let expected = format!("#{}", fc.hash);
+        assert!(
+            out.contains(&expected),
+            "stdout: {out}\nexpected hash {expected}"
+        );
+        // And the reported hash is over the LF-normalized content.
+        assert_eq!(fc.hash, crate::hash::compute_file_hash("x\nc\n"));
+    }
+
+    #[test]
+    fn patch_no_trailing_newline_hash_consistency() {
+        // Regression: changeset hash must match a fresh load for files
+        // without a trailing newline (CR and LF flavours).
+        for (name, content, expected_norm) in
+            [("lf.txt", "x\nb", "x\nc"), ("cr.txt", "x\rb", "x\nc")]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let out = run_patch_on(dir.path(), name, content, "SWAP 2:\n+c");
+            let fc = crate::document::FileContent::load(&dir.path().join(name)).unwrap();
+            assert!(out.contains(&format!("#{}", fc.hash)), "{name}: {out}");
+            assert_eq!(fc.hash, crate::hash::compute_file_hash(expected_norm));
         }
     }
 }

@@ -34,6 +34,10 @@ pub struct FileContent {
     pub raw: String,
     /// LF-normalized, BOM-stripped text.
     pub normalized: String,
+    /// The UTF-8 BOM marker stripped from `raw` — `"\u{FEFF}"` when present,
+    /// empty otherwise. Write-back paths re-attach it so a patch/write does
+    /// not silently strip the file's encoding marker.
+    pub bom: String,
     /// Detected line ending style from the raw content.
     pub newline: NewlineStyle,
     /// Whether the raw content ends with a newline.
@@ -55,6 +59,7 @@ impl FileContent {
                 path: path.to_path_buf(),
                 raw: String::new(),
                 normalized: String::new(),
+                bom: String::new(),
                 newline: NewlineStyle::Lf,
                 trailing_newline: false,
                 hash: hash::compute_file_hash(""),
@@ -72,16 +77,24 @@ impl FileContent {
             })?
             .to_owned();
 
-        let bom = crate::normalize::strip_bom(&raw);
-        let trailing_newline = bom.text.ends_with('\n');
-        let newline = NewlineStyle::from_normalize(crate::normalize::detect_line_ending(&bom.text));
-        let normalized = crate::normalize::normalize_to_lf(&bom.text);
+        let bom_result = crate::normalize::strip_bom(&raw);
+        let bom = bom_result.bom;
+        let newline =
+            NewlineStyle::from_normalize(crate::normalize::detect_line_ending(&bom_result.text));
+        let normalized = crate::normalize::normalize_to_lf(&bom_result.text);
+        // `trailing_newline` must be computed on the *normalized* text, not
+        // the raw bytes: a pure-CR file ("a\rb\r") has no '\n' in raw form,
+        // so checking `raw.ends_with('\n')` reported false while
+        // `normalized` ended with '\n' — producing a phantom trailing empty
+        // line in `read`/`find-block` output that `patch` then rejected.
+        let trailing_newline = normalized.ends_with('\n');
         let hash_val = hash::compute_file_hash(&normalized);
 
         Ok(FileContent {
             path: path.to_path_buf(),
             raw,
             normalized,
+            bom,
             newline,
             trailing_newline,
             hash: hash_val,
@@ -227,6 +240,8 @@ pub struct LineEntry {
 pub enum NewlineStyle {
     Lf,
     Crlf,
+    /// Bare-CR (classic Mac) line endings.
+    Cr,
 }
 
 impl NewlineStyle {
@@ -234,6 +249,7 @@ impl NewlineStyle {
         match self {
             NewlineStyle::Lf => "\n",
             NewlineStyle::Crlf => "\r\n",
+            NewlineStyle::Cr => "\r",
         }
     }
 
@@ -241,8 +257,25 @@ impl NewlineStyle {
         match le {
             crate::normalize::LineEnding::Lf => NewlineStyle::Lf,
             crate::normalize::LineEnding::Crlf => NewlineStyle::Crlf,
+            crate::normalize::LineEnding::Cr => NewlineStyle::Cr,
         }
     }
+}
+
+/// Probe an existing file for its BOM marker and dominant line-ending
+/// style. Overwrite paths (`write --force`, `Editor::write`, MCP `write`)
+/// call this so replacing a file does not silently change its encoding
+/// conventions. Returns `("", LineEnding::Lf)` when the file is missing,
+/// unreadable, or not valid UTF-8.
+pub fn probe_existing_style(path: &Path) -> (String, crate::normalize::LineEnding) {
+    let fallback = || (String::new(), crate::normalize::LineEnding::Lf);
+    let Ok(bytes) = fs::read(path) else {
+        return fallback();
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return fallback();
+    };
+    crate::normalize::detect_file_style(text)
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +323,7 @@ mod tests {
             path: PathBuf::from("demo.txt"),
             raw: "a\nb\n".into(),
             normalized: "a\nb\n".into(),
+            bom: String::new(),
             newline: NewlineStyle::Lf,
             trailing_newline: true,
             hash: "abcd".into(),
@@ -299,6 +333,83 @@ mod tests {
         assert_eq!(entries[0].content, "a");
         assert_eq!(entries[1].content, "b");
         assert_eq!(entries[2].content, "");
+    }
+
+    // -- bd-eol-bom-u7h: BOM / EOL preservation ----------------------------
+
+    #[test]
+    fn test_load_bom_is_captured_and_normalized_strips_it() {
+        let (_dir, path) = write_temp_file("\u{FEFF}alpha\nbeta\n");
+        let fc = FileContent::load(&path).unwrap();
+
+        assert_eq!(fc.bom, "\u{FEFF}");
+        assert_eq!(fc.normalized, "alpha\nbeta\n");
+        // The file hash is computed over the normalized text, so a BOM
+        // file and its BOM-less twin report the same hash.
+        assert_eq!(fc.hash, hash::compute_file_hash("alpha\nbeta\n"));
+    }
+
+    #[test]
+    fn test_load_no_bom_gives_empty_marker() {
+        let (_dir, path) = write_temp_file("alpha\n");
+        let fc = FileContent::load(&path).unwrap();
+        assert_eq!(fc.bom, "");
+    }
+
+    #[test]
+    fn test_load_pure_cr_file() {
+        // Classic Mac OS line endings: every '\r' is a terminator.
+        let (_dir, path) = write_temp_file("alpha\rbeta\r");
+        let fc = FileContent::load(&path).unwrap();
+
+        assert_eq!(fc.newline, NewlineStyle::Cr);
+        assert_eq!(fc.normalized, "alpha\nbeta\n");
+        // The trailing '\r' IS a terminator — this is what the old
+        // raw-bytes check got wrong (it looked for '\n' only).
+        assert!(fc.trailing_newline);
+        assert_eq!(fc.lines(), vec!["alpha", "beta", ""]);
+    }
+
+    #[test]
+    fn test_load_pure_cr_no_trailing_terminator() {
+        let (_dir, path) = write_temp_file("alpha\rbeta");
+        let fc = FileContent::load(&path).unwrap();
+
+        assert_eq!(fc.newline, NewlineStyle::Cr);
+        assert!(!fc.trailing_newline);
+        assert_eq!(fc.lines(), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_load_mixed_eol_detects_dominant_not_first() {
+        // Two LF + one CRLF: dominant is LF even though CRLF appears first.
+        // The old first-ending-wins detection returned Crlf here.
+        let (_dir, path) = write_temp_file("a\r\nb\nc\n");
+        let fc = FileContent::load(&path).unwrap();
+        assert_eq!(fc.newline, NewlineStyle::Lf);
+
+        // Two CRLF + one LF: dominant is CRLF.
+        let (_dir2, path2) = write_temp_file("a\r\nb\r\nc\n");
+        let fc2 = FileContent::load(&path2).unwrap();
+        assert_eq!(fc2.newline, NewlineStyle::Crlf);
+    }
+
+    #[test]
+    fn test_probe_existing_style() {
+        let (_dir, path) = write_temp_file("\u{FEFF}a\r\nb\r\n");
+        let (bom, ending) = probe_existing_style(&path);
+        assert_eq!(bom, "\u{FEFF}");
+        assert_eq!(ending, crate::normalize::LineEnding::Crlf);
+
+        let (_dir2, path2) = write_temp_file("a\rb\r");
+        let (bom2, ending2) = probe_existing_style(&path2);
+        assert_eq!(bom2, "");
+        assert_eq!(ending2, crate::normalize::LineEnding::Cr);
+
+        // Missing file → LF/no-BOM default.
+        let (bom3, ending3) = probe_existing_style(Path::new("does-not-exist-xyz"));
+        assert_eq!(bom3, "");
+        assert_eq!(ending3, crate::normalize::LineEnding::Lf);
     }
 
     #[test]
@@ -407,6 +518,7 @@ mod tests {
             path: PathBuf::from("demo.txt"),
             raw: content.to_string(),
             normalized: content.to_string(),
+            bom: String::new(),
             newline: NewlineStyle::Lf,
             trailing_newline: content.ends_with('\n'),
             hash: "0000".into(),

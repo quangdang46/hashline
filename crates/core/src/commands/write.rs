@@ -22,18 +22,28 @@ pub fn run<W: Write, E: Write>(
     let bom_result = normalize::strip_bom(&normalized);
     let write_content = bom_result.text;
 
+    // 2b. `write --force` on an existing file preserves that file's BOM
+    //     marker and dominant line-ending style, so overwriting does not
+    //     silently change the file's encoding conventions. New files (and
+    //     files that are missing/unreadable/non-UTF-8) are written LF/no-BOM.
+    let (bom, line_ending) = crate::document::probe_existing_style(&cmd.file);
+    let mut disk_content = normalize::restore_line_endings(&write_content, line_ending);
+    if !bom.is_empty() {
+        disk_content.insert_str(0, &bom);
+    }
+
     // 3. Write using fast_write or atomic_write
     if cmd.safe {
-        crate::commands::common::atomic_write(&cmd.file, write_content.as_bytes())?;
+        crate::commands::common::atomic_write(&cmd.file, disk_content.as_bytes())?;
     } else {
-        crate::commands::common::fast_write(&cmd.file, write_content.as_bytes())?;
+        crate::commands::common::fast_write(&cmd.file, disk_content.as_bytes())?;
     }
 
     // 3b. Verify the write actually landed: the target must now be a
     //     regular file with the expected length. Without this, writes to
     //     device paths (e.g. `d\NUL` on Windows) report OK while creating
     //     nothing.
-    crate::commands::common::verify_written_file(&cmd.file, write_content.len())?;
+    crate::commands::common::verify_written_file(&cmd.file, disk_content.len())?;
 
     // 3c. On Windows the OS silently normalizes trailing dots/spaces and
     //     casing in file names (`literal.` writes `literal`). Surface a
@@ -285,6 +295,68 @@ mod tests {
             fs::read_to_string(dir.path().join("literal")).unwrap(),
             "data"
         );
+    }
+
+    // -- bd-eol-bom-u7h: write --force preserves existing file style --------
+
+    #[test]
+    fn write_force_preserves_crlf_style() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("crlf.txt");
+        fs::write(&file, "old\r\ncontent\r\n").unwrap();
+
+        let (result, _out, _err) = run_write(file.clone(), "new\ntext", true, false);
+        assert!(result.is_ok());
+        // The existing file's CRLF style is matched, not forced to LF.
+        assert_eq!(fs::read(&file).unwrap(), b"new\r\ntext");
+    }
+
+    #[test]
+    fn write_force_preserves_bom_and_cr_style() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bom-cr.txt");
+        fs::write(&file, "\u{FEFF}old\rdata\r").unwrap();
+
+        let (result, _out, _err) = run_write(file.clone(), "x\ny", true, false);
+        assert!(result.is_ok());
+        assert_eq!(fs::read(&file).unwrap(), "\u{FEFF}x\ry".as_bytes());
+    }
+
+    #[test]
+    fn write_force_on_lf_file_stays_lf() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lf.txt");
+        fs::write(&file, "old\n").unwrap();
+
+        let (result, _out, _err) = run_write(file.clone(), "new\n", true, false);
+        assert!(result.is_ok());
+        assert_eq!(fs::read(&file).unwrap(), b"new\n");
+    }
+
+    #[test]
+    fn write_new_file_is_lf_without_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fresh.txt");
+
+        // Even though the supplied content carries CRLF + BOM, a new file
+        // is written in canonical LF/no-BOM form.
+        let (result, _out, _err) = run_write(file.clone(), "\u{FEFF}a\r\nb\r\n", false, false);
+        assert!(result.is_ok());
+        assert_eq!(fs::read(&file).unwrap(), b"a\nb\n");
+    }
+
+    #[test]
+    fn write_force_reported_hash_matches_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("h.txt");
+        fs::write(&file, "old\r\n").unwrap();
+
+        let (result, out, _err) = run_write(file.clone(), "a\nb\n", true, false);
+        assert!(result.is_ok());
+        let fc = crate::document::FileContent::load(&file).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(&format!("#{}", fc.hash)));
+        assert_eq!(fc.hash, hash::compute_file_hash("a\nb\n"));
     }
 
     #[cfg(windows)]

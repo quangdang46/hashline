@@ -10,6 +10,7 @@ pub fn make_fc(content: &str) -> FileContent {
         path: PathBuf::from("bench.rs"),
         raw: content.to_string(),
         normalized: content.to_string(),
+        bom: String::new(),
         newline: hashline::document::NewlineStyle::Lf,
         trailing_newline: content.ends_with('\n'),
         hash: "0000".into(),
