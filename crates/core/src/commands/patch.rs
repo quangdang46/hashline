@@ -11,6 +11,12 @@ use crate::types::{
     BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, FileOp, InsertMode,
 };
 
+/// Cell budget for the LCS dynamic-programming table used by the changeset
+/// and dry-run diffs (`m * n` cells). Past it the diff falls back to
+/// unique-line anchors, then to a wholesale delete+insert — quadratic time
+/// and memory are never paid on huge files.
+const MAX_LCS_CELLS: usize = 4_000_000;
+
 thread_local! {
     /// Warnings emitted while *applying* edits (boundary-echo repairs,
     /// delimiter warnings). The CLI prints them to stderr at emit time via
@@ -101,17 +107,39 @@ pub fn run<W: Write, E: Write>(
     let mut lines: Vec<String> = split_normalized(text);
     let had_trailing_newline = fc.trailing_newline;
 
-    let entries = fc.lines_with_hashes();
-    // Count unique high-level operations (each has a distinct line_num).
-    let op_count = count_operations(&edits);
-    let changeset = apply_edits_tracked(
-        &mut lines,
-        &entries,
-        &cmd.file,
-        &edits,
-        op_count,
-        had_trailing_newline,
-    )?;
+    // Per-line short hashes are only read when an edit carries an
+    // `expected_hash` (`N:hh` anchors); bare `N` anchors never consult them.
+    // Skip the whole-file xxh32 pass when the patch has none — the entries
+    // still carry content for block resolution and `CUT` capture.
+    let entries = if edits_need_hashes(&edits) {
+        fc.lines_with_hashes()
+    } else {
+        fc.lines_without_hashes()
+    };
+    // Opt-in (issue #119): also hand back fresh anchors so the caller can
+    // chain a follow-up edit without an extra `read` round-trip. Flag or
+    // `HASHLINE_RETURN_ANCHORS=1`. Off by default to keep output token-minimal.
+    // Resolved before apply so the changeset knows whether to pay for the
+    // full-file anchor listing.
+    let emit_anchors = cmd.emit_anchors || emit_anchors_from_env();
+    // Dry-run only needs the applied lines for `format_diff` — skip the
+    // changeset diff, result-file hash, and anchor listing entirely.
+    let changeset = if cmd.dry_run {
+        apply_edits(&mut lines, &entries, &cmd.file, &edits)?;
+        None
+    } else {
+        // Count unique high-level operations (each has a distinct line_num).
+        let op_count = count_operations(&edits);
+        Some(apply_edits_tracked(
+            &mut lines,
+            &entries,
+            &cmd.file,
+            &edits,
+            op_count,
+            had_trailing_newline,
+            emit_anchors,
+        )?)
+    };
 
     let result = if had_trailing_newline && !lines.is_empty() {
         lines.join("\n") + "\n"
@@ -156,6 +184,9 @@ pub fn run<W: Write, E: Write>(
         return Ok(());
     }
 
+    // Past the dry-run early return a changeset is always present.
+    let changeset = changeset.expect("changeset computed for non-dry-run patch");
+
     // TOCTOU / lost-update guard: the edit was computed against `fc`, but
     // the write below targets the path, not the loaded content. If another
     // process swapped or rewrote the file since the load, writing would
@@ -168,11 +199,6 @@ pub fn run<W: Write, E: Write>(
     } else {
         crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
     }
-
-    // Opt-in (issue #119): also hand back fresh anchors so the caller can
-    // chain a follow-up edit without an extra `read` round-trip. Flag or
-    // `HASHLINE_RETURN_ANCHORS=1`. Off by default to keep output token-minimal.
-    let emit_anchors = cmd.emit_anchors || emit_anchors_from_env();
 
     // Render output based on output mode.
     match ctx.output_mode() {
@@ -538,11 +564,20 @@ fn resolve_patch_content(patch: &str) -> Result<String, HashlineError> {
 }
 
 /// Produce a minimal unified-diff snippet showing only changed lines,
-/// suitable for dry-run review. Uses a simple LCS-based shortest-edit
-/// path that correctly handles insertions and deletions that shift
-/// subsequent line indices. Loosely follows `diff -u` style but omits
+/// suitable for dry-run review. Loosely follows `diff -u` style but omits
 /// the timestamp header.
+///
+/// The alignment reuses [`changeset_diff_ops`] — common prefix/suffix
+/// trim, exact LCS under a cell budget, patience-style unique-line anchors
+/// for sparse edits in huge files, and a wholesale delete+insert fallback —
+/// so dry-run costs the same bounded diff the changeset path pays instead
+/// of the old `vec![vec![0; n+1]; m+1]` table that OOM'd on ~100k-line
+/// files. Emitted `+`/`-` rows are additionally capped so a wholesale
+/// rewrite cannot flood the caller.
 pub(crate) fn format_diff(original: &str, final_text: &str) -> Vec<String> {
+    const MAX_DIFF_ROWS: usize = 2_000;
+    const MAX_DIFF_BYTES: usize = 1024 * 1024;
+
     let left: Vec<&str> = if original.is_empty() {
         vec![]
     } else {
@@ -556,40 +591,47 @@ pub(crate) fn format_diff(original: &str, final_text: &str) -> Vec<String> {
     if left == right {
         return vec!["(no changes)".into()];
     }
-    // Compute LCS table (Wagner-Fischer).
-    let m = left.len();
-    let n = right.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 1..=m {
-        for j in 1..=n {
-            dp[i][j] = if left[i - 1] == right[j - 1] {
-                dp[i - 1][j - 1] + 1
-            } else {
-                dp[i - 1][j].max(dp[i][j - 1])
-            };
+    let ops = changeset_diff_ops(&left, &right, MAX_LCS_CELLS);
+    let mut out: Vec<String> = vec!["@@ -- ++ @@".into()];
+    let mut bytes_out = 0usize;
+    let mut emitted = 0usize;
+    let mut omitted = 0usize;
+    let (mut i, mut j) = (0usize, 0usize);
+    let mut push_row = |tag: char, line: &str, out: &mut Vec<String>| {
+        // `format!` allocates the row up front; check the budget against
+        // the would-be length so a single giant line cannot slip past the
+        // byte cap.
+        if emitted >= MAX_DIFF_ROWS || bytes_out + line.len() + 2 > MAX_DIFF_BYTES {
+            omitted += 1;
+            return;
+        }
+        let row = format!("{tag}{line}");
+        bytes_out += row.len() + 1;
+        out.push(row);
+        emitted += 1;
+    };
+    for op in ops {
+        match op {
+            crate::merge::DiffOp::Equal(count) => {
+                i += count;
+                j += count;
+            }
+            crate::merge::DiffOp::Delete(count) => {
+                for _ in 0..count {
+                    push_row('-', left[i], &mut out);
+                    i += 1;
+                }
+            }
+            crate::merge::DiffOp::Insert(count) => {
+                for _ in 0..count {
+                    push_row('+', right[j], &mut out);
+                    j += 1;
+                }
+            }
         }
     }
-    // Backtrack to produce edit operations.
-    let mut ops: Vec<(usize, &'static str, &str)> = Vec::new();
-    let mut i = m;
-    let mut j = n;
-    while i > 0 || j > 0 {
-        if i > 0 && j > 0 && left[i - 1] == right[j - 1] {
-            i -= 1;
-            j -= 1;
-        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
-            ops.push((j, "+", right[j - 1]));
-            j -= 1;
-        } else {
-            ops.push((i, "-", left[i - 1]));
-            i -= 1;
-        }
-    }
-    ops.reverse();
-    let mut out: Vec<String> = Vec::new();
-    out.push("@@ -- ++ @@".into());
-    for (_, tag, line) in &ops {
-        out.push(format!("{tag}{line}"));
+    if omitted > 0 {
+        out.push(format!("... {omitted} more changed lines not shown ..."));
     }
     out
 }
@@ -648,6 +690,20 @@ pub fn apply_edits_pure(
     })
 }
 
+/// True when any edit in the patch carries a hash-qualified anchor
+/// (`N:hh`). The applier validates `expected_hash` against the snapshot's
+/// per-line short hashes; when no edit has one, those hashes are never
+/// read and computing them is wasted work on large files.
+fn edits_need_hashes(edits: &[Edit]) -> bool {
+    edits.iter().any(|e| match e {
+        Edit::Insert { expected_hash, .. }
+        | Edit::Delete { expected_hash, .. }
+        | Edit::Block { expected_hash, .. }
+        | Edit::Cut { expected_hash, .. } => expected_hash.is_some(),
+        Edit::Paste { .. } => false,
+    })
+}
+
 /// Count the high-level operations in a parsed patch.
 ///
 /// One operation can expand into several [`Edit`] variants — a `SWAP` with a
@@ -688,6 +744,11 @@ pub fn apply_edits(
 
 /// Like `apply_edits` but also returns a [`ChangeSet`] describing what changed.
 /// The changeset is computed from the edit operations and the before/after state.
+///
+/// `want_anchors` controls the opt-in full-file fresh-anchor listing
+/// (`ChangeSet::updated_anchors`): it costs one clone+hash per result line,
+/// so callers that will not emit it (the default compact/JSON output, and
+/// every dry-run) pass `false` and get an empty vec.
 pub fn apply_edits_tracked(
     lines: &mut Vec<String>,
     entries: &[crate::document::LineEntry],
@@ -695,9 +756,17 @@ pub fn apply_edits_tracked(
     edits: &[Edit],
     edits_count: usize,
     trailing_newline: bool,
+    want_anchors: bool,
 ) -> Result<ChangeSet, HashlineError> {
     apply_edits(lines, entries, path, edits)?;
-    let changeset = compute_changeset(entries, lines, edits_count, path, trailing_newline);
+    let changeset = compute_changeset(
+        entries,
+        lines,
+        edits_count,
+        path,
+        trailing_newline,
+        want_anchors,
+    );
     Ok(changeset)
 }
 
@@ -724,6 +793,7 @@ fn compute_changeset(
     edits_count: usize,
     _path: &Path,
     trailing_newline: bool,
+    want_anchors: bool,
 ) -> ChangeSet {
     use crate::hash::{compute_file_hash, short_hash_value_indexed};
 
@@ -749,7 +819,6 @@ fn compute_changeset(
     // exactly; past that `changeset_diff_ops` anchors on unique common lines
     // so sparse edits in huge files still align — only genuinely
     // unalignable chunks degrade to a wholesale delete+insert.
-    const MAX_LCS_CELLS: usize = 4_000_000;
     let ops = changeset_diff_ops(&old_lines, &new_lines, MAX_LCS_CELLS);
 
     let mut orig_idx = 0usize; // 0-based cursor into old_lines
@@ -841,16 +910,22 @@ fn compute_changeset(
 
     // Full fresh anchor listing (issue #119): every result line with its new
     // number + new hash, computed with the same position-seeded hash the
-    // `read` path uses so anchors are directly reusable.
-    let updated_anchors: Vec<ChangedLine> = final_lines
-        .iter()
-        .enumerate()
-        .map(|(i, content)| ChangedLine {
-            line: i + 1,
-            hash: crate::hash::format_short_hash(short_hash_value_indexed(content, i + 1)),
-            content: content.clone(),
-        })
-        .collect();
+    // `read` path uses so anchors are directly reusable. This clones and
+    // hashes every result line, so it only runs when the caller opted in
+    // (`--emit-anchors` / `return_updated_anchors` / env).
+    let updated_anchors: Vec<ChangedLine> = if want_anchors {
+        final_lines
+            .iter()
+            .enumerate()
+            .map(|(i, content)| ChangedLine {
+                line: i + 1,
+                hash: crate::hash::format_short_hash(short_hash_value_indexed(content, i + 1)),
+                content: content.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     ChangeSet {
         edits_applied: edits_count,
@@ -2928,6 +3003,7 @@ mod tests {
             &edits,
             count_operations(&edits),
             original.ends_with('\n'),
+            true,
         )
         .expect("edit should succeed")
     }
@@ -3303,8 +3379,16 @@ mod tests {
                 short_hash: crate::hash::short_hash_value_indexed(s, i + 1),
             })
             .collect();
-        let cs =
-            apply_edits_tracked(&mut lines, &entries, Path::new("t.txt"), &edits, 1, true).unwrap();
+        let cs = apply_edits_tracked(
+            &mut lines,
+            &entries,
+            Path::new("t.txt"),
+            &edits,
+            1,
+            true,
+            true,
+        )
+        .unwrap();
         assert_eq!(cs.file_hash, compute_file_hash("x\nb\n"));
     }
 

@@ -596,6 +596,10 @@ fn handle_patch(
     // They change file content and must reach the client — stderr is
     // invisible to MCP clients.
     let _ = crate::commands::patch::take_apply_warnings();
+    // Anchor listing is opt-in and never emitted for dry-run, so don't pay
+    // for it in the changeset there either.
+    let want_anchors =
+        (return_updated_anchors || crate::commands::patch::emit_anchors_from_env()) && !dry_run;
     let changeset = match crate::commands::patch::apply_edits_tracked(
         &mut lines,
         &entries,
@@ -603,6 +607,7 @@ fn handle_patch(
         &edits,
         crate::commands::patch::count_operations(&edits),
         fc.trailing_newline,
+        want_anchors,
     ) {
         Ok(cs) => cs,
         Err(e) => return err_output(&e),

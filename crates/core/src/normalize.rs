@@ -111,22 +111,34 @@ pub fn detect_file_style(content: &str) -> (String, LineEnding) {
 
 /// Normalize every line ending to LF. Handles bare CR as well.
 ///
-/// Iterates by `char` (not byte) so multi-byte UTF-8 sequences like — (em dash,
-/// U+2014, 3 bytes) pass through unchanged instead of being split and corrupted.
+/// Byte-wise rather than `char`-wise: `'\r'`/`'\n'` are ASCII and can never
+/// appear inside a multi-byte UTF-8 sequence, so copying bytes verbatim is
+/// exact — and roughly an order of magnitude faster than decoding chars.
+/// Files with no `'\r'` at all (the common case) skip the pass entirely.
 pub fn normalize_to_lf(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next(); // skip the \n of \r\n
+    let bytes = text.as_bytes();
+    if memchr::memchr(b'\r', bytes).is_none() {
+        return text.to_owned();
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' {
+            out.push(b'\n');
+            i += 1;
+            // Skip the '\n' of a "\r\n" pair — it is consumed by the '\r'.
+            if i < bytes.len() && bytes[i] == b'\n' {
+                i += 1;
             }
-            out.push('\n');
         } else {
-            out.push(c);
+            out.push(bytes[i]);
+            i += 1;
         }
     }
-    out
+    // SAFETY: `text` is valid UTF-8 and we only replace ASCII `'\r'` with
+    // `'\n'` and delete ASCII `'\n'` bytes — neither byte can occur inside
+    // a multi-byte sequence — so `out` is valid UTF-8.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 /// Re-encode LF text with the requested line ending.

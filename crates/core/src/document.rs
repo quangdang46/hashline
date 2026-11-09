@@ -22,9 +22,17 @@ use crate::hash;
 /// path is faster — small files (and most test fixtures) stay on it.
 const PARALLEL_HASH_MIN_LINES: usize = 4096;
 
-/// Number of lines each worker handles in the parallel path. This also caps
-/// the thread count: a 4096-line file spawns 2 threads, a 100k-line file ~49.
+/// Number of lines each worker handles in the parallel path. Also used as
+/// the granularity for sizing the worker count: a 4096-line file gets ~2
+/// workers, and the count never exceeds [`MAX_HASH_WORKERS`] no matter how
+/// large the file is.
 const PARALLEL_HASH_CHUNK_LINES: usize = 2048;
+
+/// Hard cap on hashing worker threads. The old implementation spawned one
+/// thread per 2048-line chunk — ~244 threads on a 500k-line file — which is
+/// pure overhead: xxh32 hashing is memory-bandwidth-bound well below that,
+/// and each spawn costs a kernel transition plus stack setup.
+const MAX_HASH_WORKERS: usize = 16;
 
 /// Lightweight in-memory file content, normalized to LF and BOM-stripped.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,17 +79,32 @@ impl FileContent {
             return Err(HashlineError::BinaryFile { path: path_string });
         }
 
-        let raw = std::str::from_utf8(&bytes)
-            .map_err(|_| HashlineError::InvalidUtf8 {
-                path: path_string.clone(),
-            })?
-            .to_owned();
+        let text = std::str::from_utf8(&bytes).map_err(|_| HashlineError::InvalidUtf8 {
+            path: path_string.clone(),
+        })?;
 
-        let bom_result = crate::normalize::strip_bom(&raw);
-        let bom = bom_result.bom;
-        let newline =
-            NewlineStyle::from_normalize(crate::normalize::detect_line_ending(&bom_result.text));
-        let normalized = crate::normalize::normalize_to_lf(&bom_result.text);
+        // Strip the BOM on a borrowed slice — no copy. `raw` keeps the
+        // BOM'd original (write-back paths re-attach `bom` themselves).
+        let (bom, body) = if let Some(rest) = text.strip_prefix('\u{FEFF}') {
+            ("\u{FEFF}", rest)
+        } else {
+            ("", text)
+        };
+
+        // Fast path: a file with no `'\r'` byte is already LF-normalized —
+        // `normalized` is a plain memcpy and the dominant ending is LF by
+        // definition (no CR/CRLF terminators can exist). This skips both
+        // the per-char/byte normalize pass and the full EOL histogram scan
+        // for the overwhelming majority of files. The `memchr` probe is
+        // SIMD-speed, so even CRLF files only pay one extra scan.
+        let (newline, normalized) = if memchr(b'\r', body.as_bytes()).is_some() {
+            (
+                NewlineStyle::from_normalize(crate::normalize::detect_line_ending(body)),
+                crate::normalize::normalize_to_lf(body),
+            )
+        } else {
+            (NewlineStyle::Lf, body.to_owned())
+        };
         // `trailing_newline` must be computed on the *normalized* text, not
         // the raw bytes: a pure-CR file ("a\rb\r") has no '\n' in raw form,
         // so checking `raw.ends_with('\n')` reported false while
@@ -89,12 +112,16 @@ impl FileContent {
         // line in `read`/`find-block` output that `patch` then rejected.
         let trailing_newline = normalized.ends_with('\n');
         let hash_val = hash::compute_file_hash(&normalized);
+        // One owned copy of the on-disk text (BOM included); `normalized`
+        // above is the second. Previously this path made three full copies
+        // (raw + strip_bom + normalize_to_lf).
+        let raw = text.to_owned();
 
         Ok(FileContent {
             path: path.to_path_buf(),
             raw,
             normalized,
-            bom,
+            bom: bom.to_owned(),
             newline,
             trailing_newline,
             hash: hash_val,
@@ -132,6 +159,24 @@ impl FileContent {
         self.lines_with_hashes_parallel(&lines)
     }
 
+    /// Line entries with content but a **zeroed** `short_hash`.
+    ///
+    /// For apply paths whose edits carry no hash-qualified anchors: the
+    /// applier only reads `short_hash` when an `expected_hash` is present,
+    /// so the per-line xxh32 + symbol scan is pure waste there. This still
+    /// clones every line (block resolution and `CUT` capture read content),
+    /// it only skips the hashing. Never use for `read`, anchor resolution,
+    /// or anywhere a real hash is consumed.
+    pub fn lines_without_hashes(&self) -> Vec<LineEntry> {
+        self.lines()
+            .iter()
+            .map(|line| LineEntry {
+                content: line.to_string(),
+                short_hash: 0,
+            })
+            .collect()
+    }
+
     /// Serial reference implementation — used directly for small files and as
     /// the exact-output oracle for the parallel path in tests.
     fn lines_with_hashes_serial(&self, lines: &[&str]) -> Vec<LineEntry> {
@@ -158,44 +203,48 @@ impl FileContent {
     /// afterwards (hashing is the dominant cost; see
     /// `bench-results/accuracy-branch-2026-08-10.md`).
     fn lines_with_hashes_parallel(&self, lines: &[&str]) -> Vec<LineEntry> {
-        // Split off the full chunks (hashed on worker threads) from a remainder
-        // shorter than one chunk (hashed inline after the workers join, so we
-        // don't spawn a thread for a handful of lines).
-        let full_len = lines.len() - lines.len() % PARALLEL_HASH_CHUNK_LINES;
+        // Partition ALL lines into `workers` contiguous ranges — one spawn
+        // per worker, each hashing its whole range serially. The line
+        // number (and thus the position seed for symbol-only lines) derives
+        // from the global index, never from a worker id, so the output is
+        // bit-for-bit identical to the serial path.
+        let n = lines.len();
+        let workers = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(MAX_HASH_WORKERS)
+            .min(n.div_ceil(PARALLEL_HASH_CHUNK_LINES))
+            .max(1);
+        if workers <= 1 {
+            return self.lines_with_hashes_serial(lines);
+        }
 
-        let mut hashes = vec![0u8; lines.len()];
-        let (full_hashes, tail_hashes) = hashes.split_at_mut(full_len);
+        let base = n / workers;
+        let extra = n % workers; // first `extra` workers get one more line
 
+        let mut hashes = vec![0u8; n];
         std::thread::scope(|s| {
-            // Each worker owns a disjoint chunk of `lines` and a disjoint
-            // `&mut [u8]` slice of `full_hashes`, so no two threads write the
-            // same index. `split_at_mut` guarantees the per-iteration `out`
-            // slice is disjoint from everything the loop keeps in `remaining`.
-            // The line number (and thus the position seed for symbol-only
-            // lines) derives from the global index
-            // `chunk_index * CHUNK + j`, never from a thread id.
-            let mut remaining = &mut full_hashes[..];
-            for (chunk_index, chunk) in lines[..full_len]
-                .chunks(PARALLEL_HASH_CHUNK_LINES)
-                .enumerate()
-            {
-                let (out, rest) = remaining.split_at_mut(PARALLEL_HASH_CHUNK_LINES);
-                remaining = rest;
+            let mut line_rest: &[&str] = lines;
+            let mut hash_rest: &mut [u8] = &mut hashes;
+            let mut line_offset = 0usize; // 0-based index of range start
+            for w in 0..workers {
+                let count = base + usize::from(w < extra);
+                let (line_chunk, lrest) = line_rest.split_at(count);
+                line_rest = lrest;
+                let (hash_chunk, hrest) = hash_rest.split_at_mut(count);
+                hash_rest = hrest;
+                // 1-based line number of the first line in this range.
+                let first_line_no = line_offset + 1;
+                line_offset += count;
                 s.spawn(move || {
-                    for (j, (&line, slot)) in chunk.iter().zip(out.iter_mut()).enumerate() {
-                        *slot = hash::short_hash_value_indexed(
-                            line,
-                            chunk_index * PARALLEL_HASH_CHUNK_LINES + j + 1,
-                        );
+                    for (j, (&line, slot)) in
+                        line_chunk.iter().zip(hash_chunk.iter_mut()).enumerate()
+                    {
+                        *slot = hash::short_hash_value_indexed(line, first_line_no + j);
                     }
                 });
             }
         });
-
-        // Remainder lines — hashed here, after all workers have joined.
-        for (j, &line) in lines[full_len..].iter().enumerate() {
-            tail_hashes[j] = hash::short_hash_value_indexed(line, full_len + j + 1);
-        }
 
         lines
             .iter()
