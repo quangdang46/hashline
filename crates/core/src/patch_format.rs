@@ -64,6 +64,11 @@ pub const HL_PAYLOAD_ESCAPE_DASH: &str = "+-";
 /** Number of hex characters in a content-derived file-hash tag. */
 pub const HL_FILE_HASH_LENGTH: usize = 4;
 
+/** Maximum number of lines a single `A..B` range op may span. Larger ranges
+ * are rejected at parse time — materializing one edit per line would hang
+ * or exhaust memory (`DEL 1..999999999`). */
+pub const HL_MAX_RANGE_LINES: usize = 1_000_000;
+
 /** Representative file-hash tags for use in user-facing error messages. */
 pub const HL_FILE_HASH_EXAMPLES: [&str; 3] = ["1A2B", "3C4D", "9F3E"];
 

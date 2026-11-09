@@ -13,8 +13,8 @@ use crate::patch_format::{
     HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER,
     HL_INSERT_AFTER_BLOCK_KEYWORD, HL_INSERT_AFTER_BLOCK_SHORT, HL_INSERT_BEFORE,
     HL_INSERT_BEFORE_BLOCK_KEYWORD, HL_INSERT_HEAD, HL_INSERT_KEYWORD, HL_INSERT_TAIL,
-    HL_MV_KEYWORD, HL_PUT_KEYWORD, HL_REM_KEYWORD, HL_REPLACE_BLOCK_KEYWORD, HL_REPLACE_KEYWORD,
-    describe_anchor_examples,
+    HL_MAX_RANGE_LINES, HL_MV_KEYWORD, HL_PUT_KEYWORD, HL_REM_KEYWORD, HL_REPLACE_BLOCK_KEYWORD,
+    HL_REPLACE_KEYWORD, describe_anchor_examples,
 };
 use crate::types::{Anchor, Cursor, ParsedRange};
 
@@ -85,9 +85,19 @@ fn is_empty_line(line: &str) -> bool {
     line.is_empty()
 }
 
+/// Match an envelope sentinel (`*** Begin Patch`, `*** End Patch`,
+/// `*** Abort`). Leading whitespace and trailing text are tolerated —
+/// `  *** End Patch — done` is still the sentinel, not payload — but a
+/// word boundary is required so `*** End Patchwork` is not.
 fn marker_line_equals(line: &str, marker: &str) -> bool {
-    let end = trim_end_index(line);
-    end == marker.len() && line.as_bytes().starts_with(marker.as_bytes())
+    let trimmed = line.trim();
+    if trimmed == marker {
+        return true;
+    }
+    match trimmed.strip_prefix(marker) {
+        Some(rest) => rest.starts_with(char::is_whitespace) || rest.starts_with(':'),
+        None => false,
+    }
 }
 
 /// Split text into LF-delimited lines, stripping trailing CR.
@@ -149,7 +159,12 @@ pub fn scan_line_number(bytes: &[u8], index: usize, end: usize) -> Option<Number
         if !is_digit_code(c) {
             break;
         }
-        line_number = line_number * 10 + (c - CHAR_ZERO) as usize;
+        // Saturate instead of overflowing: a wrapped or panicking parse
+        // would silently target the wrong line (or abort in debug builds).
+        // The resulting huge anchor fails cleanly as "line not found".
+        line_number = line_number
+            .saturating_mul(10)
+            .saturating_add((c - CHAR_ZERO) as usize);
         next_index += 1;
     }
     Some(NumberScan {
@@ -230,7 +245,12 @@ fn scan_header_range(
 ) -> Option<RangeScan> {
     let number_start = skip_whitespace(bytes, index, end);
     let start = scan_line_number(bytes, number_start, end)?;
-    let (after_hash, hash) = consume_with_hash(bytes, start.next_index, end);
+    let hash_scan = consume_with_hash(bytes, start.next_index, end);
+    if hash_scan.malformed {
+        return None;
+    }
+    let after_hash = hash_scan.next;
+    let hash = hash_scan.hash;
     let after_first = scan_range_separator(bytes, after_hash, end);
     let after_first = match after_first {
         Some(idx) => idx,
@@ -242,6 +262,7 @@ fn scan_header_range(
                 range: ParsedRange {
                     start: Anchor { line: start.line },
                     end: Anchor { line: start.line },
+                    end_hash: None,
                 },
                 next_index: skip_whitespace(bytes, after_hash, end),
                 hash,
@@ -249,10 +270,20 @@ fn scan_header_range(
         }
     };
     let end_num = scan_line_number(bytes, after_first, end)?;
+    // Reject reversed and absurdly large ranges here so they can never
+    // reach the applier (a `DEL 1..999999999` would otherwise try to
+    // materialize ~1G anchor edits).
+    if end_num.line < start.line {
+        return None;
+    }
+    if end_num.line - start.line >= HL_MAX_RANGE_LINES {
+        return None;
+    }
     Some(RangeScan {
         range: ParsedRange {
             start: Anchor { line: start.line },
             end: Anchor { line: end_num.line },
+            end_hash: None,
         },
         next_index: skip_whitespace(bytes, end_num.next_index, end),
         hash,
@@ -329,7 +360,7 @@ fn consume_optional_colon(bytes: &[u8], index: usize, end: usize) -> usize {
 ///   `SWAP 2..3:67:`   — range with hash suffix
 /// Delegates to `consume_with_hash` which returns (next_index, hash).
 pub fn consume_optional_colon_with_hash(bytes: &[u8], index: usize, end: usize) -> usize {
-    consume_with_hash(bytes, index, end).0
+    consume_with_hash(bytes, index, end).next
 }
 
 fn hex_val(b: u8) -> u8 {
@@ -341,31 +372,73 @@ fn hex_val(b: u8) -> u8 {
     }
 }
 
-/// Like consume_optional_colon_with_hash but returns (next_index, Option<hash>).
-fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> (usize, Option<u8>) {
+/// Result of scanning an optional `:HH` hash suffix after a line number.
+struct HashSuffix {
+    /// Index just past the consumed hash suffix (whitespace skipped).
+    next: usize,
+    /// The parsed 1-byte hash, when a valid suffix was present.
+    hash: Option<u8>,
+    /// True when a `:` followed the line number but what came after was
+    /// not a valid 1-2 hex-digit hash. Callers must reject the operation:
+    /// accepting it would silently disable the stale-anchor check.
+    malformed: bool,
+}
+
+/// Like consume_optional_colon_with_hash but returns the full [`HashSuffix`].
+fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> HashSuffix {
     let cursor = skip_whitespace(bytes, index, end);
-    if cursor < end && bytes[cursor] == CHAR_COLON {
-        let after = cursor + 1;
-        if after < end && is_hex_digit_code(bytes[after]) {
-            let hi = hex_val(bytes[after]);
-            let mut after2 = after + 1;
-            let hash_byte = if after2 < end && is_hex_digit_code(bytes[after2]) {
-                let lo = hex_val(bytes[after2]);
-                after2 += 1;
-                (hi << 4) | lo
-            } else {
-                hi
-            };
-            let mut next = after2;
-            if after2 < end && bytes[after2] == CHAR_COLON {
-                next = after2 + 1;
-            }
-            (skip_whitespace(bytes, next, end), Some(hash_byte))
-        } else {
-            (skip_whitespace(bytes, after, end), None)
-        }
+    if cursor >= end || bytes[cursor] != CHAR_COLON {
+        return HashSuffix {
+            next: cursor,
+            hash: None,
+            malformed: false,
+        };
+    }
+    // After `N:` only whitespace then end-of-line (no hash), or a 1-2
+    // hex-digit hash is valid. Anything else (`:zz`, `:abc`, `: +text`)
+    // is a malformed hash — report it so the op is rejected instead of
+    // silently applying with the stale-anchor check disabled.
+    let after = skip_whitespace(bytes, cursor + 1, end);
+    if after >= end {
+        return HashSuffix {
+            next: after,
+            hash: None,
+            malformed: false,
+        };
+    }
+    if !is_hex_digit_code(bytes[after]) {
+        return HashSuffix {
+            next: after,
+            hash: None,
+            malformed: true,
+        };
+    }
+    let mut run_end = after;
+    while run_end < end && is_hex_digit_code(bytes[run_end]) {
+        run_end += 1;
+    }
+    // Anchor hashes are exactly 1-2 hex digits; a longer run means the
+    // "hash" would be silently truncated (e.g. `SWAP 5:abc` → `ab`).
+    if run_end - after > 2 {
+        return HashSuffix {
+            next: run_end,
+            hash: None,
+            malformed: true,
+        };
+    }
+    let hash_byte = if run_end - after == 2 {
+        (hex_val(bytes[after]) << 4) | hex_val(bytes[after + 1])
     } else {
-        (cursor, None)
+        hex_val(bytes[after])
+    };
+    let mut next = run_end;
+    if next < end && bytes[next] == CHAR_COLON {
+        next += 1;
+    }
+    HashSuffix {
+        next: skip_whitespace(bytes, next, end),
+        hash: Some(hash_byte),
+        malformed: false,
     }
 }
 
@@ -377,6 +450,13 @@ fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> (usize, Option<u
 ///   is allowed, e.g. the anonymous register on `CUT`).
 ///
 /// A `@` sigil followed by a non-empty name is required for `PUT`.
+/// Register names are restricted to a conservative charset so sigils like
+/// `<`, `@`, and quotes can't be smuggled into a register key (they would
+/// corrupt the per-patch clipboard or collide with cursor syntax).
+fn is_register_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.'
+}
+
 fn scan_register_name(bytes: &[u8], index: usize, end: usize) -> (Option<String>, Option<usize>) {
     let cursor = skip_whitespace(bytes, index, end);
     if cursor >= end || bytes[cursor] != CHAR_AT {
@@ -387,11 +467,7 @@ fn scan_register_name(bytes: &[u8], index: usize, end: usize) -> (Option<String>
         return (None, None);
     }
     let mut name_end = name_start;
-    while name_end < end {
-        let c = bytes[name_end];
-        if is_whitespace_code(c) || c == CHAR_COLON {
-            break;
-        }
+    while name_end < end && is_register_char(bytes[name_end]) {
         name_end += 1;
     }
     if name_end == name_start {
@@ -414,10 +490,13 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
             if anchor.line == 0 {
                 return None;
             }
-            let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+            let suffix = consume_with_hash(bytes, anchor.next_index, end);
+            if suffix.malformed {
+                return None;
+            }
             return Some(TargetScan {
-                target: BlockTarget::InsertBefore(Anchor { line: anchor.line }, hash),
-                next_index: next,
+                target: BlockTarget::InsertBefore(Anchor { line: anchor.line }, suffix.hash),
+                next_index: suffix.next,
             });
         }
 
@@ -427,10 +506,13 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
             if anchor.line == 0 {
                 return None;
             }
-            let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+            let suffix = consume_with_hash(bytes, anchor.next_index, end);
+            if suffix.malformed {
+                return None;
+            }
             return Some(TargetScan {
-                target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
-                next_index: next,
+                target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, suffix.hash),
+                next_index: suffix.next,
             });
         }
 
@@ -466,10 +548,13 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
     if anchor.line == 0 {
         return None;
     }
-    let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+    let suffix = consume_with_hash(bytes, anchor.next_index, end);
+    if suffix.malformed {
+        return None;
+    }
     Some(TargetScan {
-        target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, hash),
-        next_index: next,
+        target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, suffix.hash),
+        next_index: suffix.next,
     })
 }
 
@@ -516,7 +601,12 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if anchor.line == 0 {
             return None;
         }
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let suffix = consume_with_hash(bytes, anchor.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
+        let hash = suffix.hash;
+        let next = suffix.next;
         // Check for two-anchor format: SWAP.BLK N:HH M:HH → treat as concrete Replace range
         if next < end {
             let after_ws = skip_whitespace(bytes, next, end);
@@ -524,13 +614,21 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
                 if second.line == 0 {
                     return None;
                 }
-                let (second_next, _) = consume_with_hash(bytes, second.next_index, end);
-                if skip_whitespace(bytes, second_next, end) == end {
+                let second_suffix = consume_with_hash(bytes, second.next_index, end);
+                if second_suffix.malformed {
+                    return None;
+                }
+                if skip_whitespace(bytes, second_suffix.next, end) == end {
+                    if second.line < anchor.line || second.line - anchor.line >= HL_MAX_RANGE_LINES
+                    {
+                        return None;
+                    }
                     return Some(TargetScan {
                         target: BlockTarget::Replace(
                             ParsedRange {
                                 start: Anchor { line: anchor.line },
                                 end: Anchor { line: second.line },
+                                end_hash: second_suffix.hash,
                             },
                             hash,
                         ),
@@ -547,14 +645,19 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
 
     // SWAP N..=M:
     if let Some(replace_end) = scan_keyword(bytes, cursor, end, HL_REPLACE_KEYWORD) {
-        let range = scan_header_range(bytes, replace_end, end, true)?;
+        let mut range = scan_header_range(bytes, replace_end, end, true)?;
         if range.range.start.line == 0 {
             return None;
         }
-        let (next, _) = consume_with_hash(bytes, range.next_index, end);
+        let suffix = consume_with_hash(bytes, range.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
+        // A `:HH` after the range end binds the END line (`SWAP 2:d4..4:ee`).
+        range.range.end_hash = suffix.hash;
         return Some(TargetScan {
             target: BlockTarget::Replace(range.range, range.hash),
-            next_index: next,
+            next_index: suffix.next,
         });
     }
 
@@ -564,7 +667,12 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if anchor.line == 0 {
             return None;
         }
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let suffix = consume_with_hash(bytes, anchor.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
+        let hash = suffix.hash;
+        let next = suffix.next;
         // Check for two-anchor format: DEL.BLK N:HH M:HH → treat as concrete Delete range
         if next < end {
             let after_ws = skip_whitespace(bytes, next, end);
@@ -572,13 +680,21 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
                 if second.line == 0 {
                     return None;
                 }
-                let (second_next, _) = consume_with_hash(bytes, second.next_index, end);
-                if skip_whitespace(bytes, second_next, end) == end {
+                let second_suffix = consume_with_hash(bytes, second.next_index, end);
+                if second_suffix.malformed {
+                    return None;
+                }
+                if skip_whitespace(bytes, second_suffix.next, end) == end {
+                    if second.line < anchor.line || second.line - anchor.line >= HL_MAX_RANGE_LINES
+                    {
+                        return None;
+                    }
                     return Some(TargetScan {
                         target: BlockTarget::Delete(
                             ParsedRange {
                                 start: Anchor { line: anchor.line },
                                 end: Anchor { line: second.line },
+                                end_hash: second_suffix.hash,
                             },
                             hash,
                         ),
@@ -600,11 +716,16 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
 
     // DEL N..=M (no colon, but may have :HH: hash suffix)
     if let Some(delete_end) = scan_keyword(bytes, cursor, end, HL_DELETE_KEYWORD) {
-        let range = scan_header_range(bytes, delete_end, end, true)?;
+        let mut range = scan_header_range(bytes, delete_end, end, true)?;
         if range.range.start.line == 0 {
             return None;
         }
-        let (next, _) = consume_with_hash(bytes, range.next_index, end);
+        let suffix = consume_with_hash(bytes, range.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
+        range.range.end_hash = suffix.hash;
+        let next = suffix.next;
         // Ensure DEL does not take a body (a colon after the optional hash
         // suffix means there's trailing content, which DEL doesn't accept).
         if next < end && bytes[next] == CHAR_COLON {
@@ -622,10 +743,13 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if anchor.line == 0 {
             return None;
         }
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let suffix = consume_with_hash(bytes, anchor.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
         return Some(TargetScan {
-            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, hash),
-            next_index: next,
+            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, suffix.hash),
+            next_index: suffix.next,
         });
     }
 
@@ -635,10 +759,13 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if anchor.line == 0 {
             return None;
         }
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let suffix = consume_with_hash(bytes, anchor.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
         return Some(TargetScan {
-            target: BlockTarget::InsertBeforeBlock(Anchor { line: anchor.line }, hash),
-            next_index: next,
+            target: BlockTarget::InsertBeforeBlock(Anchor { line: anchor.line }, suffix.hash),
+            next_index: suffix.next,
         });
     }
 
@@ -648,10 +775,13 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if anchor.line == 0 {
             return None;
         }
-        let (next, hash) = consume_with_hash(bytes, anchor.next_index, end);
+        let suffix = consume_with_hash(bytes, anchor.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
         return Some(TargetScan {
-            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, hash),
-            next_index: next,
+            target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, suffix.hash),
+            next_index: suffix.next,
         });
     }
 
@@ -662,11 +792,16 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
 
     // CUT N..=M @name — capture original lines into a register and delete.
     if let Some(cut_end) = scan_keyword(bytes, cursor, end, HL_CUT_KEYWORD) {
-        let range = scan_header_range(bytes, cut_end, end, true)?;
+        let mut range = scan_header_range(bytes, cut_end, end, true)?;
         if range.range.start.line == 0 {
             return None;
         }
-        let (next, _) = consume_with_hash(bytes, range.next_index, end);
+        let suffix = consume_with_hash(bytes, range.next_index, end);
+        if suffix.malformed {
+            return None;
+        }
+        range.range.end_hash = suffix.hash;
+        let next = suffix.next;
         let register = scan_register_name(bytes, next, end);
         // Named register: `CUT 5..9 @fn` — the name must consume to end.
         if let Some(reg_end) = register.1 {
@@ -704,8 +839,8 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
             if anchor.line == 0 {
                 return None;
             }
-            let (next, _) = consume_with_hash(bytes, anchor.next_index, end);
-            if next != end {
+            let suffix = consume_with_hash(bytes, anchor.next_index, end);
+            if suffix.malformed || suffix.next != end {
                 return None;
             }
             Cursor::BeforeAnchor(Anchor { line: anchor.line })
@@ -1357,5 +1492,126 @@ mod tests {
         // v1 supports only the before-line cursor; `PUT @fn >N` is rejected.
         let t = classify_line("PUT @fn >5", 1);
         assert!(!matches!(t, Token::OpBlock { .. }));
+    }
+
+    // ---- Audit hardening: overflow, malformed hashes, ranges, registers ----
+
+    #[test]
+    fn huge_line_number_saturates_no_panic() {
+        // `SWAP 99999999999999999999999999:` used to panic in debug and wrap
+        // in release (editing the wrong line). It must parse to a saturated
+        // anchor that fails cleanly at apply time.
+        match classify_op("SWAP 99999999999999999999999999:") {
+            BlockTarget::Replace(range, _) => {
+                assert_eq!(range.start.line, usize::MAX);
+                assert_eq!(range.end.line, usize::MAX);
+            }
+            other => panic!("expected Replace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_hex_hash_rejected() {
+        // `SWAP 2:zz:` silently disabled the stale-anchor check before.
+        let t = classify_line("SWAP 2:zz:", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+    }
+
+    #[test]
+    fn overlong_hash_rejected() {
+        // `SWAP 5:abc` used to truncate the hash to `ab`.
+        let t = classify_line("SWAP 5:abc", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+        let t = classify_line("SWAP 5:abcd:", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+    }
+
+    #[test]
+    fn valid_hashes_still_parse() {
+        match classify_op("SWAP 2:67:") {
+            BlockTarget::Replace(range, hash) => {
+                assert_eq!(range.start.line, 2);
+                assert_eq!(hash, Some(0x67));
+            }
+            other => panic!("expected Replace, got {other:?}"),
+        }
+        match classify_op("SWAP 2:6:") {
+            BlockTarget::Replace(_, hash) => assert_eq!(hash, Some(0x06)),
+            other => panic!("expected Replace, got {other:?}"),
+        }
+        match classify_op("SWAP 2:") {
+            BlockTarget::Replace(_, hash) => assert_eq!(hash, None),
+            other => panic!("expected Replace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn range_end_hash_is_captured() {
+        // `DEL 2:d4..4:ee` — the end hash used to be parsed then discarded.
+        match classify_op("DEL 2:d4..4:ee") {
+            BlockTarget::Delete(range, hash) => {
+                assert_eq!(range.start.line, 2);
+                assert_eq!(range.end.line, 4);
+                assert_eq!(hash, Some(0xd4));
+                assert_eq!(range.end_hash, Some(0xee));
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
+        // Trailing hash on a range binds the END line.
+        match classify_op("SWAP 2..3:67:") {
+            BlockTarget::Replace(range, hash) => {
+                assert_eq!(hash, None);
+                assert_eq!(range.end_hash, Some(0x67));
+            }
+            other => panic!("expected Replace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reversed_range_rejected() {
+        let t = classify_line("SWAP 5..0:", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+        let t = classify_line("DEL 9..5", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+    }
+
+    #[test]
+    fn oversized_range_rejected() {
+        let t = classify_line("DEL 1..999999999", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+        let t = classify_line("SWAP 1..2000000:", 1);
+        assert!(!matches!(t, Token::OpBlock { .. }), "got {t:?}");
+    }
+
+    #[test]
+    fn register_charset_restricted() {
+        for bad in ["CUT 5 @a<b", "CUT 5 @a@b", "CUT 5 @'fn'", "PUT @a<b <2"] {
+            let t = classify_line(bad, 1);
+            assert!(!matches!(t, Token::OpBlock { .. }), "{bad} got {t:?}");
+        }
+        // Legit names still work, including - _ . inside the name.
+        match classify_op("CUT 5 @my-reg_1.2") {
+            BlockTarget::Cut(_, _, reg) => assert_eq!(reg.as_deref(), Some("my-reg_1.2")),
+            other => panic!("expected Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn envelope_markers_tolerate_whitespace_and_trailing_text() {
+        assert!(matches!(
+            classify_line("  *** End Patch — done", 1),
+            Token::EnvelopeEnd { .. }
+        ));
+        assert!(matches!(
+            classify_line("*** Abort: user cancelled", 1),
+            Token::Abort { .. }
+        ));
+        assert!(matches!(
+            classify_line("\t*** Begin Patch extra", 1),
+            Token::EnvelopeBegin { .. }
+        ));
+        // No word boundary → not a sentinel.
+        let t = classify_line("*** End Patchwork", 1);
+        assert!(!matches!(t, Token::EnvelopeEnd { .. }));
     }
 }

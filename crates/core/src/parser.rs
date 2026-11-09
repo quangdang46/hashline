@@ -6,8 +6,23 @@ use std::collections::HashMap;
 use regex::Regex;
 
 use crate::messages::{BARE_BODY_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED};
-use crate::patch_format::HL_RANGE_SEP;
+use crate::patch_format::{HL_MAX_RANGE_LINES, HL_RANGE_SEP};
 use crate::prefixes::strip_one_hashline_prefix;
+
+/// Warning emitted once when bare (unprefixed) payload rows had read-output
+/// line prefixes (`N:` / `N:hh|`) stripped from them.
+const BARE_PREFIX_STRIPPED_WARNING: &str = "bare payload rows carried read-output line prefixes \
+     (`N:`/`N:hh|`) which were stripped; prefix payload lines with `+` to make them explicit";
+
+/// Warning emitted when a `+` payload row appears with no operation header
+/// to attach it to — the row is ignored.
+const ORPHAN_PAYLOAD_WARNING: &str =
+    "payload line outside any operation was ignored (no preceding SWAP/DEL/INS header)";
+
+/// Warning emitted once per patch that contains `[path#hash]` section
+/// headers: ops are NOT routed by section — they all apply to the target.
+const SECTION_HEADER_IGNORED_WARNING: &str = "section header(s) `[path#hash]` are informational only — ops are not routed by section; \
+     all ops apply to the patch target file";
 
 /// Check if `word` is a recognized hashline operation keyword.
 /// Used to distinguish "known keyword, wrong format" from "truly unknown keyword".
@@ -55,6 +70,71 @@ fn format_hint_for_keyword(word: &str) -> &'static str {
         _ => "see hashline docs for correct format",
     }
 }
+
+/// Decide whether a bare (unprefixed) text row looks like a failed hunk
+/// operation rather than literal payload.
+///
+/// Returns `Some((word, is_known_keyword))` for op candidates:
+/// - the first word is ALL-CAPS/dotted, at least 2 chars, AND
+/// - it is a recognized op keyword (bad syntax → "malformed operation"), or
+///   it contains a `.` (e.g. `BAR.BAZ`), or it stands alone (`END`), or it
+///   is followed by whitespace + a digit (`FOO 1:`).
+///
+/// `WORD:` label rows (`TODO:`, `NOTE:`, `FIXME:`) are NOT candidates —
+/// they are ordinary payload. Leading whitespace is ignored so indented
+/// lookalikes can't bypass the check.
+fn op_candidate(text: &str) -> Option<(String, bool)> {
+    let trimmed = text.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first_word_end = trimmed.find([' ', '.', ':']).unwrap_or(trimmed.len());
+    let first_word = &trimmed[..first_word_end];
+    if first_word.len() < 2
+        || !first_word
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '.')
+    {
+        return None;
+    }
+    if is_known_op_keyword(first_word) {
+        return Some((first_word.to_string(), true));
+    }
+    if first_word.contains('.') {
+        return Some((first_word.to_string(), false));
+    }
+    let rest = &trimmed[first_word.len()..];
+    let rest_t = rest.trim();
+    if rest_t.is_empty() {
+        // Bare all-caps word on its own line (`END`, `FOO`) — likely a
+        // stray op marker.
+        return Some((first_word.to_string(), false));
+    }
+    if rest_t.starts_with(':') {
+        // `TODO:` / `NOTE:` / `FIXME:` label form — payload, not an op.
+        return None;
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        // `FOO.BAR` — a dotted continuation still looks op-like.
+        return if rest_t.starts_with('.') {
+            Some((first_word.to_string(), false))
+        } else {
+            None
+        };
+    }
+    // `FOO 1:` — unknown keyword followed by what looks like an anchor.
+    if rest_t.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Some((first_word.to_string(), false));
+    }
+    // `FOO BAR` — a second ALL-CAPS word keeps the op-like shape
+    // (`TOTALLY BOGUS`), while `TODO Fix this` stays payload.
+    if rest_t.chars().any(|c| c.is_ascii_uppercase())
+        && rest_t.chars().all(|c| !c.is_ascii_lowercase())
+    {
+        return Some((first_word.to_string(), false));
+    }
+    None
+}
 use crate::tokenizer::{BlockTarget, Token, clone_cursor};
 use crate::types::{Anchor, BlockMode, Cursor, Edit, FileOp, InsertMode, ParsedRange};
 
@@ -62,6 +142,13 @@ fn validate_range_order(range: &ParsedRange, line_num: usize) -> Result<(), Stri
     if range.end.line < range.start.line {
         return Err(format!(
             "line {line_num}: range {}..{} ends before it starts",
+            range.start.line, range.end.line
+        ));
+    }
+    if range.end.line - range.start.line >= HL_MAX_RANGE_LINES {
+        return Err(format!(
+            "line {line_num}: range {}..{} spans more than {HL_MAX_RANGE_LINES} lines; \
+             split it into smaller ranges",
             range.start.line, range.end.line
         ));
     }
@@ -154,6 +241,11 @@ pub struct Executor {
     terminated: bool,
     aborted: bool,
     had_unknown_op: bool,
+    /// Distinct `[path#hash]` section-header paths seen so far. Section
+    /// headers do not route ops — a patch naming more than one file is
+    /// rejected because every op would otherwise hit the single target.
+    header_paths: Vec<String>,
+    header_warned: bool,
 }
 
 impl Default for Executor {
@@ -173,6 +265,8 @@ impl Executor {
             terminated: false,
             aborted: false,
             had_unknown_op: false,
+            header_paths: Vec::new(),
+            header_warned: false,
         }
     }
 
@@ -189,8 +283,11 @@ impl Executor {
                 self.terminated = true;
                 self.aborted = true;
             }
-            Token::Header { .. } => {
+            Token::Header {
+                path, file_hash, ..
+            } => {
                 self.flush_pending();
+                self.note_section_header(&path, file_hash.as_deref());
             }
             Token::Blank { .. } => {
                 if self.pending.is_some() {
@@ -213,7 +310,12 @@ impl Executor {
                     | BlockTarget::Cut(r, _, _) = &target
                     {
                         if let Err(e) = validate_range_order(r, line_num) {
+                            // Reversed or oversized ranges are rejected
+                            // atomically — a reversed range used to degrade
+                            // into an insert-only SWAP, and a huge range
+                            // would hang materializing per-line edits.
                             self.warnings.push(e);
+                            self.had_unknown_op = true;
                         }
                     }
                 }
@@ -236,6 +338,8 @@ impl Executor {
             self.warnings.clear();
             self.file_op = None;
             self.pending = None;
+            self.header_paths.clear();
+            self.header_warned = false;
             let aborted = true;
             self.edit_index = 0;
             self.terminated = false;
@@ -254,6 +358,8 @@ impl Executor {
             self.file_op = None;
             self.pending = None;
             self.had_unknown_op = false;
+            self.header_paths.clear();
+            self.header_warned = false;
             self.edit_index = 0;
             self.terminated = false;
             self.aborted = false;
@@ -270,13 +376,80 @@ impl Executor {
         self.pending = None;
         self.terminated = false;
         self.aborted = false;
+        self.header_paths.clear();
+        self.header_warned = false;
         (edits, warnings, file_op, aborted)
+    }
+
+    /// Track a `[path#hash]` section header. Headers do not route ops to
+    /// other files — `parse_patch` produces edits for a single target — so
+    /// a patch naming more than one distinct path is rejected outright
+    /// (otherwise ops meant for file B would silently hit file A). A single
+    /// repeated path stays tolerated for compatibility, with a warning.
+    fn note_section_header(&mut self, path: &str, file_hash: Option<&str>) {
+        if let Some(first) = self.header_paths.first() {
+            if first != path {
+                let msg = format!(
+                    "patch contains `[path#hash]` sections for multiple files \
+                     (`{first}` vs `{path}`); `hashline patch` applies every op to the \
+                     single target file — split the patch or remove the extra sections"
+                );
+                if !self.warnings.contains(&msg) {
+                    self.warnings.push(msg);
+                }
+                self.had_unknown_op = true;
+                return;
+            }
+        } else {
+            self.header_paths.push(path.to_string());
+        }
+        if !self.header_warned {
+            self.header_warned = true;
+            let tag = match file_hash {
+                Some(h) => format!("[{path}#{h}]"),
+                None => format!("[{path}]"),
+            };
+            let mut msg = SECTION_HEADER_IGNORED_WARNING.to_string();
+            msg.push_str(&format!(" (first header: {tag})"));
+            self.warnings.push(msg);
+        }
+    }
+
+    /// Detect a bare ALL-CAPS row that looks like a failed hunk operation
+    /// (`END`, `FOO 1:`, `BAR.BAZ`) and flag the patch for atomic rejection.
+    /// `TODO:`/`NOTE:`/`FIXME:`-style label rows and leading-whitespace
+    /// variants are payload, not ops.
+    fn flag_op_candidate(&mut self, text: &str) {
+        let Some((word, known)) = op_candidate(text) else {
+            return;
+        };
+        if known {
+            let hint = format_hint_for_keyword(&word);
+            let msg =
+                format!("malformed operation `{word}` — expected format:\n            {hint}");
+            if !self.warnings.contains(&msg) {
+                self.warnings.push(msg);
+            }
+        } else {
+            let msg = format!("unknown operation `{word}`");
+            if !self.warnings.contains(&msg) {
+                self.warnings.push(format!(
+                    "{msg} — use SWAP, DEL, INS.PRE, INS.POST, \
+                     INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
+                     INS.BLK, CUT, or PUT"
+                ));
+            }
+        }
+        self.had_unknown_op = true;
     }
 
     fn handle_literal_payload(&mut self, text: &str, line_num: usize) {
         let pending = match &self.pending {
             Some(p) => p,
             None => {
+                if !self.warnings.contains(&ORPHAN_PAYLOAD_WARNING.to_string()) {
+                    self.warnings.push(ORPHAN_PAYLOAD_WARNING.to_owned());
+                }
                 return;
             }
         };
@@ -342,35 +515,9 @@ impl Executor {
             // ops but were never tokenized as OpBlock — flag and abort atomically.
             // Fix #113/#114/#115: Distinguish known keywords with bad syntax from
             // truly unknown keywords, and provide format-specific hints.
-            if !text.trim().is_empty() {
-                let first_word_end = text.find([' ', '.', ':']).unwrap_or(text.len());
-                let first_word = &text[..first_word_end];
-                if first_word.len() >= 2
-                    && first_word
-                        .chars()
-                        .all(|c| c.is_ascii_uppercase() || c == '.')
-                {
-                    if is_known_op_keyword(first_word) {
-                        let hint = format_hint_for_keyword(first_word);
-                        let msg = format!(
-                            "malformed operation `{first_word}` — expected format:\n            {hint}"
-                        );
-                        if !self.warnings.contains(&msg) {
-                            self.warnings.push(msg);
-                        }
-                    } else if !self
-                        .warnings
-                        .contains(&format!("unknown operation `{first_word}`"))
-                    {
-                        self.warnings.push(format!(
-                            "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
-                             INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
-                             INS.BLK, CUT, or PUT"
-                        ));
-                    }
-                    self.had_unknown_op = true;
-                    return;
-                }
+            self.flag_op_candidate(text);
+            if self.had_unknown_op {
+                return;
             }
 
             if !self
@@ -407,35 +554,7 @@ impl Executor {
         // that look like they're trying to be hunk operations but failed to parse.
         // Fix #113/#114/#115: Distinguish known keywords with bad syntax from
         // truly unknown keywords, and provide format-specific hints.
-        if !text.trim().is_empty() {
-            let first_word_end = text.find([' ', '.', ':']).unwrap_or(text.len());
-            let first_word = &text[..first_word_end];
-            if first_word.len() >= 2
-                && first_word
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c == '.')
-            {
-                if is_known_op_keyword(first_word) {
-                    let hint = format_hint_for_keyword(first_word);
-                    let msg = format!(
-                        "malformed operation `{first_word}` — expected format:\n            {hint}"
-                    );
-                    if !self.warnings.contains(&msg) {
-                        self.warnings.push(msg);
-                    }
-                } else if !self
-                    .warnings
-                    .contains(&format!("unknown operation `{first_word}`"))
-                {
-                    self.warnings.push(format!(
-                        "unknown operation `{first_word}` — use SWAP, DEL, INS.PRE, INS.POST, \
-                         INS.HEAD, INS.TAIL, SWAP.BLK, DEL.BLK, INS.BLK.POST, INS.BLK.PRE, \
-                         INS.BLK, CUT, or PUT"
-                    ));
-                }
-                self.had_unknown_op = true;
-            }
-        }
+        self.flag_op_candidate(text);
     }
 
     fn handle_blank(&mut self) {
@@ -520,18 +639,35 @@ impl Executor {
             ..
         } = pending;
 
-        Self::strip_bare_prefixes_if_uniform(&mut payloads);
+        if Self::strip_bare_prefixes_if_uniform(&mut payloads)
+            && !self
+                .warnings
+                .contains(&BARE_PREFIX_STRIPPED_WARNING.to_string())
+        {
+            self.warnings.push(BARE_PREFIX_STRIPPED_WARNING.to_owned());
+        }
 
         let payload_texts: Vec<String> = payloads.into_iter().map(|r| r.text).collect();
 
         match &target {
             BlockTarget::Delete(range, hash) => {
-                for (i, anchor) in expand_range(range).into_iter().enumerate() {
+                let anchors = expand_range(range);
+                let last = anchors.len().saturating_sub(1);
+                for (i, anchor) in anchors.into_iter().enumerate() {
+                    // Start hash binds the first line; a `:HH` written after
+                    // the range end (`DEL 2:d4..4:ee`) binds the last line.
+                    let expected_hash = if i == 0 {
+                        *hash
+                    } else if i == last {
+                        range.end_hash
+                    } else {
+                        None
+                    };
                     self.edits.push(Edit::Delete {
                         anchor,
                         line_num,
                         index: self.edit_index,
-                        expected_hash: if i == 0 { *hash } else { None },
+                        expected_hash,
                     });
                     self.edit_index += 1;
                 }
@@ -592,12 +728,21 @@ impl Executor {
             BlockTarget::Replace(range, hash) => {
                 if payload_texts.is_empty() {
                     // SWAP with no body = delete
-                    for (i, anchor) in expand_range(range).into_iter().enumerate() {
+                    let anchors = expand_range(range);
+                    let last = anchors.len().saturating_sub(1);
+                    for (i, anchor) in anchors.into_iter().enumerate() {
+                        let expected_hash = if i == 0 {
+                            *hash
+                        } else if i == last {
+                            range.end_hash
+                        } else {
+                            None
+                        };
                         self.edits.push(Edit::Delete {
                             anchor,
                             line_num,
                             index: self.edit_index,
-                            expected_hash: if i == 0 { *hash } else { None },
+                            expected_hash,
                         });
                         self.edit_index += 1;
                     }
@@ -618,12 +763,21 @@ impl Executor {
                     });
                     self.edit_index += 1;
                 }
-                for (i, anchor) in expand_range(range).into_iter().enumerate() {
+                let anchors = expand_range(range);
+                let last = anchors.len().saturating_sub(1);
+                for (i, anchor) in anchors.into_iter().enumerate() {
+                    let expected_hash = if i == 0 {
+                        *hash
+                    } else if i == last {
+                        range.end_hash
+                    } else {
+                        None
+                    };
                     self.edits.push(Edit::Delete {
                         anchor,
                         line_num,
                         index: self.edit_index,
-                        expected_hash: if i == 0 { *hash } else { None },
+                        expected_hash,
                     });
                     self.edit_index += 1;
                 }
@@ -1071,11 +1225,17 @@ mod cut_put_tests {
     }
 
     #[test]
-    fn cut_range_reversed_emits_warning() {
-        let (_edits, warnings, _file_op, _aborted) = parse_patch("CUT 9..5 @fn");
+    fn cut_range_reversed_rejected() {
+        // Reversed ranges are rejected at tokenize time now (they used to
+        // degrade into a warning + a corrupt edit).
+        let (edits, warnings, _file_op, aborted) = parse_patch("CUT 9..5 @fn");
+        assert!(edits.is_empty());
+        assert!(aborted);
         assert!(
-            warnings.iter().any(|w| w.contains("ends before it starts")),
-            "expected range-order warning, got {warnings:?}"
+            warnings
+                .iter()
+                .any(|w| w.contains("malformed operation `CUT`")),
+            "expected malformed-op warning, got {warnings:?}"
         );
     }
 }
@@ -1167,20 +1327,23 @@ mod regression_113_114_115_tests {
 
     #[test]
     fn stale_anchor_with_pipe_not_masked_as_unknown() {
-        // Stale anchor `SWAP 99:zz |stale line` — should be recognized as
-        // a SWAP operation (not "unknown"), and the applier should detect the
-        // stale/out-of-range anchor.
-        let (edits, warnings, _file_op, _aborted) = parse_patch("SWAP 99:zz |stale line");
-        // The pipe fix should recognize this as a SWAP, not flag "unknown".
+        // Stale anchor `SWAP 99:zz |stale line` — `zz` is a malformed hash,
+        // so the whole patch is now rejected (previously it applied with the
+        // stale-anchor check silently disabled). It must be reported as a
+        // malformed KNOWN op, never "unknown operation".
+        let (edits, warnings, _file_op, aborted) = parse_patch("SWAP 99:zz |stale line");
         assert!(
             !warnings.iter().any(|w| w.contains("unknown operation")),
             "stale anchor SWAP with pipe should NOT be flagged as unknown, got: {warnings:?}"
         );
-        // The edit should exist (the parser recognized the operation).
         assert!(
-            !edits.is_empty(),
-            "stale anchor SWAP with pipe should produce edits (applier handles stale), got warnings: {warnings:?}"
+            warnings
+                .iter()
+                .any(|w| w.contains("malformed operation `SWAP`")),
+            "expected malformed-operation warning, got: {warnings:?}"
         );
+        assert!(edits.is_empty(), "malformed hash must reject the patch");
+        assert!(aborted, "expected aborted=true for malformed hash");
     }
 
     #[test]
@@ -1203,6 +1366,215 @@ mod regression_113_114_115_tests {
                 .iter()
                 .any(|w| w.contains("unknown operation `FOOBAR`")),
             "truly unknown keyword should be flagged as unknown, got: {warnings:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod audit_hardening_tests {
+    use super::*;
+    use crate::types::Edit;
+
+    // ---- bd-tokenizer-hardening-zg5 ----
+
+    #[test]
+    fn huge_line_number_does_not_panic_or_wrap() {
+        // Exact audit repro: `SWAP 99999999999999999999999999:` panicked in
+        // debug / wrapped to a wrong line in release.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 99999999999999999999999999:\n+payload");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 2);
+        match &edits[1] {
+            Edit::Delete { anchor, .. } => assert_eq!(anchor.line, usize::MAX),
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn huge_del_range_rejected_not_hang() {
+        // `DEL 1..999999999` used to materialize ~1G anchors and hang.
+        let (edits, warnings, _f, aborted) = parse_patch("DEL 1..999999999");
+        assert!(edits.is_empty());
+        assert!(aborted);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("malformed operation `DEL`"))
+        );
+    }
+
+    #[test]
+    fn non_hex_hash_rejected_whole_patch() {
+        for patch in [
+            "SWAP 2:zz:\n+replaced",
+            "DEL 2:zz",
+            "INS.POST 3:qq:\n+x",
+            "SWAP 5:abc\n+x",
+            "SWAP 5:abcd:\n+x",
+        ] {
+            let (edits, _w, _f, aborted) = parse_patch(patch);
+            assert!(edits.is_empty(), "{patch} produced edits: {edits:?}");
+            assert!(aborted, "{patch} was not aborted");
+        }
+    }
+
+    #[test]
+    fn range_end_hash_verified_on_last_line() {
+        // `DEL 2:d4..4:ee` — end hash used to be silently discarded.
+        let (edits, _w, _f, aborted) = parse_patch("DEL 2:d4..4:ee");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 3);
+        let hashes: Vec<Option<u8>> = edits
+            .iter()
+            .map(|e| match e {
+                Edit::Delete { expected_hash, .. } => *expected_hash,
+                other => panic!("expected Delete, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(hashes, vec![Some(0xd4), None, Some(0xee)]);
+    }
+
+    #[test]
+    fn reversed_range_rejected() {
+        // `SWAP 5..0:` used to degrade into an insert-only edit.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 5..0:\n+payload");
+        assert!(edits.is_empty());
+        assert!(aborted);
+        let (edits, _w, _f, aborted) = parse_patch("DEL 9..5");
+        assert!(edits.is_empty());
+        assert!(aborted);
+    }
+
+    #[test]
+    fn register_names_with_sigils_rejected() {
+        for patch in [
+            "CUT 5 @a<b",
+            "CUT 5 @a@b",
+            "CUT 5 @'fn'",
+            "PUT @a<b <2",
+            "PUT @\"fn\" <2",
+        ] {
+            let (edits, _w, _f, aborted) = parse_patch(patch);
+            assert!(edits.is_empty(), "{patch} produced edits: {edits:?}");
+            assert!(aborted, "{patch} was not aborted");
+        }
+    }
+
+    // ---- bd-patch-boundary-syntax-imw ----
+
+    #[test]
+    fn end_patch_marker_with_whitespace_and_trailing_text_terminates() {
+        // `  *** End Patch — done` used to be written INTO the file.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 1:\n+kept\n  *** End Patch — done\n+lost");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 2); // 1 insert + 1 delete for SWAP 1:
+        match &edits[0] {
+            Edit::Insert { text, .. } => assert_eq!(text, "kept"),
+            other => panic!("expected Insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn abort_marker_with_trailing_text_aborts() {
+        let (_edits, _w, _f, aborted) =
+            parse_patch("SWAP 1:\n+x\n*** Abort: user cancelled\nDEL 2");
+        assert!(aborted);
+    }
+
+    #[test]
+    fn all_caps_label_rows_are_payload_not_rejected() {
+        // `TODO:`/`NOTE:`/`FIXME:` bare payload rows used to reject the
+        // whole patch via the over-inclusive ALL-CAPS detector.
+        let (edits, warnings, _f, aborted) =
+            parse_patch("SWAP 1:\n+before\nTODO: fix later\nNOTE: keep\nFIXME: x");
+        assert!(!aborted, "warnings: {warnings:?}");
+        assert_eq!(edits.len(), 5); // 4 inserts + 1 delete
+        assert!(
+            warnings.iter().any(|w| w.contains("bare body auto-piped")),
+            "expected bare-body warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn leading_whitespace_cannot_bypass_op_detection() {
+        // `  FOO 1:` used to slip past the detector via leading whitespace.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 1:\n+x\n  FOO 1:");
+        assert!(edits.is_empty());
+        assert!(aborted);
+    }
+
+    #[test]
+    fn bare_read_echo_prefix_is_stripped_with_warning() {
+        // A bare `N:hh|content` row used to be silently mangled to
+        // `hh|content`; now it strips to `content` AND warns.
+        let (edits, warnings, _f, aborted) = parse_patch("SWAP 1:\n+x\n2:ab|content");
+        assert!(!aborted);
+        let texts: Vec<&str> = edits
+            .iter()
+            .filter_map(|e| match e {
+                Edit::Insert {
+                    mode: Some(crate::types::InsertMode::Replacement),
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["x", "content"]);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("read-output line prefixes")),
+            "expected prefix-strip warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn orphan_payload_row_warns() {
+        // `+row` before any op header used to be silently dropped.
+        let (_edits, warnings, _f, _aborted) = parse_patch("+orphan\nSWAP 1:\n+x");
+        assert!(
+            warnings.iter().any(|w| w.contains("outside any operation")),
+            "expected orphan-payload warning, got {warnings:?}"
+        );
+    }
+
+    // ---- bd-section-headers-137 ----
+
+    #[test]
+    fn multi_file_section_headers_rejected() {
+        // Ops for `[b.rs]` used to silently apply to the CLI target file.
+        let (edits, warnings, _f, aborted) =
+            parse_patch("[a.rs#1234]\nSWAP 1:\n+x\n[b.rs#5678]\nDEL 2");
+        assert!(edits.is_empty());
+        assert!(aborted);
+        assert!(
+            warnings.iter().any(|w| w.contains("multiple files")),
+            "expected multi-file rejection, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn single_section_header_tolerated_with_warning() {
+        // Same-path (or single) headers remain tolerated for compatibility,
+        // but now produce an explicit warning that they don't route/bind.
+        let (edits, warnings, _f, aborted) = parse_patch("[file.txt#abcd]\nDEL 2");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 1);
+        assert!(
+            warnings.iter().any(|w| w.contains("informational only")),
+            "expected section-header warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn payload_after_section_header_warns_instead_of_silent_drop() {
+        let (_edits, warnings, _f, _aborted) = parse_patch("SWAP 1:\n+x\n[other.rs#9999]\n+y");
+        // `+y` lands after the header flushed the pending SWAP — it is an
+        // orphan payload row and must at least warn.
+        assert!(
+            warnings.iter().any(|w| w.contains("outside any operation")),
+            "expected orphan-payload warning, got {warnings:?}"
         );
     }
 }

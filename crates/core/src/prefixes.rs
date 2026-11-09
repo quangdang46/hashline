@@ -41,6 +41,21 @@ fn strip_one_leading_hashline_prefix(line: &str) -> String {
         i += 1;
     }
     if i > digits_start && i < bytes.len() && bytes[i] == b':' {
+        // Anchor form `N:hh|content` (hashline `read` output): consume the
+        // 1-4 hex hash and the `|` separator too, so the content survives
+        // intact instead of being left behind as `hh|content`.
+        let mut j = i + 1;
+        let hex_start = j;
+        while j < bytes.len() && bytes[j].is_ascii_hexdigit() && j - hex_start < 4 {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j].is_ascii_hexdigit() {
+            // More than 4 hex digits — not an anchor hash; strip only `N:`.
+            return line[i + 1..].to_owned();
+        }
+        if j > hex_start && j < bytes.len() && bytes[j] == b'|' {
+            return line[j + 1..].to_owned();
+        }
         return line[i + 1..].to_owned();
     }
     line.to_owned()
@@ -175,4 +190,32 @@ pub fn hashline_parse_text(edit: &str) -> Vec<String> {
         .map(String::from)
         .collect();
     strip_new_line_prefixes(&lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_anchor_form_prefix_fully() {
+        // `N:hh|content` (hashline read output) must strip through the `|`,
+        // not leave `hh|content` behind.
+        assert_eq!(strip_one_hashline_prefix("12:ab|content"), "content");
+        assert_eq!(strip_one_hashline_prefix("1:9b|fn main() {"), "fn main() {");
+        assert_eq!(strip_one_hashline_prefix("+12:ab|content"), "content");
+        // Plain `N:` form still works.
+        assert_eq!(strip_one_hashline_prefix("12:content"), "content");
+        // Non-hex after `N:` is not an anchor hash — only `N:` strips.
+        assert_eq!(strip_one_hashline_prefix("12:foo|bar"), "foo|bar");
+    }
+
+    #[test]
+    fn strip_new_line_prefixes_handles_read_echo() {
+        let lines = vec![
+            "1:9b|fn main() {".to_string(),
+            "2:89|    let x = 1;".to_string(),
+        ];
+        let out = strip_new_line_prefixes(&lines);
+        assert_eq!(out, vec!["fn main() {", "    let x = 1;"]);
+    }
 }

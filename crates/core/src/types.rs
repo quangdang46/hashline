@@ -125,6 +125,10 @@ pub struct ApplyResult {
 pub struct ParsedRange {
     pub start: Anchor,
     pub end: Anchor,
+    /// Optional short-hash bound to the END anchor, from syntax like
+    /// `DEL 2:d4..4:ee` where `:ee` follows the end line number. Verified
+    /// against the last line of the expanded range at apply time.
+    pub end_hash: Option<u8>,
 }
 
 /// Resolved 1-indexed inclusive line span of a block target.
