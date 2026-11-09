@@ -109,30 +109,44 @@ pub(crate) fn resolve_span(
         entries
     };
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let spec = spec_for(ext, path);
+    // `CMakeLists.txt` carries a `.txt` extension but is CMake source —
+    // detect it by basename, mirroring the `Dockerfile` special-case in
+    // `spec_for`. Without this, `family_for`/`spec_for`/`keyword_resolve`
+    // all see `txt` and apply the default (`//`-comment) spec, detaching
+    // `endif()`/`endfunction()` from their blocks.
+    let lang_ext = if is_cmake_source(path) { "cmake" } else { ext };
+    let spec = spec_for(lang_ext, path);
 
     // The bool marks whether signature-continuation extension is safe:
     // brace/indent spans can start on a multi-line signature tail (`) {`,
     // `):`), but keyword-delimited spans (CMake `if(…)`, Svelte `{#if}`)
     // legitimately end their header line with `)`/`>` and must not be
     // walked upward into an enclosing construct.
-    let (mut span, sig_extendable) = match family_for(ext) {
+    let (mut span, sig_extendable) = match family_for(lang_ext) {
         Family::Brace => brace_resolve(entries, anchor_index, &spec).map(|s| (s, true)),
         Family::Indent => indent_resolve(entries, anchor_index, &spec)
             .or_else(|| brace_resolve(entries, anchor_index, &spec))
             .map(|s| (s, true)),
         Family::Ruby => ruby_resolve(entries, anchor_index).map(|s| (s, true)),
-        Family::KeywordFirst => keyword_resolve(entries, anchor_index, ext)
+        Family::KeywordFirst => keyword_resolve(entries, anchor_index, lang_ext)
             .map(|s| (s, false))
             .or_else(|| brace_resolve(entries, anchor_index, &spec).map(|s| (s, true)))
             .or_else(|| indent_resolve(entries, anchor_index, &spec).map(|s| (s, true))),
-        Family::BraceThenKeyword => brace_resolve(entries, anchor_index, &spec)
-            .map(|s| (s, true))
-            .or_else(|| keyword_resolve(entries, anchor_index, ext).map(|s| (s, false)))
-            .or_else(|| indent_resolve(entries, anchor_index, &spec).map(|s| (s, true))),
+        Family::BraceThenKeyword => {
+            if lang_ext == "php" {
+                php_resolve(entries, anchor_index, &spec)
+            } else {
+                brace_resolve(entries, anchor_index, &spec)
+                    .map(|s| (s, true))
+                    .or_else(|| {
+                        keyword_resolve(entries, anchor_index, lang_ext).map(|s| (s, false))
+                    })
+                    .or_else(|| indent_resolve(entries, anchor_index, &spec).map(|s| (s, true)))
+            }
+        }
         Family::Default => brace_resolve(entries, anchor_index, &spec)
             .map(|s| (s, true))
-            .or_else(|| keyword_resolve(entries, anchor_index, ext).map(|s| (s, false)))
+            .or_else(|| keyword_resolve(entries, anchor_index, lang_ext).map(|s| (s, false)))
             .or_else(|| indent_resolve(entries, anchor_index, &spec).map(|s| (s, true))),
     }?;
 
@@ -163,6 +177,15 @@ pub(crate) fn resolve_span(
         }
     }
     Some(span)
+}
+
+/// `CMakeLists.txt` is CMake source regardless of its `.txt` extension —
+/// filename-based detection mirroring the `Dockerfile` special-case in
+/// [`spec_for`]. Case-insensitive to match CMake's own leniency.
+pub(crate) fn is_cmake_source(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("cmakelists.txt"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1592,6 +1615,50 @@ fn ruby_resolve(entries: &[LineEntry], anchor_index: usize) -> Option<(usize, us
 // Keyword-delimited resolution (CMake, PHP alternative syntax, Svelte)
 // ---------------------------------------------------------------------------
 
+/// PHP mixes brace blocks (`if (…) { … }`) with alternative-syntax blocks
+/// (`if (…): … endif;`, `foreach (…): … endforeach;`) that brace matching
+/// cannot see — the alt syntax has no braces at all. Resolve both ways and
+/// prefer the keyword span only when it is strictly inside the brace span
+/// (the alt-syntax construct is the innermost block) AND it actually
+/// contains the anchor: `keyword_balanced` can return a span that ends
+/// before the anchor when an `endif;` sits above it, which must not win
+/// over the enclosing brace block.
+///
+/// Returns `(span, sig_extendable)` like the other family arms.
+fn php_resolve(
+    entries: &[LineEntry],
+    anchor_index: usize,
+    spec: &Spec,
+) -> Option<(LineSpan, bool)> {
+    let brace = brace_resolve(entries, anchor_index, spec);
+    let keyword_any = keyword_resolve(entries, anchor_index, "php");
+    let keyword_containing = keyword_any.filter(|(s, e)| *s <= anchor_index && *e >= anchor_index);
+    Some(match (brace, keyword_containing) {
+        (Some(b), Some(k)) => {
+            let k_inside_b = k.0 >= b.0 && k.1 <= b.1 && k != b;
+            // The brace span can come from `brace_resolve`'s forward-scan
+            // fallback (doc/signature lines resolve to the NEXT brace
+            // block) and therefore not contain the anchor at all — a
+            // keyword span that does contain it is the better answer.
+            let b_covers = b.0 <= anchor_index && b.1 >= anchor_index;
+            if k_inside_b || !b_covers {
+                (k, false)
+            } else {
+                (b, true)
+            }
+        }
+        (Some(b), None) => (b, true),
+        // No brace coverage: a containing keyword span wins; otherwise
+        // keep the historical keyword fallback (a bounded span beats the
+        // indent resolver's run-to-EOF for PHP's brace-less constructs),
+        // then indent as a last resort.
+        (None, Some(k)) => (k, false),
+        (None, None) => keyword_any
+            .map(|k| (k, false))
+            .or_else(|| indent_resolve(entries, anchor_index, spec).map(|s| (s, true)))?,
+    })
+}
+
 /// Generic `opener … ender` keyword balancer (CMake, PHP alt syntax).
 fn keyword_resolve(
     entries: &[LineEntry],
@@ -1771,7 +1838,11 @@ pub fn resolve_block_boundaries(
     }
 
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let language = language_for_extension(extension);
+    let language = if is_cmake_source(path) {
+        Some("CMake".into())
+    } else {
+        language_for_extension(extension)
+    };
 
     Ok((language, start, end))
 }
@@ -2033,5 +2104,54 @@ mod tests {
         let entries = entries_for(src);
         assert_eq!(entries.len(), 3); // includes phantom ""
         assert_eq!(resolve_span(&entries, 0, Path::new("x.py")), Some((0, 1)));
+    }
+
+    // -- bd-block-resolver-polish-wi3h ---------------------------------------
+
+    #[test]
+    fn cmake_lists_txt_detected_by_basename() {
+        // `CMakeLists.txt` has a `.txt` extension but is CMake: `#` comments
+        // must not count braces and `if/endif`, `function/endfunction`
+        // must balance — same spans as the `.cmake` fixture above.
+        let src = "cmake_minimum_required(VERSION 3.28)\n# a comment with } brace\nproject(demo)\n\nfunction(deploy_app)\n    if(X)\n        message(STATUS \"p\")\n    endif()\nendfunction()\n";
+        // Anchor inside the if: resolves the if/endif block (lines 6-8).
+        assert_eq!(span_of(src, 7, "CMakeLists.txt"), Some((6, 8)));
+        // Anchor on endfunction resolves the whole function (lines 5-9).
+        assert_eq!(span_of(src, 9, "CMakeLists.txt"), Some((5, 9)));
+        // Anchor on the function header resolves the function too.
+        assert_eq!(span_of(src, 5, "CMakeLists.txt"), Some((5, 9)));
+        // Case-insensitive basename still detects CMake.
+        assert_eq!(span_of(src, 7, "cmakelists.txt"), Some((6, 8)));
+        // A non-CMake `.txt` file keeps the default spec: the `#` comment
+        // brace unbalances resolution (documents the filename boundary).
+        assert_ne!(span_of(src, 7, "other.txt"), Some((6, 8)));
+    }
+
+    #[test]
+    fn php_alt_syntax_inside_brace_block() {
+        // `if ($x): … endif;` nested in a `{}` function: the alt-syntax
+        // block has no braces, so it must win over the enclosing function
+        // when it is the innermost construct containing the anchor.
+        let src = "<?php\nfunction f($x) {\n    if ($x):\n        echo 1;\n    else:\n        echo 2;\n    endif;\n    return 0;\n}\n";
+        // Anchors inside the alt-syntax if resolve to the if-block (3-7).
+        assert_eq!(span_of(src, 3, "x.php"), Some((3, 7)));
+        assert_eq!(span_of(src, 4, "x.php"), Some((3, 7)));
+        assert_eq!(span_of(src, 5, "x.php"), Some((3, 7)));
+        assert_eq!(span_of(src, 7, "x.php"), Some((3, 7)));
+        // Anchors outside it still resolve the enclosing function (2-9) —
+        // the keyword balancer's non-containing span must not win.
+        assert_eq!(span_of(src, 8, "x.php"), Some((2, 9)));
+        assert_eq!(span_of(src, 2, "x.php"), Some((2, 9)));
+    }
+
+    #[test]
+    fn php_brace_if_inside_alt_syntax() {
+        // Brace `if {}` nested inside alt-syntax `if:` — the brace block is
+        // the innermost span and must win over the outer keyword block.
+        let src = "<?php\nif ($a):\n    if ($b) {\n        y();\n    }\nendif;\n";
+        assert_eq!(span_of(src, 4, "x.php"), Some((3, 5)));
+        // Anchor on the outer alt header still gets the whole construct.
+        assert_eq!(span_of(src, 2, "x.php"), Some((2, 6)));
+        assert_eq!(span_of(src, 6, "x.php"), Some((2, 6)));
     }
 }

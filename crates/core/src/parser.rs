@@ -482,9 +482,12 @@ impl Executor {
     /// (`END`, `FOO 1:`, `BAR.BAZ`) and flag the patch for atomic rejection.
     /// `TODO:`/`NOTE:`/`FIXME:`-style label rows and leading-whitespace
     /// variants are payload, not ops.
-    fn flag_op_candidate(&mut self, text: &str) {
+    ///
+    /// Returns `true` when the line was recognized as an op candidate
+    /// (the patch will be rejected atomically via `had_unknown_op`).
+    fn flag_op_candidate(&mut self, text: &str) -> bool {
         let Some((word, known)) = op_candidate(text) else {
-            return;
+            return false;
         };
         if known {
             let hint = format_hint_for_keyword(&word);
@@ -504,6 +507,29 @@ impl Executor {
             }
         }
         self.had_unknown_op = true;
+        true
+    }
+
+    /// `DEL`/`DEL.BLK` take no payload: a content line in their body is
+    /// either an op candidate (reject the patch atomically) or stray text
+    /// that would previously be dropped silently — warn once instead.
+    fn flag_content_after_no_payload_op(&mut self, text: &str, op: &str) {
+        if self.flag_op_candidate(text) {
+            return;
+        }
+        let msg = format!("content after `{op}` was ignored (`{op}` takes no payload lines)");
+        if !self.warnings.contains(&msg) {
+            self.warnings.push(msg);
+        }
+    }
+
+    /// The payload-less op (if any) a pending target belongs to.
+    fn no_payload_op_name(target: &BlockTarget) -> Option<&'static str> {
+        match target {
+            BlockTarget::Delete(_, _) => Some("DEL"),
+            BlockTarget::DeleteBlock(..) => Some("DEL.BLK"),
+            _ => None,
+        }
     }
 
     fn handle_literal_payload(&mut self, text: &str, line_num: usize) {
@@ -516,14 +542,12 @@ impl Executor {
                 return;
             }
         };
-        if matches!(pending.target, BlockTarget::Delete(_, _)) {
-            return;
-        }
-        if matches!(pending.target, BlockTarget::DeleteBlock(..)) {
-            // DEL.BLK takes no payload, but garbage lines must still pass
-            // through the unknown-op guard — previously they were swallowed
-            // silently until the next valid op.
-            self.flag_op_candidate(text);
+        if let Some(op) = Self::no_payload_op_name(&pending.target) {
+            // DEL/DEL.BLK take no payload, but garbage lines must still
+            // pass through the unknown-op guard and at least warn —
+            // previously they were swallowed silently until the next
+            // valid op.
+            self.flag_content_after_no_payload_op(text, op);
             return;
         }
 
@@ -558,13 +582,10 @@ impl Executor {
                 self.handle_blank();
                 return;
             }
-            if matches!(pending.target, BlockTarget::Delete(_, _)) {
-                return;
-            }
-            if matches!(pending.target, BlockTarget::DeleteBlock(..)) {
-                // DEL.BLK takes no payload — but still run the unknown-op
-                // guard so stray op-like lines can't slip through silently.
-                self.flag_op_candidate(text);
+            if let Some(op) = Self::no_payload_op_name(&pending.target) {
+                // DEL/DEL.BLK take no payload — run the unknown-op guard
+                // and warn on stray text so it can't slip through silently.
+                self.flag_content_after_no_payload_op(text, op);
                 return;
             }
             if text.trim_start().starts_with('-') {
@@ -1942,5 +1963,150 @@ mod inline_payload_tests {
         let (edits, _w, _f, aborted) = parse_patch("SWAP 2:zz");
         assert!(edits.is_empty());
         assert!(aborted);
+    }
+
+    // ---- bd-trailing-garbage-c28n: trailing junk rejects atomically ----
+
+    #[test]
+    fn trailing_garbage_ops_reject_atomically() {
+        // Every repro from the regression hunt: malformed anchors with
+        // trailing junk must produce NO edits and a malformed/unknown-op
+        // warning (→ PATCH_REJECTED), never a silent unanchored apply.
+        for patch in [
+            "SWAP 1.5:\n+x",  // `.5` is junk, not a range
+            "SWAP 2 9c:\n+x", // space + junk after anchor
+            "SWAP 2xyz\n+x",  // junk fused to line number
+            "SWAP 2:67x\n+x", // junk fused to hash
+            "SWAP 2:67 junk", // bare text not `:`-anchored
+            "INS 2 9c:\n+x",
+            "INS.TAIL junk\n+x",
+            "DEL 2xyz",
+            "DEL 2 JUNK",
+            "DEL 2:67 JUNK",
+            "DEL.BLK 2 junk",
+            "CUT 5..9 junk",
+            "PUT @fn <2 junk",
+            "REM junk",
+        ] {
+            let (edits, warnings, _f, _aborted) = parse_patch(patch);
+            assert!(
+                edits.is_empty(),
+                "patch {patch:?} produced edits: {edits:?}"
+            );
+            assert!(
+                warnings.iter().any(|w| w.contains("operation")),
+                "patch {patch:?}, warnings: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trailing_garbage_rejects_whole_patch_not_just_line() {
+        // A valid op followed by a junk-tailed op must reject the ENTIRE
+        // patch atomically — the good op must not apply either.
+        let (edits, warnings, _f, aborted) = parse_patch("SWAP 1:+ok\nSWAP 2 9c:\n+bad");
+        assert!(edits.is_empty(), "edits: {edits:?}");
+        assert!(aborted);
+        assert!(warnings.iter().any(|w| w.contains("malformed operation")));
+    }
+
+    #[test]
+    fn legal_trailing_forms_still_apply() {
+        // Sanity: the recognized inline-payload forms from afca603 are
+        // unaffected by the strict trailing check.
+        for (patch, expect_text) in [
+            ("SWAP 2:+x", "x"),
+            ("SWAP 2 +x", "x"),
+            ("SWAP 2:67:+x", "x"),
+            ("SWAP 2:67:bare", "bare"),
+            ("SWAP 2..3:67:bare", "bare"),
+            ("INS.TAIL:raw", "raw"),
+            ("INS.PRE 3:+x", "x"),
+        ] {
+            let (edits, _w, _f, aborted) = parse_patch(patch);
+            assert!(!aborted, "patch: {patch}");
+            assert!(
+                edits.iter().any(|e| matches!(
+                    e,
+                    Edit::Insert { text, .. } if text == expect_text
+                )),
+                "patch: {patch}, edits: {edits:?}"
+            );
+        }
+    }
+
+    // ---- bd-block-resolver-polish-wi3h: garbage lines after DEL/DEL.BLK ----
+
+    #[test]
+    fn prose_after_del_warns_but_applies() {
+        // `DEL` takes no body: a plain non-op line used to be silently
+        // dropped. It must now warn (the delete itself still applies).
+        let (edits, warnings, _f, aborted) = parse_patch("DEL 2\nthis is garbage");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 1);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("content after `DEL` was ignored")),
+            "expected ignored-content warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn prose_after_del_blk_warns_but_applies() {
+        let (edits, warnings, _f, aborted) = parse_patch("DEL.BLK 1\nthis is garbage");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 1);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("content after `DEL.BLK` was ignored")),
+            "expected ignored-content warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn plus_payload_after_del_warns() {
+        // `+row` after DEL is explicit payload syntax for an op that takes
+        // none — warn rather than silently drop.
+        let (edits, warnings, _f, aborted) = parse_patch("DEL 2\n+stray payload");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 1);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("content after `DEL` was ignored")),
+            "expected ignored-content warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn op_candidate_after_del_still_rejects_atomically() {
+        // Op-looking garbage after DEL must keep hitting the unknown-op
+        // guard — the whole patch rejects, nothing is deleted.
+        for patch in ["DEL 2\nFOO 1:", "DEL.BLK 1\nEND", "DEL 2\nSWAP"] {
+            let (edits, warnings, _f, aborted) = parse_patch(patch);
+            assert!(edits.is_empty(), "patch {patch:?} produced edits");
+            assert!(aborted, "patch {patch:?} was not aborted");
+            assert!(
+                warnings.iter().any(|w| w.contains("operation")),
+                "patch {patch:?}, warnings: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_lines_after_del_stay_silent() {
+        // Blank separators after a payload-less op are not content — no
+        // warning should be emitted for them.
+        let (edits, warnings, _f, aborted) = parse_patch("DEL 2\n\n\nDEL 3");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 2);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("takes no payload lines")),
+            "unexpected payload warning, got {warnings:?}"
+        );
     }
 }

@@ -275,16 +275,30 @@ fn tool_list() -> ToolList {
     }
 }
 
-/// A tool handler's result: the text payload for `content[0].text` plus a
-/// structured object for `structuredContent` (which also backs `json: true`
-/// text output, so both channels always agree).
+/// A tool handler's result: the text payload for `content[0].text` plus an
+/// optional structured object for `structuredContent` (which also backs
+/// `json: true` text output, so both channels always agree). `None` omits
+/// `structuredContent` entirely — used by compact `read`, where materializing
+/// the per-line JSON payload cost ~1GB of peak RSS on large files for data
+/// the caller never asked for.
 struct ToolOutput {
     text: String,
-    structured: Value,
+    structured: Option<Value>,
 }
 
 fn ok_output(text: String, structured: Value) -> ToolOutput {
-    ToolOutput { text, structured }
+    ToolOutput {
+        text,
+        structured: Some(structured),
+    }
+}
+
+/// Success output with no `structuredContent` member at all.
+fn ok_output_text_only(text: String) -> ToolOutput {
+    ToolOutput {
+        text,
+        structured: None,
+    }
 }
 
 /// Convert a [`HashlineError`] into a failed tool result. The text keeps the
@@ -318,7 +332,10 @@ fn err_output(error: &HashlineError) -> ToolOutput {
     if let Some(url) = error.report_url() {
         structured["report_url"] = Value::String(url.to_string());
     }
-    ToolOutput { text, structured }
+    ToolOutput {
+        text,
+        structured: Some(structured),
+    }
 }
 
 fn io_err(context: &str, error: std::io::Error) -> ToolOutput {
@@ -363,12 +380,12 @@ fn handle_read(file: &str, json: bool) -> ToolOutput {
         Err(e) => return err_output(&e),
     };
     let entries = visible_entries(&fc);
-    let structured = serde_json::json!({
-        "path": fc.path.display().to_string(),
-        "hash": fc.hash,
-        "lines": lines_json(&entries),
-    });
     if json {
+        let structured = serde_json::json!({
+            "path": fc.path.display().to_string(),
+            "hash": fc.hash,
+            "lines": lines_json(&entries),
+        });
         return ok_output(
             serde_json::to_string(&structured).unwrap_or_default(),
             structured,
@@ -376,7 +393,9 @@ fn handle_read(file: &str, json: bool) -> ToolOutput {
     }
     // Agent-native compact: [path#hash] header + N:hh|content rows.
     // The path is escaped so `#`/newline in filenames cannot corrupt the
-    // anchor header.
+    // anchor header. No structuredContent: building the per-line JSON
+    // payload here made MCP `read` ~7.5x slower and ~1GB heavier on large
+    // files even though compact callers only consume the text.
     let mut out = format!(
         "[{}#{}]\n",
         crate::output::escape_compact_field(&fc.path.display().to_string()),
@@ -390,7 +409,7 @@ fn handle_read(file: &str, json: bool) -> ToolOutput {
             entry.content
         ));
     }
-    ok_output(out, structured)
+    ok_output_text_only(out)
 }
 
 fn handle_find_block(file: &str, anchor_str: &str, json: bool) -> ToolOutput {
@@ -670,13 +689,10 @@ fn handle_patch(
         return ok_output(out, structured);
     }
 
-    // Same write-time stale-file guard as the CLI patch path: refuse to
-    // clobber a file that drifted since `FileContent::load` above.
-    if let Err(e) = crate::commands::patch::reject_if_source_drifted(path, &fc) {
-        return err_output(&e);
-    }
-    match crate::commands::common::fast_write(path, final_text.as_bytes()) {
-        Ok(_) => {
+    // Same write-time stale-file guard + post-write byte verification as
+    // the CLI patch path.
+    match crate::commands::patch::write_patch_output(path, &final_text, &fc, false) {
+        Ok(()) => {
             let changed_count =
                 changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
             let mut structured = serde_json::json!({
@@ -762,6 +778,11 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> ToolOutpu
     if let Err(e) = crate::commands::common::fast_write(path, disk_content.as_bytes()) {
         return err_output(&e);
     }
+    // Byte-exact post-write check: a concurrent overwrite is reported as
+    // CONCURRENT_MODIFICATION, never a silent OK.
+    if let Err(e) = crate::commands::common::verify_written_bytes(path, disk_content.as_bytes()) {
+        return err_output(&e);
+    }
 
     // Compute hash and line count from the written content (canonical path).
     let file_hash = hash::compute_file_hash(&write_content);
@@ -822,11 +843,18 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> ToolOutpu
 /// carries the handler's structured object on both success and failure.
 fn tool_result(output: ToolOutput) -> Value {
     let is_error = output.text.starts_with("Error: ")
-        || output.structured.get("success").and_then(Value::as_bool) == Some(false);
+        || output
+            .structured
+            .as_ref()
+            .and_then(|s| s.get("success"))
+            .and_then(Value::as_bool)
+            == Some(false);
     let mut result = serde_json::json!({
         "content": [{"type": "text", "text": output.text}],
-        "structuredContent": output.structured,
     });
+    if let Some(structured) = output.structured {
+        result["structuredContent"] = structured;
+    }
     if is_error {
         result["isError"] = serde_json::json!(true);
     }
@@ -1390,7 +1418,7 @@ mod tests {
         let preview = handle_patch(file, patch, true, true, false);
         // Bounded unified-diff output, not the whole proposed file.
         assert_eq!(preview.text, "@@ -- ++ @@\n+new\n", "{}", preview.text);
-        assert_eq!(preview.structured["dry_run"], json!(true));
+        assert_eq!(preview.structured.as_ref().unwrap()["dry_run"], json!(true));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
 
         let result = handle_patch(file, patch, false, false, false);

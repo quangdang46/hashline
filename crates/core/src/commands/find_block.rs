@@ -238,11 +238,14 @@ pub fn find_block_boundaries(
     }
 
     // `language` is `Some("Unknown")` for extensions without a mapping —
-    // matching the historical output shape.
-    let language = Some(
+    // matching the historical output shape. `CMakeLists.txt` is detected
+    // by basename (its `.txt` extension alone maps to nothing).
+    let language = Some(if crate::builtin_resolver::is_cmake_source(path) {
+        "CMake".into()
+    } else {
         crate::builtin_resolver::language_for_extension(extension)
-            .unwrap_or_else(|| "Unknown".into()),
-    );
+            .unwrap_or_else(|| "Unknown".into())
+    });
 
     Ok((language, block_start, block_end))
 }

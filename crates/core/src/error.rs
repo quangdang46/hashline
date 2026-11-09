@@ -58,6 +58,9 @@ pub enum HashlineError {
     #[error("file '{path}' changed since the last read")]
     StaleFile { path: String },
 
+    #[error("file '{path}' was modified by another process while hashline was writing it")]
+    ConcurrentModification { path: String },
+
     #[error("invalid indent amount '{amount}' (expected +N or -N)")]
     InvalidIndentAmount { amount: String },
 
@@ -226,6 +229,48 @@ pub enum HashlineError {
     ClipboardEmptyAnon,
 }
 
+/// `true` when `err` is a routine environmental I/O failure — another
+/// process holds the file open, a sharing/lock violation, a file with a
+/// user-mapped section — rather than a hashline defect. These surface as
+/// `io::ErrorKind::Uncategorized` on Windows, so they are recognized by
+/// raw OS error code.
+fn is_environmental_io_error(err: &std::io::Error) -> bool {
+    match err.raw_os_error() {
+        // Windows: ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33),
+        // ERROR_DELETE_PENDING (303), ERROR_USER_MAPPED_FILE (1224).
+        // These codes cannot collide with Unix errnos on Windows, and the
+        // cfg keeps them from being misread as EPIPE/EDOM on Unix.
+        #[cfg(windows)]
+        Some(32 | 33 | 303 | 1224) => true,
+        // Unix: EBUSY (device/file in use), ETXTBSY (executable being
+        // written). Values come from libc so per-OS differences
+        // (e.g. macOS ETXTBSY=86) are handled correctly.
+        #[cfg(unix)]
+        Some(code) => code == libc::EBUSY || code == libc::ETXTBSY,
+        _ => false,
+    }
+}
+
+/// Actionable hint for [`HashlineError::Io`], specialized for the
+/// environmental errors above; generic path/permission advice otherwise.
+fn io_hint(err: &std::io::Error) -> Option<&'static str> {
+    match err.raw_os_error() {
+        #[cfg(windows)]
+        Some(32 | 33 | 303) => Some(
+            "another process has the file open; close it (or the program holding it) and retry",
+        ),
+        #[cfg(windows)]
+        Some(1224) => Some(
+            "the file has a memory-mapped section or open handle; close the owning process and retry",
+        ),
+        #[cfg(unix)]
+        Some(code) if code == libc::EBUSY || code == libc::ETXTBSY => {
+            Some("the file is in use by another process; close it and retry")
+        }
+        _ => Some("check the file path and permissions, then retry the command"),
+    }
+}
+
 impl HashlineError {
     pub fn hint(&self) -> Option<&'static str> {
         match self {
@@ -258,6 +303,10 @@ impl HashlineError {
             HashlineError::StaleFile { .. } => Some(
                 "re-read the file metadata and retry with fresh --expect-mtime/--expect-inode values",
             ),
+            HashlineError::ConcurrentModification { .. } => Some(
+                "another process wrote to the file during the operation; re-read it and retry — do not assume your change landed",
+            ),
+            HashlineError::Io(err) => io_hint(err),
             HashlineError::InvalidIndentAmount { .. } => {
                 Some("use an amount like '+4' to indent or '-2' to dedent")
             }
@@ -349,9 +398,6 @@ impl HashlineError {
             HashlineError::QueryRangeTooLarge { .. } => {
                 Some("narrow the query range by using a more specific start-query or end-query")
             }
-            HashlineError::Io(_) => {
-                Some("check the file path and permissions, then retry the command")
-            }
             HashlineError::Json(_) => {
                 Some("fix the JSON input or output handling and retry the command")
             }
@@ -402,15 +448,17 @@ impl HashlineError {
             // defect — "file not found" and "access denied" are routine, and
             // a missing file surfaces as `Io`, not `FileNotFound`. Only the
             // kinds we cannot explain that way are worth a bug report.
-            HashlineError::Io(err) => !matches!(
-                err.kind(),
-                std::io::ErrorKind::NotFound
-                    | std::io::ErrorKind::PermissionDenied
-                    | std::io::ErrorKind::AlreadyExists
-                    | std::io::ErrorKind::InvalidInput
-                    | std::io::ErrorKind::IsADirectory
-                    | std::io::ErrorKind::NotADirectory
-            ),
+            HashlineError::Io(err) => {
+                !matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::PermissionDenied
+                        | std::io::ErrorKind::AlreadyExists
+                        | std::io::ErrorKind::InvalidInput
+                        | std::io::ErrorKind::IsADirectory
+                        | std::io::ErrorKind::NotADirectory
+                ) && !is_environmental_io_error(err)
+            }
             HashlineError::Json(_)
             | HashlineError::ParseError { .. }
             | HashlineError::ServerError { .. }
@@ -431,6 +479,7 @@ impl HashlineError {
         match self {
             HashlineError::StaleAnchor { .. } | HashlineError::StaleHash { .. } => "STALE_ANCHOR",
             HashlineError::StaleFile { .. } => "STALE_FILE",
+            HashlineError::ConcurrentModification { .. } => "CONCURRENT_MODIFICATION",
             HashlineError::NoopLoop { .. } => "NOOP_LOOP",
             HashlineError::ClipboardMissingRegister { .. } | HashlineError::ClipboardEmptyAnon => {
                 "CLIPBOARD"
@@ -479,6 +528,7 @@ impl HashlineError {
             | HashlineError::AmbiguousHash { .. }
             | HashlineError::StaleAnchor { .. }
             | HashlineError::StaleFile { .. }
+            | HashlineError::ConcurrentModification { .. }
             | HashlineError::InvalidIndentAmount { .. }
             | HashlineError::InvalidIndentRange { .. }
             | HashlineError::IndentUnderflow { .. }
@@ -636,6 +686,9 @@ mod tests {
                 "access denied",
             )),
             HashlineError::EmptyPatch,
+            HashlineError::ConcurrentModification {
+                path: "demo.txt".into(),
+            },
         ];
         for error in routine {
             assert_eq!(
@@ -784,6 +837,9 @@ mod tests {
                 register: "fn".into(),
             },
             HashlineError::ClipboardEmptyAnon,
+            HashlineError::ConcurrentModification {
+                path: "demo.txt".into(),
+            },
         ];
 
         for error in errors {
@@ -792,6 +848,40 @@ mod tests {
                 "expected a recovery hint for error variant: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn concurrent_modification_kind_and_hint() {
+        let error = HashlineError::ConcurrentModification {
+            path: "demo.txt".into(),
+        };
+        assert_eq!(error.kind(), "CONCURRENT_MODIFICATION");
+        assert_eq!(error.report_url(), None);
+        assert!(error.hint().unwrap().contains("another process"));
+    }
+
+    /// Windows os error 1224 (ERROR_USER_MAPPED_FILE) and the sharing/lock
+    /// violations (32/33/303) are environmental, not hashline bugs: they
+    /// must not offer a bug-report URL and must carry an actionable hint.
+    #[cfg(windows)]
+    #[test]
+    fn environmental_io_errors_are_not_reportable() {
+        for code in [32, 33, 303, 1224] {
+            let error = HashlineError::Io(std::io::Error::from_raw_os_error(code));
+            assert_eq!(
+                error.report_url(),
+                None,
+                "os error {code} must not offer a report URL"
+            );
+            let hint = error.hint().expect("environmental I/O errors need a hint");
+            assert!(
+                hint.contains("another process") || hint.contains("memory-mapped"),
+                "os error {code}: unexpected hint {hint:?}"
+            );
+        }
+        // A genuinely unexpected I/O error still reports.
+        let other = HashlineError::Io(std::io::Error::from_raw_os_error(50));
+        assert_eq!(other.report_url(), Some(ISSUES_URL));
     }
 
     #[test]

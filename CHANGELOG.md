@@ -4,13 +4,21 @@ All notable changes to this project are documented here.
 
 Format: grouped by release tag (newest first). `Thanks` credits non-maintainer contributors/authors/co-authors in that release range.
 
-> **Correction (docs audit, bd-docs-aiux-og5):** the v0.8.4 entry below claims
-> `REM`/`MV` file operations were added. The parser recognizes `REM` and
-> `MV <dest>` inside `[path#hash]` sections, but `hashline patch` (CLI, MCP,
-> and daemon paths) currently discards the parsed file-op, so a patch
-> containing only `REM`/`MV` fails with `ERR EMPTY_PATCH`. Use the dedicated
-> `hashline remove` / `hashline rename` commands instead. Documented as a
-> known gap pending a fix; not a supported feature yet.
+> **Correction (docs audit, bd-docs-aiux-og5; updated bd-docs-drift-2-i4v3):**
+> the v0.8.4 entry below claims `REM`/`MV` file operations were added. The
+> parser recognizes `REM` and `MV <dest>` inside `[path#hash]` sections, and
+> as of the verify-wave fixes `hashline patch` **does** apply them (a
+> file-level op must be the only op in its section; `MV` onto an existing
+> path fails with `ERR TARGET_EXISTS`). The dedicated `hashline remove` /
+> `hashline rename` commands remain available.
+
+## [Unreleased]
+- fix(concurrency): post-write byte verification + pre-persist drift re-check (bd-concurrency-residual-ubpl)
+  - `patch`/`write` (CLI, MCP, `Editor`) now re-read the file after writing and byte-compare; a concurrent overwrite fails with `ERR CONCURRENT_MODIFICATION` instead of a silent `OK`.
+  - `patch --safe` re-runs the source-drift check inside the atomic persist retry loop, closing most of the temp-write→persist TOCTOU window that could destroy a swapped-in file.
+  - Windows os errors 32/33/303/1224 (sharing violation, lock violation, delete-pending, user-mapped file) and Unix EBUSY/ETXTBSY are classified as routine environmental I/O errors: no bogus `REPORT` bug-report line, with actionable hints.
+  - Documented residual: no OS-level locking, so a writer landing in the final check→rename window still wins (the loser now errors); default `fast_write` remains truncate+write and can expose torn reads to concurrent readers — use `--safe` for reader safety.
+- docs: fix verify-wave doc drift — inline `+payload` after op headers, removed retired `--no-cache` flag, corrected `ERR STALE_ANCHOR` name, bracketed `[path#hash]` read headers, documented `REM`/`MV` patch ops, `*** End of File` marker, find-block relocation warnings, and the `changed[]` vs anchor-array JSON key difference (`line` vs `n`) (bd-docs-drift-2-i4v3)
 
 ## [v0.9.22] - 2026-11-08
 - fix(editor): block ops dropped expected_hash, accepting stale anchors (#126)
