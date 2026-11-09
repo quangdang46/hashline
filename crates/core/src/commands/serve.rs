@@ -21,10 +21,8 @@ use crate::mcp;
 
 /// Default Unix socket path under ~/.hashline/
 pub fn default_daemon_socket() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".hashline").join("daemon.sock")
+    let home = crate::config::hashline_home_dir().unwrap_or_else(std::env::temp_dir);
+    home.join(".hashline").join("daemon.sock")
 }
 
 /// Run the daemon: listen on a Unix socket or HTTP port,
@@ -41,10 +39,8 @@ pub fn run<W: Write, E: Write>(
     let http_port = cmd.http;
     let detach = cmd.detach;
     let pid_file = cmd.pid_file.clone().or_else(|| {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/tmp".into());
-        Some(PathBuf::from(home).join(".hashline").join("daemon.pid"))
+        let home = crate::config::hashline_home_dir().unwrap_or_else(std::env::temp_dir);
+        Some(home.join(".hashline").join("daemon.pid"))
     });
 
     // Ensure ~/.hashline/ exists

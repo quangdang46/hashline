@@ -36,8 +36,12 @@ pub struct Release {
 
 impl Release {
     /// Build from a bare version, normalizing the `v`-prefixed tag.
+    ///
+    /// Control characters are stripped: the version is later printed to
+    /// the user's terminal (update notice) and embedded in download URLs,
+    /// so a crafted mirror tag must not inject terminal escapes.
     pub fn from_version(version: &str) -> Self {
-        let version = version.trim().trim_start_matches('v').to_string();
+        let version = sanitize_version(version);
         Self {
             tag: format!("v{version}"),
             version,
@@ -538,16 +542,21 @@ fn epoch_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn home_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("USERPROFILE").ok().map(PathBuf::from)
-    }
+/// Strip control characters and surrounding whitespace from a version
+/// string destined for terminal output or URLs.
+fn sanitize_version(version: &str) -> String {
+    version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var("HOME").ok().map(PathBuf::from)
-    }
+fn home_dir() -> Option<PathBuf> {
+    crate::config::hashline_home_dir()
 }
 
 fn notice_cache_path() -> Option<PathBuf> {
@@ -592,7 +601,7 @@ pub fn notice_eligible(command: &Commands) -> bool {
     ) {
         return false;
     }
-    std::env::var("HASHLINE_NO_UPDATE_CHECK").map_or(true, |v| v.trim().is_empty())
+    !crate::config::env_flag("HASHLINE_NO_UPDATE_CHECK")
 }
 
 /// Testable core of the periodic notice: consult the cache, refresh it at
@@ -605,7 +614,13 @@ fn notice_status(
 ) -> UpdateStatus {
     let cached = read_notice_cache(cache_path);
     if let Some(cache) = &cached {
-        if now.saturating_sub(cache.last_check_epoch) < NOTICE_REFRESH_INTERVAL {
+        // A `last_check_epoch` in the future (clock skew, hand-edited or
+        // hostile cache) must not freeze the refresh window: `saturating_sub`
+        // would report age 0 and suppress fetches for the skew duration.
+        // Treat future timestamps as stale so the next run rewrites `now`.
+        let fresh =
+            cache.last_check_epoch <= now && now - cache.last_check_epoch < NOTICE_REFRESH_INTERVAL;
+        if fresh {
             return compare_status(current_version(), &cache.latest_version);
         }
     }
@@ -642,6 +657,26 @@ fn notice_status(
     }
 }
 
+/// Whether the notice cache can actually be written. When `~/.hashline`
+/// is missing *and* cannot be created (read-only home, a file squatting
+/// on the path, etc.) every refresh would pay the full network timeout
+/// and then fail to persist — re-paying it on every single command
+/// forever. Probing writability up front lets us skip the fetch entirely.
+fn notice_cache_writable(path: &Path) -> bool {
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    // Probe by opening for append without truncating; this also creates
+    // the file when missing, which `write_notice_cache` overwrites anyway.
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .is_ok()
+}
+
 /// Best-effort outdated-version notice printed to stderr after a successful
 /// interactive command. Gated on a terminal stderr so agent pipelines keep
 /// byte-identical output, and throttled to one network refresh per day.
@@ -652,17 +687,24 @@ pub fn maybe_print_update_notice(stderr_is_terminal: bool) {
     let Some(cache_path) = notice_cache_path() else {
         return;
     };
+    if !notice_cache_writable(&cache_path) {
+        debug!("update notice cache is not writable; skipping refresh");
+        return;
+    }
     let status = notice_status(&cache_path, epoch_now(), fetch_latest_release);
     if let UpdateStatus::Outdated { latest } = status {
+        // `latest` may come from a pre-existing cache file, so sanitize
+        // again at the print site — never emit raw control characters.
         eprintln!(
-            "NOTE update available: latest={latest} installed={} (notice only; run `hashline update` to install)",
+            "NOTE update available: latest={} installed={} (notice only; run `hashline update` to install)",
+            sanitize_version(&latest),
             current_version()
         );
     }
 }
 
 fn notice_enabled() -> bool {
-    std::env::var("HASHLINE_NO_UPDATE_CHECK").map_or(true, |v| v.trim().is_empty())
+    !crate::config::env_flag("HASHLINE_NO_UPDATE_CHECK")
 }
 
 #[cfg(test)]
@@ -843,6 +885,55 @@ mod tests {
         });
         assert_eq!(status, UpdateStatus::Unknown);
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn notice_status_treats_future_epoch_as_stale() {
+        // A cache written with a future last_check_epoch (clock skew or a
+        // crafted file) must not freeze the refresh window.
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("update-check.json");
+        let now = epoch_now();
+        write_notice_cache(
+            &cache,
+            &NoticeCache {
+                last_check_epoch: now + 100_000,
+                latest_version: "0.0.1".into(),
+            },
+        );
+        let mut calls = 0;
+        let status = notice_status(&cache, now, || {
+            calls += 1;
+            Ok(Release::from_version("0.0.2"))
+        });
+        assert_eq!(calls, 1, "future epoch must trigger a refresh");
+        assert!(matches!(
+            status,
+            UpdateStatus::Unknown | UpdateStatus::Outdated { .. } | UpdateStatus::UpToDate
+        ));
+    }
+
+    #[test]
+    fn release_from_version_strips_control_characters() {
+        // A crafted mirror tag must not smuggle terminal escapes into the
+        // update notice or download URL.
+        let release = Release::from_version("0.9.16\u{1b}[2J\nEVIL");
+        assert!(!release.version.chars().any(|c| c.is_control()));
+        assert!(!release.tag.chars().any(|c| c.is_control()));
+    }
+
+    #[test]
+    fn notice_cache_writable_detects_blocked_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // A *directory* squatting on the cache file path itself is not
+        // writable (the verified repro: `~/.hashline/update-check.json`
+        // is a directory → every command paid the network timeout).
+        let cache = dir.path().join("update-check.json");
+        fs::create_dir_all(&cache).unwrap();
+        assert!(!notice_cache_writable(&cache));
+
+        let ok = dir.path().join("ok").join("update-check.json");
+        assert!(notice_cache_writable(&ok));
     }
 
     #[test]

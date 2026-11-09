@@ -191,7 +191,7 @@ PUT @tmp <12
 | `--check` | `update` | Only compare installed vs latest release; do not install |
 | `--version <v>` | `update` | Install a specific release version instead of the latest |
 
-**Environment variables:** `HASHLINE_RETURN_ANCHORS=1` (same as `--emit-anchors`), `HASHLINE_URL` / `HASHLINE_SOCKET` (route CLI calls to a running daemon), `HASHLINE_NO_UPDATE_CHECK=1` (disable update notice), `HASHLINE_RELEASES_BASE_URL` (mirror/test override for release lookups), `HASHLINE_NO_FALLBACK` (disable snapshot-recovery fallback on stale anchors), `HASHLINE_LOG` / `HASHLINE_LOG_PATH` / `HASHLINE_LOG_MAX_BYTES` (logging).
+**Environment variables** (boolean toggles take a truthy value — `1`, `true`, `yes`, `on`; unset, empty, `0`, or `false` mean off): `HASHLINE_RETURN_ANCHORS=1` (same as `--emit-anchors`), `HASHLINE_URL=http://host:17300` / `HASHLINE_SOCKET=~/.hashline/daemon.sock` (route CLI calls to a running daemon; `HASHLINE_URL` accepts `http(s)://host[:port][/path]` or bare `host[:port]`, default port 17300), `HASHLINE_NO_UPDATE_CHECK=1` (disable update notice), `HASHLINE_RELEASES_BASE_URL` (mirror/test override for release lookups), `HASHLINE_NO_FALLBACK=1` (do not fall back to local execution when the daemon is unreachable), `HASHLINE_LOG` / `HASHLINE_LOG_PATH` / `HASHLINE_LOG_MAX_BYTES` (tracing filter / log file path / rotation cap). State lives in `~/.hashline/` resolved via `USERPROFILE`→`HOME` on Windows, `HOME`→`USERPROFILE` elsewhere.
 
 ### Self-Update
 

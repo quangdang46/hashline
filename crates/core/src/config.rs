@@ -3,6 +3,50 @@
 //! Controls snapshot store behavior, hash algorithm, and resource limits.
 //! Used when constructing an [`Editor`](crate::editor::Editor).
 
+use std::path::PathBuf;
+
+/// Resolve the user's home directory for `~/.hashline/` state
+/// (daemon socket, logs, update-check cache).
+///
+/// This is the single home-resolution strategy for the whole binary —
+/// previously `serve`, `main`, and `update` each picked different
+/// variables, so Git-Bash on Windows (`HOME` set, `USERPROFILE` also set)
+/// could split state across two directories.
+///
+/// Order: on Windows prefer `USERPROFILE` then `HOME`; elsewhere prefer
+/// `HOME` then `USERPROFILE`. Empty values are ignored.
+pub fn hashline_home_dir() -> Option<PathBuf> {
+    let candidates: &[&str] = if cfg!(windows) {
+        &["USERPROFILE", "HOME"]
+    } else {
+        &["HOME", "USERPROFILE"]
+    };
+    candidates.iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
+/// True when environment variable `name` is set to a truthy value
+/// (`1`, `true`, `yes`, `on`, case-insensitive). Unset, empty, `0`,
+/// `false`, or any other value returns `false` — so `VAR=` and `VAR=0`
+/// do *not* enable the flag.
+///
+/// Used for the boolean toggles `HASHLINE_NO_FALLBACK`,
+/// `HASHLINE_NO_UPDATE_CHECK`, and `HASHLINE_RETURN_ANCHORS`.
+pub fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
 /// Configuration for [`Editor`](crate::editor::Editor).
 ///
 /// Controls snapshot caching, hash algorithm, and resource limits
@@ -78,5 +122,36 @@ mod tests {
     #[test]
     fn test_hash_algorithm_default() {
         assert_eq!(HashAlgorithm::default(), HashAlgorithm::Xxh32);
+    }
+
+    #[test]
+    fn env_flag_only_truthy_values_enable() {
+        // Use a unique var name so parallel tests / the environment
+        // cannot interfere.
+        let name = "HASHLINE_TEST_ENV_FLAG_FLAG";
+        unsafe {
+            std::env::remove_var(name);
+        }
+        assert!(!env_flag(name));
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("YES", true),
+            ("on", true),
+            ("  true  ", true),
+            ("", false),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+            ("2", false),
+        ] {
+            unsafe {
+                std::env::set_var(name, value);
+            }
+            assert_eq!(env_flag(name), expected, "value {value:?}");
+        }
+        unsafe {
+            std::env::remove_var(name);
+        }
     }
 }
