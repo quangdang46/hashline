@@ -100,6 +100,15 @@ pub enum HashlineError {
     #[error("target '{path}' already exists — use --force to overwrite it")]
     TargetExists { path: String },
 
+    #[error("'{path}' and the rename destination resolve to the same file")]
+    SameFile { path: String },
+
+    #[error("'{path}' is a directory — this command only supports regular files")]
+    IsDirectory { path: String },
+
+    #[error("invalid path '{path}': {reason}")]
+    InvalidPath { path: String, reason: String },
+
     #[error("implode directory '{path}' is missing .meta.json")]
     ImplodeMissingMeta { path: String },
 
@@ -280,6 +289,15 @@ impl HashlineError {
             HashlineError::TargetExists { .. } => {
                 Some("use --force to overwrite the existing file")
             }
+            HashlineError::SameFile { .. } => Some(
+                "choose a different destination — the source and destination resolve to the same file",
+            ),
+            HashlineError::IsDirectory { .. } => {
+                Some("this command only operates on regular files, not directories")
+            }
+            HashlineError::InvalidPath { .. } => Some(
+                "use a path to a regular file; device names and other special paths are not supported",
+            ),
             HashlineError::UpdateFailed { .. } => Some(
                 "check network connectivity, then retry; if it keeps failing, reinstall manually with the install.sh script from the repository",
             ),
@@ -420,6 +438,9 @@ impl HashlineError {
             HashlineError::EmptyPatch | HashlineError::EmptyPatchWithReason { .. } => "EMPTY_PATCH",
             HashlineError::PatchRejected { .. } => "PATCH_REJECTED",
             HashlineError::TargetExists { .. } => "TARGET_EXISTS",
+            HashlineError::SameFile { .. } => "SAME_FILE",
+            HashlineError::IsDirectory { .. } => "IS_DIRECTORY",
+            HashlineError::InvalidPath { .. } => "INVALID_PATH",
             HashlineError::AmbiguousHash { .. } => "AMBIGUOUS_HASH",
             HashlineError::HashNotFound { .. } => "HASH_NOT_FOUND",
             HashlineError::InvalidAnchor { .. }
@@ -469,6 +490,9 @@ impl HashlineError {
             | HashlineError::DiffHunkMismatch { .. }
             | HashlineError::DiffFileMismatch { .. }
             | HashlineError::TargetExists { .. }
+            | HashlineError::SameFile { .. }
+            | HashlineError::IsDirectory { .. }
+            | HashlineError::InvalidPath { .. }
             | HashlineError::ImplodeMissingMeta { .. }
             | HashlineError::ImplodeInvalidMeta { .. }
             | HashlineError::ImplodeDirtyDirectory { .. }
