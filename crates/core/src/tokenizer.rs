@@ -637,6 +637,12 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
                 }
             }
         }
+        // A `..M` range on a block op is meaningless (the resolver expands
+        // the anchor to a syntactic span) — reject it so the lenient
+        // trailing-garbage path can't silently drop the `..M` part.
+        if next < end && bytes[next] == CHAR_DOT {
+            return None;
+        }
         return Some(TargetScan {
             target: BlockTarget::Block(Anchor { line: anchor.line }, hash),
             next_index: next,
@@ -708,6 +714,11 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
                 return None;
             }
         }
+        // `..M` ranges are not meaningful on block ops — reject rather than
+        // silently ignore them (same rule as SWAP.BLK).
+        if next < end && bytes[next] == CHAR_DOT {
+            return None;
+        }
         return Some(TargetScan {
             target: BlockTarget::DeleteBlock(Anchor { line: anchor.line }, hash),
             next_index: next,
@@ -747,6 +758,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if suffix.malformed {
             return None;
         }
+        if suffix.next < end && bytes[suffix.next] == CHAR_DOT {
+            return None; // `..M` ranges are meaningless on block ops
+        }
         return Some(TargetScan {
             target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, suffix.hash),
             next_index: suffix.next,
@@ -763,6 +777,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if suffix.malformed {
             return None;
         }
+        if suffix.next < end && bytes[suffix.next] == CHAR_DOT {
+            return None; // `..M` ranges are meaningless on block ops
+        }
         return Some(TargetScan {
             target: BlockTarget::InsertBeforeBlock(Anchor { line: anchor.line }, suffix.hash),
             next_index: suffix.next,
@@ -778,6 +795,9 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         let suffix = consume_with_hash(bytes, anchor.next_index, end);
         if suffix.malformed {
             return None;
+        }
+        if suffix.next < end && bytes[suffix.next] == CHAR_DOT {
+            return None; // `..M` ranges are meaningless on block ops
         }
         return Some(TargetScan {
             target: BlockTarget::InsertAfterBlock(Anchor { line: anchor.line }, suffix.hash),

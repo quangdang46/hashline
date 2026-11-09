@@ -1587,7 +1587,10 @@ pub fn apply_edits_with_clipboard(
                     }
                 }
 
-                // Resolve the syntactic block starting at line_no.
+                // Resolve the syntactic block containing the anchor via the
+                // canonical resolver (builtin_resolver) — the same engine the
+                // Editor and find-block use, so all three paths agree.
+                //
                 // NOTE: this resolves against the ORIGINAL snapshot. After
                 // prior edits in the same patch remove/insert lines, the
                 // original line numbers may no longer correspond to the
@@ -1598,7 +1601,8 @@ pub fn apply_edits_with_clipboard(
                 // an earlier op already removed is rejected outright rather
                 // than silently retargeting a neighbouring block.
                 let (orig_block_start, orig_block_end) =
-                    resolve_block_span(entries, anchor_index, path)?;
+                    crate::builtin_resolver::resolve_span(entries, anchor_index, path)
+                        .ok_or(HashlineError::UnbalancedBlock { line_no })?;
 
                 // Convert the 0-based inclusive span over `entries` to 1-based
                 // original line numbers, clamped to real lines (`orig_len`).
@@ -1624,9 +1628,33 @@ pub fn apply_edits_with_clipboard(
                     }
                 }
 
+                // SWAP.BLK gets the same boundary-echo / dropped-closer
+                // checks a line-range SWAP does: the payload replaces the
+                // whole resolved span, so an echo of the lines just outside
+                // the span (or a dropped structural closer) is just as much
+                // of an LLM mistake here as on `SWAP N..M:`.
+                let mut effective_payloads: Option<Vec<String>> = None;
+                if mode.is_none() && !payloads.is_empty() {
+                    let mut p = payloads.clone();
+                    if let Some((repaired, warning)) =
+                        crate::apply::repair_boundary_echo(&p, start_l, end_l, entries)
+                    {
+                        emit_apply_warning(&warning);
+                        p = repaired;
+                    } else {
+                        for issue in
+                            crate::apply::detect_boundary_issues(&p, start_l, end_l, entries)
+                        {
+                            emit_apply_warning(&issue);
+                        }
+                    }
+                    effective_payloads = Some(p);
+                }
+
                 match mode {
                     None if payloads.is_empty() => {
-                        // DEL.BLK N — mark the whole span deleted.
+                        // DEL.BLK N (and empty-payload SWAP.BLK) — mark the
+                        // whole span deleted.
                         for dl in start_l..=end_l {
                             deleted[dl - 1] = true;
                         }
@@ -1655,7 +1683,8 @@ pub fn apply_edits_with_clipboard(
                         for dl in start_l..=end_l {
                             deleted[dl - 1] = true;
                         }
-                        payload_at[start_l - 1] = Some(payloads.clone());
+                        payload_at[start_l - 1] =
+                            Some(effective_payloads.unwrap_or_else(|| payloads.clone()));
                     }
                     Some(BlockMode::InsertAfter) => {
                         // INS.BLK.POST N: insert after the last line of the
@@ -1688,279 +1717,6 @@ pub fn apply_edits_with_clipboard(
     }
     *lines = out;
     Ok(())
-}
-
-/// Resolve a 1-indexed anchor line to the syntactic block span (0-based inclusive).
-///
-/// Uses language detection from file extension, then brace-matching,
-/// indentation-based, or Ruby `end`-based block finding.
-fn resolve_block_span(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-    path: &Path,
-) -> Result<(usize, usize), HashlineError> {
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
-
-    match extension {
-        "rs" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" | "cs"
-        | "kt" | "kts" | "swift" | "scala" | "dart" | "zig" | "m" | "mm" => {
-            find_brace_block(entries, anchor_index, extension)
-        }
-        "py" | "verse" => find_python_block(entries, anchor_index),
-        "rb" => find_ruby_block(entries, anchor_index),
-        _ => find_brace_block(entries, anchor_index, extension)
-            .or_else(|_| find_indent_block(entries, anchor_index)),
-    }
-    .map_err(|_| HashlineError::UnbalancedBlock {
-        line_no: anchor_index + 1,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Brace-balanced block finding
-// ---------------------------------------------------------------------------
-
-fn find_brace_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-    ext: &str,
-) -> Result<(usize, usize), ()> {
-    let pairs = find_brace_pairs(entries, ext);
-    pairs
-        .iter()
-        .filter(|(start, end)| *start <= anchor_index && *end >= anchor_index)
-        .max_by_key(|(start, _)| *start)
-        .copied()
-        .ok_or(())
-}
-
-fn find_brace_pairs(entries: &[crate::document::LineEntry], _ext: &str) -> Vec<(usize, usize)> {
-    let mut pairs = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-    let line_comment: &[u8] = b"//";
-    let mut in_block_comment = false;
-
-    for (line_idx, entry) in entries.iter().enumerate() {
-        let bytes = entry.content.as_bytes();
-        let mut i = 0;
-        let mut in_sq = false;
-        let mut in_dq = false;
-        let mut esc = false;
-
-        while i < bytes.len() {
-            if esc {
-                esc = false;
-                i += 1;
-                continue;
-            }
-            if (in_sq || in_dq) && bytes[i] == b'\\' {
-                esc = true;
-                i += 1;
-                continue;
-            }
-            if in_block_comment {
-                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && bytes[i..].starts_with(line_comment) {
-                break;
-            }
-            if !in_sq && !in_dq && i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true;
-                i += 2;
-                continue;
-            }
-            if in_sq && bytes[i] == b'\'' {
-                in_sq = false;
-                i += 1;
-                continue;
-            }
-            if in_dq && bytes[i] == b'"' {
-                in_dq = false;
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && bytes[i] == b'\'' {
-                in_sq = true;
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && bytes[i] == b'"' {
-                in_dq = true;
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && !in_block_comment {
-                if bytes[i] == b'{' {
-                    stack.push(line_idx);
-                } else if bytes[i] == b'}' {
-                    if let Some(s) = stack.pop() {
-                        pairs.push((s, line_idx));
-                    }
-                }
-            }
-            i += 1;
-        }
-    }
-    pairs
-}
-
-// ---------------------------------------------------------------------------
-// Indentation-based block finding
-// ---------------------------------------------------------------------------
-
-fn find_indent_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), ()> {
-    let anchor_indent = leading_ws(&entries[anchor_index].content);
-    // If anchor IS at indent 0, it's a block header itself.
-    if anchor_indent == 0 {
-        find_block_from_header(entries, anchor_index, &["//"])
-    } else {
-        find_block_from_body(entries, anchor_index, &["//", "#"])
-    }
-}
-
-fn find_python_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), ()> {
-    let anchor_indent = leading_ws(&entries[anchor_index].content);
-    if anchor_indent == 0 {
-        // Anchor at a header line (def/class/if/for/with/try/…):
-        // find the block starting at that header to its dedent boundary.
-        find_block_from_header(entries, anchor_index, &["#"])
-    } else {
-        // Anchor in a body line (comment, bare statement, etc):
-        // start at the anchor itself and extend to the next line with the
-        // same or lesser indent level.  This gives the smallest enclosing
-        // statement suite, not the outermost function/class.
-        let mut end = entries.len() - 1;
-        for i in (anchor_index + 1)..entries.len() {
-            let t = entries[i].content.trim();
-            if t.is_empty() {
-                continue;
-            }
-            if leading_ws(&entries[i].content) <= anchor_indent {
-                end = i.saturating_sub(1);
-                break;
-            }
-        }
-        Ok((anchor_index, end))
-    }
-}
-
-/// Block header line (indent 0): scan forward to find same-or-less indent.
-fn find_block_from_header(
-    entries: &[crate::document::LineEntry],
-    start: usize,
-    _comments: &[&str],
-) -> Result<(usize, usize), ()> {
-    let si = leading_ws(&entries[start].content);
-    let mut end = entries.len() - 1;
-    for i in (start + 1)..entries.len() {
-        if leading_ws(&entries[i].content) <= si {
-            end = i.saturating_sub(1);
-            break;
-        }
-    }
-    Ok((start, end))
-}
-
-/// Block body line (indented): scan backward for header, then forward for end.
-fn find_block_from_body(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-    _comments: &[&str],
-) -> Result<(usize, usize), ()> {
-    let anchor_indent = leading_ws(&entries[anchor_index].content);
-    let mut start = None;
-    for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() {
-            continue;
-        }
-        if leading_ws(&entries[i].content) < anchor_indent {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = start.ok_or(())?;
-    let si = leading_ws(&entries[start].content);
-    let mut end = entries.len() - 1;
-    for i in (start + 1)..entries.len() {
-        let t = entries[i].content.trim();
-        if t.is_empty() {
-            continue;
-        }
-        if leading_ws(&entries[i].content) <= si {
-            end = i.saturating_sub(1);
-            break;
-        }
-    }
-    Ok((start, end))
-}
-
-// ---------------------------------------------------------------------------
-// Ruby ...end block finding
-// ---------------------------------------------------------------------------
-
-const RUBY_OPENERS: &[&str] = &[
-    "def ", "class ", "module ", "do ", "do|", "if ", "unless ", "while ", "until ", "for ",
-    "begin ", "case ",
-];
-
-fn find_ruby_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), ()> {
-    let mut depth: isize = 0;
-    let mut start = None;
-    for i in (0..=anchor_index).rev() {
-        let trimmed = entries[i].content.trim();
-        let ec = if trimmed == "end" { 1 } else { 0 };
-        let oc = ruby_opener_count(trimmed);
-        depth += ec as isize;
-        depth -= oc as isize;
-        if oc > 0 && depth <= 0 {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = start.ok_or(())?;
-    depth = 0;
-    for i in start..entries.len() {
-        let trimmed = entries[i].content.trim();
-        let oc = ruby_opener_count(trimmed);
-        let ec = if trimmed == "end" { 1 } else { 0 };
-        depth += oc as isize;
-        depth -= ec as isize;
-        if i > start && depth <= 0 && trimmed == "end" {
-            return Ok((start, i));
-        }
-        if i == start && depth <= 0 {
-            return Ok((start, i));
-        }
-    }
-    Err(())
-}
-
-fn ruby_opener_count(trimmed: &str) -> usize {
-    for opener in RUBY_OPENERS {
-        if trimmed.starts_with(opener) {
-            return 1;
-        }
-    }
-    0
-}
-
-fn leading_ws(s: &str) -> usize {
-    s.len() - s.trim_start().len()
 }
 
 // ---------------------------------------------------------------------------
@@ -2428,6 +2184,72 @@ mod tests {
             result,
             "fn preamble() {\n}\nfn hello() {\n    let x = 1;\n}\n"
         );
+    }
+
+    // ---- bd-blk-op-semantics-90b: block-op syntax strictness --------------
+
+    #[test]
+    fn blk_range_suffix_rejected_not_silently_ignored() {
+        // `..M` on a block op is meaningless — the resolver expands the
+        // anchor to a syntactic span. It must be rejected, not dropped.
+        for header in [
+            "SWAP.BLK 1..2:",
+            "DEL.BLK 1..2",
+            "INS.BLK.POST 1..2:",
+            "INS.BLK.PRE 1..2:",
+            "INS.BLK 1..2:",
+        ] {
+            let (_edits, _w, _f, aborted) = crate::parser::parse_patch(&format!("{header}\n+x\n"));
+            assert!(aborted, "{header} should abort the patch");
+        }
+    }
+
+    #[test]
+    fn del_blk_does_not_swallow_op_like_garbage() {
+        // A malformed op line after DEL.BLK must hit the unknown-op guard
+        // instead of being silently consumed as payload.
+        let (_edits, warnings, _f, aborted) =
+            crate::parser::parse_patch("DEL.BLK 1\nSWAP.BLK 2..3:\n+x\n");
+        assert!(aborted, "expected patch abort, got warnings {warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("SWAP.BLK")
+                || w.contains("unknown operation")
+                || w.contains("malformed")),
+            "expected an op-candidate warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn swap_blk_empty_payload_deletes_block() {
+        // Same convention as `SWAP N:` with an empty body: delete the span.
+        let original = "fn a() {\n    x\n}\nfn b() {\n    y\n}\n";
+        let result = apply_text(original, "SWAP.BLK 1:");
+        assert_eq!(result, "fn b() {\n    y\n}\n");
+    }
+
+    #[test]
+    fn ins_blk_empty_payload_warns() {
+        let (_edits, warnings, _f, _aborted) =
+            crate::parser::parse_patch("INS.BLK.POST 1:\nSWAP 2:\n+x\n");
+        assert!(
+            warnings.iter().any(|w| w.contains("no payload")),
+            "expected empty-payload warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn blk_malformed_hash_rejected() {
+        for header in ["SWAP.BLK 1:zz:", "DEL.BLK 1:zz", "INS.BLK.POST 1:zz:"] {
+            let (_edits, _w, _f, aborted) = crate::parser::parse_patch(&format!("{header}\n+x\n"));
+            assert!(aborted, "{header} should abort the patch");
+        }
+    }
+
+    #[test]
+    fn del_blk_python_body_anchor_deletes_enclosing_def() {
+        let original = "def f():\n    x = 1\n    return x\n\ndef g():\n    pass\n";
+        let result = apply_text_ext(original, "DEL.BLK 2", "py");
+        assert_eq!(result, "def g():\n    pass\n");
     }
 
     #[test]
@@ -3638,7 +3460,7 @@ mod tests {
                 doc: orig
                     .iter()
                     .enumerate()
-                    .map(|(i, s)| Elem::Orig(i + 1))
+                    .map(|(i, _s)| Elem::Orig(i + 1))
                     .collect(),
                 deleted: std::collections::HashSet::new(),
             }

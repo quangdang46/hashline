@@ -207,6 +207,10 @@ fn resolve_find_anchor(
 }
 
 /// Resolve the structural block boundaries containing the given anchor line.
+///
+/// Delegates to the canonical resolver in `builtin_resolver` — the same
+/// engine `patch`'s block ops and the library Editor use — so all three
+/// paths agree on the span for a given file.
 pub fn find_block_boundaries(
     entries: &[crate::document::LineEntry],
     anchor_index: usize,
@@ -214,22 +218,17 @@ pub fn find_block_boundaries(
 ) -> Result<(Option<String>, usize, usize), HashlineError> {
     let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
 
-    let (language, block_start, block_end) = match extension {
-        "py" => find_python_block(entries, anchor_index)?,
-        "verse" => find_verse_block(entries, anchor_index)?,
-        "rb" => find_ruby_block(entries, anchor_index)?,
-        "rs" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "hpp" | "cs"
-        | "kt" | "kts" | "swift" | "scala" | "dart" | "zig" | "m" | "mm" => {
-            let (s, e) = find_brace_block(entries, anchor_index, extension)?;
-            (language_for_extension(extension), s, e)
+    let resolved = crate::builtin_resolver::resolve_span(entries, anchor_index, path);
+    let (block_start, block_end) = match resolved {
+        Some(span) => span,
+        // Verse historically fell back to the whole file when no block
+        // structure was found; preserve that last-resort behavior here.
+        None if extension == "verse" => (0, entries.len().saturating_sub(1)),
+        None => {
+            return Err(HashlineError::UnbalancedBlock {
+                line_no: anchor_index + 1,
+            });
         }
-        _ => match find_brace_block(entries, anchor_index, extension) {
-            Ok((s, e)) => (Some("Unknown".into()), s, e),
-            Err(_) => {
-                let (s, e) = find_indent_block(entries, anchor_index)?;
-                (Some("Unknown".into()), s, e)
-            }
-        },
     };
 
     if block_start >= entries.len() || block_end >= entries.len() || block_start > block_end {
@@ -238,413 +237,14 @@ pub fn find_block_boundaries(
         });
     }
 
+    // `language` is `Some("Unknown")` for extensions without a mapping —
+    // matching the historical output shape.
+    let language = Some(
+        crate::builtin_resolver::language_for_extension(extension)
+            .unwrap_or_else(|| "Unknown".into()),
+    );
+
     Ok((language, block_start, block_end))
-}
-
-fn language_for_extension(ext: &str) -> Option<String> {
-    match ext {
-        "rs" => Some("Rust".into()),
-        "py" => Some("Python".into()),
-        "js" => Some("JavaScript".into()),
-        "ts" => Some("TypeScript".into()),
-        "tsx" => Some("TSX".into()),
-        "jsx" => Some("JSX".into()),
-        "go" => Some("Go".into()),
-        "rb" => Some("Ruby".into()),
-        "verse" => Some("Verse".into()),
-        "java" => Some("Java".into()),
-        "c" => Some("C".into()),
-        "cpp" | "hpp" => Some("C++".into()),
-        "h" => Some("C/C++ Header".into()),
-        "cs" => Some("C#".into()),
-        "kt" | "kts" => Some("Kotlin".into()),
-        "swift" => Some("Swift".into()),
-        "scala" => Some("Scala".into()),
-        "dart" => Some("Dart".into()),
-        "zig" => Some("Zig".into()),
-        "m" => Some("Objective-C".into()),
-        "mm" => Some("Objective-C++".into()),
-        _ => None,
-    }
-}
-
-// Brace-balanced block finding
-fn find_brace_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-    ext: &str,
-) -> Result<(usize, usize), HashlineError> {
-    let pairs = find_brace_pairs(entries, ext);
-    let enclosing = pairs
-        .iter()
-        .filter(|(start, end)| *start <= anchor_index && *end >= anchor_index)
-        .max_by_key(|(start, _)| *start)
-        .copied()
-        .ok_or_else(|| HashlineError::UnbalancedBlock {
-            line_no: anchor_index + 1,
-        })?;
-    Ok(enclosing)
-}
-
-fn find_brace_pairs(entries: &[crate::document::LineEntry], ext: &str) -> Vec<(usize, usize)> {
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-
-    let line_comment: &[u8] = if ext == "py" || ext == "rb" {
-        b"#"
-    } else {
-        b"//"
-    };
-    let use_block_comments = ext != "py" && ext != "rb";
-
-    let mut in_block_comment = false;
-    let mut in_template_literal = false;
-    let mut template_escape = false;
-
-    for (line_idx, entry) in entries.iter().enumerate() {
-        let bytes = entry.content.as_bytes();
-        let mut i = 0;
-        let mut in_single_quote = false;
-        let mut in_double_quote = false;
-        let mut prev_escape = false;
-
-        while i < bytes.len() {
-            if in_template_literal {
-                if template_escape {
-                    template_escape = false;
-                } else if bytes[i] == b'\\' {
-                    template_escape = true;
-                } else if bytes[i] == b'`' {
-                    in_template_literal = false;
-                }
-                i += 1;
-                continue;
-            }
-
-            if prev_escape {
-                prev_escape = false;
-                i += 1;
-                continue;
-            }
-            if (in_single_quote || in_double_quote) && bytes[i] == b'\\' {
-                prev_escape = true;
-                i += 1;
-                continue;
-            }
-
-            if in_block_comment {
-                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-
-            if !in_single_quote && !in_double_quote && bytes[i..].starts_with(line_comment) {
-                break;
-            }
-
-            if use_block_comments
-                && !in_single_quote
-                && !in_double_quote
-                && i + 1 < bytes.len()
-                && bytes[i] == b'/'
-                && bytes[i + 1] == b'*'
-            {
-                in_block_comment = true;
-                i += 2;
-                continue;
-            }
-
-            if in_single_quote && bytes[i] == b'\'' {
-                in_single_quote = false;
-                i += 1;
-                continue;
-            }
-            if in_double_quote && bytes[i] == b'"' {
-                in_double_quote = false;
-                i += 1;
-                continue;
-            }
-
-            if !in_single_quote && !in_double_quote && bytes[i] == b'\'' {
-                in_single_quote = true;
-                i += 1;
-                continue;
-            }
-            if !in_single_quote && !in_double_quote && bytes[i] == b'"' {
-                in_double_quote = true;
-                i += 1;
-                continue;
-            }
-            if !in_single_quote && !in_double_quote && bytes[i] == b'`' {
-                in_template_literal = true;
-                i += 1;
-                continue;
-            }
-
-            if !in_single_quote && !in_double_quote && !in_block_comment {
-                if bytes[i] == b'{' {
-                    stack.push(line_idx);
-                } else if bytes[i] == b'}' {
-                    if let Some(start) = stack.pop() {
-                        pairs.push((start, line_idx));
-                    }
-                }
-            }
-
-            i += 1;
-        }
-    }
-
-    pairs
-}
-
-// Indentation-based block finding
-fn find_indent_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), HashlineError> {
-    let anchor_indent = leading_whitespace(&entries[anchor_index].content);
-
-    // If anchor is at indent 0 (e.g. a `def` statement), it IS the block header.
-    if anchor_indent == 0 {
-        let mut end = entries.len() - 1;
-        for i in (anchor_index + 1)..entries.len() {
-            let trimmed = entries[i].content.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                continue;
-            }
-            let indent = leading_whitespace(&entries[i].content);
-            if indent <= anchor_indent {
-                end = i.saturating_sub(1);
-                break;
-            }
-        }
-        return Ok((anchor_index, end));
-    }
-
-    let mut start: Option<usize> = None;
-    for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() {
-            continue;
-        }
-        let indent = leading_whitespace(&entries[i].content);
-        if indent < anchor_indent {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
-        line_no: anchor_index + 1,
-    })?;
-    let start_indent = leading_whitespace(&entries[start].content);
-    let mut end = entries.len() - 1;
-    for i in (start + 1)..entries.len() {
-        let trimmed = entries[i].content.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-            continue;
-        }
-        let indent = leading_whitespace(&entries[i].content);
-        if indent <= start_indent {
-            end = i.saturating_sub(1);
-            break;
-        }
-    }
-    Ok((start, end))
-}
-
-fn find_verse_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(Option<String>, usize, usize), HashlineError> {
-    // Verse combines indented class/method bodies (`base_x := class():` /
-    // `OnBegin():void=`) with brace blocks (`using { /Verse... }`,
-    // `if (X) { ... }`). Try indent first (most blocks are class bodies),
-    // then brace-balanced for anchor lines that live inside `{ }`.
-    if let Ok((s, e)) = find_verse_indent_block(entries, anchor_index) {
-        return Ok((Some("Verse".into()), s, e));
-    }
-    if let Ok((s, e)) = find_brace_block(entries, anchor_index, "verse") {
-        return Ok((Some("Verse".into()), s, e));
-    }
-    // Last resort: return the whole file as a single block (top-level anchor).
-    Ok((Some("Verse".into()), 0, entries.len().saturating_sub(1)))
-}
-
-fn find_verse_indent_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), HashlineError> {
-    let anchor_indent = leading_whitespace(&entries[anchor_index].content);
-
-    // Walk backwards for the first non-empty line with strictly less
-    // indentation. If we never find one (anchor is at top of file), look
-    // forward instead: the first non-empty line with indent <= anchor_indent
-    // marks the block end, and the block extends from anchor_index..end.
-    let mut start: Option<usize> = None;
-    for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() {
-            continue;
-        }
-        let indent = leading_whitespace(&entries[i].content);
-        if indent < anchor_indent {
-            start = Some(i);
-            break;
-        }
-    }
-    let (start, start_indent) = if let Some(s) = start {
-        (s, leading_whitespace(&entries[s].content))
-    } else {
-        // Top-of-file anchor: block extends back to line 0.
-        (0, leading_whitespace(&entries[0].content))
-    };
-
-    let mut end = entries.len().saturating_sub(1);
-    let mut found_end = false;
-    for i in (start + 1)..entries.len() {
-        let entry = &entries[i];
-        let trimmed = entry.content.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Verse treats lines beginning with `#` as a comment-like marker,
-        // matching the Python rule. There is no native block-comment in
-        // Verse, so we only need to skip `#` rows.
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = leading_whitespace(&entry.content);
-        if indent <= start_indent {
-            end = i.saturating_sub(1);
-            found_end = true;
-            break;
-        }
-    }
-    let _ = found_end;
-    Ok((start, end))
-}
-
-fn find_python_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(Option<String>, usize, usize), HashlineError> {
-    let anchor_indent = leading_whitespace(&entries[anchor_index].content);
-
-    // If anchor is at indent 0 (e.g. a `def` statement), it IS the block header.
-    if anchor_indent == 0 {
-        let mut end = entries.len() - 1;
-        for i in (anchor_index + 1)..entries.len() {
-            let trimmed = entries[i].content.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let indent = leading_whitespace(&entries[i].content);
-            if indent <= anchor_indent {
-                end = i.saturating_sub(1);
-                break;
-            }
-        }
-        return Ok((Some("Python".into()), anchor_index, end));
-    }
-
-    let mut start: Option<usize> = None;
-    for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() {
-            continue;
-        }
-        let indent = leading_whitespace(&entries[i].content);
-        if indent < anchor_indent {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
-        line_no: anchor_index + 1,
-    })?;
-
-    let start_indent = leading_whitespace(&entries[start].content);
-    let mut end = entries.len() - 1;
-    for i in (start + 1)..entries.len() {
-        let trimmed = entries[i].content.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = leading_whitespace(&entries[i].content);
-        if indent <= start_indent {
-            end = i.saturating_sub(1);
-            break;
-        }
-    }
-    Ok((Some("Python".into()), start, end))
-}
-
-const RUBY_OPENERS: &[&str] = &[
-    "def ", "class ", "module ", "do ", "do|", "if ", "unless ", "while ", "until ", "for ",
-    "begin ", "case ",
-];
-
-fn find_ruby_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(Option<String>, usize, usize), HashlineError> {
-    let mut depth: isize = 0;
-    let mut start: Option<usize> = None;
-    for i in (0..=anchor_index).rev() {
-        let trimmed = entries[i].content.trim();
-        let end_count = if trimmed == "end" { 1 } else { 0 };
-        let open_count = ruby_opener_count(trimmed);
-        depth += end_count as isize;
-        depth -= open_count as isize;
-        if open_count > 0 && depth < 0 {
-            start = Some(i);
-            break;
-        }
-        if open_count > 0 && depth == 0 {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = start.ok_or_else(|| HashlineError::UnbalancedBlock {
-        line_no: anchor_index + 1,
-    })?;
-
-    depth = 0;
-    let mut end: Option<usize> = None;
-    for i in start..entries.len() {
-        let trimmed = entries[i].content.trim();
-        let open_count = ruby_opener_count(trimmed);
-        let end_count = if trimmed == "end" { 1 } else { 0 };
-        depth += open_count as isize;
-        depth -= end_count as isize;
-        if i > start && depth <= 0 && trimmed == "end" {
-            end = Some(i);
-            break;
-        }
-        if i == start && depth <= 0 {
-            end = Some(i);
-            break;
-        }
-    }
-    let end = end.ok_or_else(|| HashlineError::UnbalancedBlock {
-        line_no: anchor_index + 1,
-    })?;
-    Ok((Some("Ruby".into()), start, end))
-}
-
-fn ruby_opener_count(trimmed: &str) -> usize {
-    for opener in RUBY_OPENERS {
-        if trimmed.starts_with(opener) {
-            return 1;
-        }
-    }
-    0
-}
-
-fn leading_whitespace(content: &str) -> usize {
-    content.len() - content.trim_start().len()
 }
 
 #[cfg(test)]
@@ -675,7 +275,7 @@ mod tests {
         let content =
             "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let (_, entries) = make_fc(content, "test.rs");
-        let pairs = find_brace_pairs(&entries, "rs");
+        let pairs = crate::builtin_resolver::brace_pairs_for_ext(&entries, "rs");
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], (2, 4));
         assert_eq!(pairs[1], (0, 5));
@@ -686,7 +286,8 @@ mod tests {
         let content =
             "fn hello() {\n    let x = 1;\n    if true {\n        println!(\"ok\");\n    }\n}\n";
         let (_, entries) = make_fc(content, "test.rs");
-        let (s, e) = find_brace_block(&entries, 2, "rs").unwrap();
+        let (s, e) =
+            crate::builtin_resolver::resolve_span(&entries, 2, Path::new("test.rs")).unwrap();
         assert_eq!(s, 2);
         assert_eq!(e, 4);
     }

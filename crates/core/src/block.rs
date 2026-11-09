@@ -64,9 +64,11 @@ pub fn has_block_edit(edits: &[Edit]) -> bool {
 /// Returns an error when:
 /// - A `replace_block` or `delete_block` cannot be resolved (no resolver
 ///   available or the resolver returns `None`).
-/// - A resolver returns a single-line span (start == end), which means the
-///   anchor landed on a bare statement rather than the opening line of a
-///   multi-line construct.
+///
+/// A single-line span (`start == end`) is allowed: `fn a() {}` or a one-line
+/// Python statement is a legitimate block, and the CLI patch path accepts it
+/// — the Editor must agree (previously it hard-errored here, diverging from
+/// the CLI).
 ///
 /// `insert_after_block` never errors: when unresolvable it is degraded to a
 /// plain `insert after N:`.
@@ -210,16 +212,8 @@ pub fn resolve_block_edits(
                 return Err(BlockResolveError::Unresolved(msg));
             }
             Some(BlockSpan { start, end }) => {
-                if start == end {
-                    // Single-line resolution means the anchor landed on a bare
-                    // statement, not a multi-line construct — reject.
-                    return Err(BlockResolveError::Unresolved(format!(
-                        "line {}: `{}` resolved a single-line block (line {}) — \
-                         line {} is a bare statement, not the opening line of a \
-                         multi-line construct. Use a concrete line range instead.",
-                        line_num, op, start, line_num
-                    )));
-                }
+                // Single-line spans (`fn a() {}`, one-line suites) are valid
+                // blocks — the CLI accepts them, so the Editor does too.
 
                 if op == "insert_after" {
                     // Mirror the parser's `insert after N:` lowering: one

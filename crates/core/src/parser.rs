@@ -453,10 +453,14 @@ impl Executor {
                 return;
             }
         };
-        if matches!(
-            pending.target,
-            BlockTarget::Delete(_, _) | BlockTarget::DeleteBlock(..)
-        ) {
+        if matches!(pending.target, BlockTarget::Delete(_, _)) {
+            return;
+        }
+        if matches!(pending.target, BlockTarget::DeleteBlock(..)) {
+            // DEL.BLK takes no payload, but garbage lines must still pass
+            // through the unknown-op guard — previously they were swallowed
+            // silently until the next valid op.
+            self.flag_op_candidate(text);
             return;
         }
 
@@ -490,6 +494,9 @@ impl Executor {
                 return;
             }
             if matches!(pending.target, BlockTarget::DeleteBlock(..)) {
+                // DEL.BLK takes no payload — but still run the unknown-op
+                // guard so stray op-like lines can't slip through silently.
+                self.flag_op_candidate(text);
                 return;
             }
             if text.trim_start().starts_with('-') {
@@ -684,9 +691,10 @@ impl Executor {
                 self.edit_index += 1;
             }
             BlockTarget::Block(anchor, hash) => {
-                if payload_texts.is_empty() {
-                    return;
-                }
+                // SWAP.BLK with an empty payload deletes the block — the same
+                // convention `SWAP N:` (empty body = delete) already uses.
+                // The apply layer treats `mode: None` + empty payloads as a
+                // pure block deletion, identical to DEL.BLK.
                 self.edits.push(Edit::Block {
                     anchor: *anchor,
                     payloads: payload_texts,
@@ -699,6 +707,9 @@ impl Executor {
             }
             BlockTarget::InsertAfterBlock(anchor, hash) => {
                 if payload_texts.is_empty() {
+                    self.warnings.push(format!(
+                        "line {line_num}: INS.BLK.POST with no payload lines was ignored"
+                    ));
                     return;
                 }
                 self.edits.push(Edit::Block {
@@ -713,6 +724,9 @@ impl Executor {
             }
             BlockTarget::InsertBeforeBlock(anchor, hash) => {
                 if payload_texts.is_empty() {
+                    self.warnings.push(format!(
+                        "line {line_num}: INS.BLK.PRE with no payload lines was ignored"
+                    ));
                     return;
                 }
                 self.edits.push(Edit::Block {
