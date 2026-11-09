@@ -13,12 +13,43 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 > `hashline rename` commands remain available.
 
 ## [Unreleased]
-- fix(concurrency): post-write byte verification + pre-persist drift re-check (bd-concurrency-residual-ubpl)
-  - `patch`/`write` (CLI, MCP, `Editor`) now re-read the file after writing and byte-compare; a concurrent overwrite fails with `ERR CONCURRENT_MODIFICATION` instead of a silent `OK`.
-  - `patch --safe` re-runs the source-drift check inside the atomic persist retry loop, closing most of the temp-write→persist TOCTOU window that could destroy a swapped-in file.
-  - Windows os errors 32/33/303/1224 (sharing violation, lock violation, delete-pending, user-mapped file) and Unix EBUSY/ETXTBSY are classified as routine environmental I/O errors: no bogus `REPORT` bug-report line, with actionable hints.
-  - Documented residual: no OS-level locking, so a writer landing in the final check→rename window still wins (the loser now errors); default `fast_write` remains truncate+write and can expose torn reads to concurrent readers — use `--safe` for reader safety.
-- docs: fix verify-wave doc drift — inline `+payload` after op headers, removed retired `--no-cache` flag, corrected `ERR STALE_ANCHOR` name, bracketed `[path#hash]` read headers, documented `REM`/`MV` patch ops, `*** End of File` marker, find-block relocation warnings, and the `changed[]` vs anchor-array JSON key difference (`line` vs `n`) (bd-docs-drift-2-i4v3)
+
+Comprehensive audit remediation (~50-agent audit → 30 tracked fixes → independent verification swarm). Highlights below; full audit report in repo history.
+
+### Data-loss & correctness fixes
+- **Patch engine rewritten to a gap model** — original lines stay indexed, `deleted[]` marks removals, `gaps[]` hold inserts. Eliminates the entire shift-table corruption family: duplicate/overlapping deletes now reject atomically, interleaved insert/delete ops preserve original-line targeting, and `SWAP` ranges can't eat unintended lines.
+- **`rename --force` src≡dst no longer deletes the file** — `./`, `..`, case variants, trailing dot/space, and Windows path aliases all resolve to `ERR SAME_FILE`; directories/junctions fail with `ERR IS_DIRECTORY`.
+- **DOS device paths rejected before any filesystem probe** — `write`/`patch`/`rename`/`remove` on `CON`, `AUX`, `PRN`, `COM1-9`, `LPT1-9`, `CONIN$`, `CONOUT$`, device/verbatim prefixes now fail fast with `ERR INVALID_PATH` instead of hanging.
+- **BOM, mixed-EOL, and pure-CR files preserved** — per-line endings kept, dominant-EOL matching on write, `write --force` matches existing file style.
+- **Section headers `[other-path#hash]` are rejected** instead of silently applying ops to the wrong file; `REM`/`MV` file ops are now implemented (previously parsed then dropped).
+- **Inline payload syntax fixed** — `SWAP 2:hh:+payload` previously ignored the payload and silently deleted the line; inline `+payload`/bare payload after any op header now works, `DEL`-family rejects trailing junk, and `*** End of File` is recognized as an end-of-patch marker.
+- **Tokenizer hardened** — checked math (release-mode overflow wrap fixed), malformed/non-hex/overlong hashes rejected, range-end hashes validated, reversed/huge ranges rejected, register names restricted, insert ops reject `N..M` ranges, and trailing garbage after op headers (`DEL 2xyz`, `SWAP 1.5:`) rejects atomically.
+- **Stale-anchor drift guard + post-write byte verification** — `patch`/`write` re-read and byte-compare after writing on every surface (CLI, MCP, `Editor`); a concurrent overwrite fails with `ERR CONCURRENT_MODIFICATION` instead of reporting `OK`. `patch --safe` re-checks source drift inside the atomic persist retry loop.
+- **Block ops unified** — CLI, `find-block`, and `Editor` now share one resolver (`builtin_resolver::resolve_span`) with a language-aware scanner handling lifetimes, JSX/apostrophes, regexes, template literals, `#` comments, heredocs (incl. PHP `<<<EOT`), `} else {` bridges, Python indentation, CMake (`CMakeLists.txt` + `.cmake`), and PHP alt-syntax. `DEL.BLK`/empty `SWAP.BLK` boundary semantics tightened; `INS.BLK.*` unresolvable anchors hard-error consistently.
+
+### Performance
+- **`patch --dry-run` no longer materializes an unbounded diff** — 500k-line file: ~300–460 ms (previously OOM/abort at ~8–20 GB).
+- **`read --json` streams output** — 500k lines: ~4× faster, ~7.5× less memory (966 MB → ~130 MB RSS). Same streaming applied to `patch --json --emit-anchors`.
+- **MCP compact `read` skips the structured payload** — ~5× faster on large files.
+- Patch apply ~1.5–2.4× faster overall; hash computation skipped for bare `N:` anchors.
+
+### MCP / JSON / daemon
+- MCP surfaces **all apply-time warnings** (previously dropped entirely), structured error `kind`/`hint`/`details`, bounded dry-run diffs, correct JSON-RPC codes, explicit `id:null` handling, and no phantom trailing line.
+- `--json` success payloads include `warnings`; `guide --json` emits valid JSON; compact path fields are escaped.
+- Daemon routing fixed: `remove`/`rename` map correctly, supported flags pass through, `guide` no longer panics, fallback narrowed to connection failures (no double-execution), connection/read/write timeouts added.
+- `find-block` fuzzy relocation is distance-bounded and reports `WARN`/stderr warning + JSON `warning` field.
+
+### Safety & robustness
+- Windows os errors 32/33/303/1224 (sharing violation, lock, delete-pending, mapped file) and Unix `EBUSY`/`ETXTBSY` are classified as routine environmental I/O — no bogus bug-report line, with actionable hints.
+- `--safe` atomic writes sweep stale `.tmp*` files (>10 min) and warn when falling back to non-atomic persist.
+- Home-dir resolution unified; env flags parse truthy values (`1/true/yes/on`); invalid logging config warns; update-notice no longer stalls 30 s on unwritable cache; update versions sanitized.
+- Documented residuals: no OS-level file lock (final check→rename window remains, but the loser now errors loudly); `fast_write` can expose torn reads to concurrent readers — use `--safe`.
+
+### Installers, CI, docs
+- Installers: Amp/OpenCode MCP config shapes corrected, PowerShell installer no longer kills the caller's shell, `.sha256` sidecar strictly validated, Linux aarch64 release assets added.
+- CI: GitHub Actions pinned to SHAs, workflow-dispatch version naming fixed, `scripts/e2e.sh` unset-arg handling fixed.
+- Docs: AGENTS.md foreign-product sections removed, all examples verified against the real binary, patch grammar/envelope/env vars/MCP tools documented, `changed[]` vs anchor-array JSON key difference documented.
+- Polish: stray content after `CUT`/`PUT`/`REM`/`MV` warns instead of silently dropping; ~300 lines of dead code removed.
 
 ## [v0.9.22] - 2026-11-08
 - fix(editor): block ops dropped expected_hash, accepting stale anchors (#126)
