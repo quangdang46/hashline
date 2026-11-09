@@ -271,7 +271,19 @@ impl Editor {
     ) -> Result<PatchResult, HashlineError> {
         let fc = FileContent::load(path)?;
         let text = &fc.normalized;
-        let (edits, warnings, _file_op, aborted) = parse_patch(patch_str);
+        let (edits, warnings, file_op, aborted) = parse_patch(patch_str);
+
+        // File-level ops (REM/MV) have no meaning for a text-mutation
+        // library — previously they were parsed and silently dropped while
+        // the line edits applied. Fail closed instead.
+        if file_op.is_some() {
+            return Err(HashlineError::PatchRejected {
+                reason: "patch contains a file-level operation (REM/MV) which \
+                         Editor does not support; apply it via the filesystem \
+                         or the `hashline patch` CLI command"
+                    .into(),
+            });
+        }
 
         // Handle abort / empty patch
         if edits.is_empty() {
@@ -416,6 +428,10 @@ impl Editor {
         };
 
         if !dry_run {
+            // Same write-time stale-file guard as the CLI patch path: if the
+            // file drifted since `FileContent::load` above, refuse to clobber
+            // the other writer's change.
+            crate::commands::patch::reject_if_source_drifted(path, &fc)?;
             crate::commands::common::fast_write(path, final_text.as_bytes())?;
         }
 
@@ -463,7 +479,17 @@ impl Editor {
         patch_str: &str,
         path: &str,
     ) -> Result<PatchResult, HashlineError> {
-        let (edits, warnings, _file_op, aborted) = parse_patch(patch_str);
+        let (edits, warnings, file_op, aborted) = parse_patch(patch_str);
+
+        // Same fail-closed rule as `patch_inner`: file-level ops are not
+        // silently dropped in the in-memory path either.
+        if file_op.is_some() {
+            return Err(HashlineError::PatchRejected {
+                reason: "patch contains a file-level operation (REM/MV) which \
+                         Editor does not support"
+                    .into(),
+            });
+        }
 
         if edits.is_empty() {
             if aborted {

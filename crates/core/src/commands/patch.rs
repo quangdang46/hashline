@@ -7,7 +7,9 @@ use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
-use crate::types::{BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, InsertMode};
+use crate::types::{
+    BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, FileOp, InsertMode,
+};
 
 thread_local! {
     /// Warnings emitted while *applying* edits (boundary-echo repairs,
@@ -43,12 +45,29 @@ pub fn run<W: Write, E: Write>(
 
     let fc = FileContent::load(&cmd.file)?;
     let text = &fc.normalized;
-    let (edits, warnings, _file_op, aborted) = parse_patch(&patch_content);
+    let (edits, warnings, file_op, aborted) = parse_patch(&patch_content);
 
     // Surface parser warnings even when no edits were produced so callers
     // can tell a syntactically-broken patch from an empty one.
     for w in &warnings {
         eprintln!("warning: {w}");
+    }
+
+    // File-level ops (`REM` / `MV <dest>`). These used to be parsed and then
+    // silently discarded — the patch reported success while nothing
+    // happened. Conservative semantics (documented in CHANGELOG): a patch
+    // may contain EITHER line edits OR a single file op, never both; the
+    // file op runs only after the patch parses cleanly.
+    if let Some(op) = &file_op {
+        if aborted || !edits.is_empty() {
+            return Err(HashlineError::PatchRejected {
+                reason: "a file-level operation (REM/MV) cannot be combined with \
+                         line edits or an aborted patch; use `hashline remove` / \
+                         `hashline rename` for file operations"
+                    .into(),
+            });
+        }
+        return apply_patch_file_op(ctx, &cmd.file, op);
     }
 
     if edits.is_empty() {
@@ -85,7 +104,14 @@ pub fn run<W: Write, E: Write>(
     let entries = fc.lines_with_hashes();
     // Count unique high-level operations (each has a distinct line_num).
     let op_count = count_operations(&edits);
-    let changeset = apply_edits_tracked(&mut lines, &entries, &cmd.file, &edits, op_count)?;
+    let changeset = apply_edits_tracked(
+        &mut lines,
+        &entries,
+        &cmd.file,
+        &edits,
+        op_count,
+        had_trailing_newline,
+    )?;
 
     let result = if had_trailing_newline && !lines.is_empty() {
         lines.join("\n") + "\n"
@@ -130,6 +156,13 @@ pub fn run<W: Write, E: Write>(
         }
         return Ok(());
     }
+
+    // TOCTOU / lost-update guard: the edit was computed against `fc`, but
+    // the write below targets the path, not the loaded content. If another
+    // process swapped or rewrote the file since the load, writing would
+    // silently destroy their change (or, for a swapped-in decoy, destroy an
+    // unrelated file). Re-read and compare content; fail closed on drift.
+    reject_if_source_drifted(&cmd.file, &fc)?;
 
     if cmd.safe {
         crate::commands::common::atomic_write(&cmd.file, final_text.as_bytes())?;
@@ -341,6 +374,148 @@ fn write_updated_anchors<W: Write>(
     Ok(())
 }
 
+/// Write-time stale-file guard shared by every patch write path (CLI,
+/// MCP, `Editor::patch`). `loaded` is the [`FileContent`] the edits were
+/// computed against; the file on disk is re-read and compared. Any drift —
+/// a rewrite, a truncate, or a swapped-in decoy — fails closed with
+/// [`HashlineError::StaleFile`] instead of clobbering the other writer's
+/// change.
+///
+/// Residual race: a writer landing between this check and the actual write
+/// is still possible — closing it fully needs OS-level locking (or a
+/// compare-and-swap write), which hashline deliberately does not take.
+/// This narrows the window from "whole patch apply" to a single re-read.
+pub(crate) fn reject_if_source_drifted(
+    path: &Path,
+    loaded: &FileContent,
+) -> Result<(), HashlineError> {
+    let fresh = FileContent::load(path)?;
+    if fresh.normalized != loaded.normalized {
+        return Err(HashlineError::StaleFile {
+            path: path.display().to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Execute a patch that consists solely of a file-level operation (`REM` or
+/// `MV <dest>`). Mirrors the dedicated `remove`/`rename` commands' guards —
+/// existence, directory rejection, same-file and destination-exists checks —
+/// but with no `--force`: a `MV` onto an existing path fails rather than
+/// deleting it. A relative `MV` destination resolves against the source
+/// file's parent directory (the section the op was written for), not the
+/// process cwd.
+fn apply_patch_file_op<W: Write, E: Write>(
+    ctx: &mut CommandContext<'_, W, E>,
+    file: &Path,
+    op: &FileOp,
+) -> Result<(), HashlineError> {
+    match op {
+        FileOp::Remove => {
+            if !file.exists() {
+                return Err(HashlineError::FileNotFound {
+                    path: file.display().to_string(),
+                });
+            }
+            std::fs::remove_file(file)?;
+            match ctx.output_mode() {
+                crate::context::OutputMode::Compact | crate::context::OutputMode::Ndjson => {
+                    writeln!(
+                        ctx.stdout(),
+                        "OK {}",
+                        crate::output::escape_compact_field(&file.display().to_string())
+                    )?;
+                }
+                crate::context::OutputMode::Verbose => {
+                    writeln!(ctx.stdout(), "removed '{}'", file.display())?;
+                }
+                crate::context::OutputMode::Json => {
+                    let output = serde_json::json!({
+                        "success": true,
+                        "path": file.display().to_string(),
+                        "file_op": "remove",
+                    });
+                    writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
+                }
+            }
+        }
+        FileOp::Rename(dest) => {
+            let dst = {
+                let d = Path::new(dest);
+                if d.is_absolute() {
+                    d.to_path_buf()
+                } else {
+                    match file.parent() {
+                        Some(p) if !p.as_os_str().is_empty() => p.join(d),
+                        _ => d.to_path_buf(),
+                    }
+                }
+            };
+            if !file.exists() {
+                return Err(HashlineError::FileNotFound {
+                    path: file.display().to_string(),
+                });
+            }
+            let src_meta = std::fs::metadata(file)?;
+            if src_meta.is_dir() {
+                return Err(HashlineError::IsDirectory {
+                    path: file.display().to_string(),
+                });
+            }
+            if !src_meta.is_file() {
+                return Err(HashlineError::InvalidPath {
+                    path: file.display().to_string(),
+                    reason: "source is not a regular file".into(),
+                });
+            }
+            if crate::commands::common::paths_refer_to_same_file(file, &dst) {
+                return Err(HashlineError::SameFile {
+                    path: file.display().to_string(),
+                });
+            }
+            if dst.exists() {
+                return Err(HashlineError::TargetExists {
+                    path: dst.display().to_string(),
+                });
+            }
+            if let Some(parent) = dst.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            std::fs::rename(file, &dst)?;
+            match ctx.output_mode() {
+                crate::context::OutputMode::Compact | crate::context::OutputMode::Ndjson => {
+                    writeln!(
+                        ctx.stdout(),
+                        "OK {}>{}",
+                        crate::output::escape_compact_field(&file.display().to_string()),
+                        crate::output::escape_compact_field(&dst.display().to_string())
+                    )?;
+                }
+                crate::context::OutputMode::Verbose => {
+                    writeln!(
+                        ctx.stdout(),
+                        "renamed '{}' -> '{}'",
+                        file.display(),
+                        dst.display()
+                    )?;
+                }
+                crate::context::OutputMode::Json => {
+                    let output = serde_json::json!({
+                        "success": true,
+                        "src": file.display().to_string(),
+                        "dst": dst.display().to_string(),
+                        "file_op": "rename",
+                    });
+                    writeln!(ctx.stdout(), "{}", serde_json::to_string(&output)?)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Resolve the `<PATCH>` argument: `-` reads stdin, `@path` reads file, otherwise literal.
 fn resolve_patch_content(patch: &str) -> Result<String, HashlineError> {
     if patch == "-" {
@@ -520,9 +695,10 @@ pub fn apply_edits_tracked(
     path: &Path,
     edits: &[Edit],
     edits_count: usize,
+    trailing_newline: bool,
 ) -> Result<ChangeSet, HashlineError> {
     apply_edits(lines, entries, path, edits)?;
-    let changeset = compute_changeset(entries, lines, edits_count, path);
+    let changeset = compute_changeset(entries, lines, edits_count, path, trailing_newline);
     Ok(changeset)
 }
 
@@ -548,6 +724,7 @@ fn compute_changeset(
     final_lines: &[String],
     edits_count: usize,
     _path: &Path,
+    trailing_newline: bool,
 ) -> ChangeSet {
     use crate::hash::{compute_file_hash, short_hash_value_indexed};
 
@@ -570,9 +747,11 @@ fn compute_changeset(
 
     // A patch normally touches a small region, so the LCS table stays tiny.
     // The budget is generous enough to align a few thousand rewritten lines
-    // exactly; past that a wholesale delete+insert is reported instead.
+    // exactly; past that `changeset_diff_ops` anchors on unique common lines
+    // so sparse edits in huge files still align — only genuinely
+    // unalignable chunks degrade to a wholesale delete+insert.
     const MAX_LCS_CELLS: usize = 4_000_000;
-    let ops = crate::merge::diff_ops_with_budget(&old_lines, &new_lines, MAX_LCS_CELLS);
+    let ops = changeset_diff_ops(&old_lines, &new_lines, MAX_LCS_CELLS);
 
     let mut orig_idx = 0usize; // 0-based cursor into old_lines
     let mut final_idx = 0usize; // 0-based cursor into final_lines
@@ -624,10 +803,40 @@ fn compute_changeset(
     // Trailing deletes with no insert run left to pair with.
     deleted.append(&mut pending_deletes);
 
+    // Bound the reported change list. A genuinely wholesale rewrite (or an
+    // unalignable fallback chunk) can produce tens of thousands of entries —
+    // a token flood for agent consumers. Cap each category and say so; the
+    // file itself is still written correctly, and `updated_anchors` (opt-in)
+    // always carries the full listing.
+    const MAX_REPORTED_CHANGES: usize = 1000;
+    let mut omitted = 0usize;
+    for vec in [&mut modified, &mut inserted] {
+        if vec.len() > MAX_REPORTED_CHANGES {
+            omitted += vec.len() - MAX_REPORTED_CHANGES;
+            vec.truncate(MAX_REPORTED_CHANGES);
+        }
+    }
+    if deleted.len() > MAX_REPORTED_CHANGES {
+        omitted += deleted.len() - MAX_REPORTED_CHANGES;
+        deleted.truncate(MAX_REPORTED_CHANGES);
+    }
+    if omitted > 0 {
+        emit_apply_warning(&format!(
+            "changeset truncated: {omitted} changed lines not shown \
+             (showing first {MAX_REPORTED_CHANGES} per category)"
+        ));
+    }
+
+    // The reported hash must match what `hashline read` computes for the
+    // resulting file: the trailing newline is preserved only when the
+    // original had one. The old code always appended '\n', so the reported
+    // `path#hash` was stale for no-trailing-newline files.
     let final_text = if final_lines.is_empty() {
         String::new()
-    } else {
+    } else if trailing_newline {
         final_lines.join("\n") + "\n"
+    } else {
+        final_lines.join("\n")
     };
     let file_hash = compute_file_hash(&final_text);
 
@@ -655,6 +864,171 @@ fn compute_changeset(
     }
 }
 
+/// Line-level diff for the changeset. Like [`crate::merge::diff_ops_with_budget`]
+/// but the over-budget middle is first anchored on lines that occur exactly
+/// once on both sides (patience-style), so a sparse edit inside a huge file
+/// still aligns exactly instead of degrading to one wholesale
+/// delete+insert run — which the changeset renderer would pair line-by-line
+/// into thousands of phantom "modified" entries (e.g. `DEL 1` + `DEL 9999`
+/// on a 10k-line file reporting `changed=9999`).
+fn changeset_diff_ops(old: &[&str], new: &[&str], max_cells: usize) -> Vec<crate::merge::DiffOp> {
+    use crate::merge::DiffOp;
+
+    // Common prefix/suffix, same trim diff_ops_with_budget applies.
+    let prefix = old
+        .iter()
+        .zip(new.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut o_end = old.len();
+    let mut n_end = new.len();
+    while o_end > prefix && n_end > prefix && old[o_end - 1] == new[n_end - 1] {
+        o_end -= 1;
+        n_end -= 1;
+    }
+    let mut ops = Vec::new();
+    if prefix > 0 {
+        ops.push(DiffOp::Equal(prefix));
+    }
+    anchored_diff(
+        &old[prefix..o_end],
+        &new[prefix..n_end],
+        max_cells,
+        0,
+        &mut ops,
+    );
+    let suffix = old.len() - o_end;
+    if suffix > 0 {
+        ops.push(DiffOp::Equal(suffix));
+    }
+    ops
+}
+
+/// Recursively diff `old`/`new`. Small regions use the exact LCS; large
+/// regions split on unique common anchors; regions with no anchors (or
+/// absurd nesting depth) degrade to a wholesale delete+insert.
+fn anchored_diff(
+    old: &[&str],
+    new: &[&str],
+    max_cells: usize,
+    depth: u32,
+    ops: &mut Vec<crate::merge::DiffOp>,
+) {
+    use crate::merge::DiffOp;
+
+    match (old.len(), new.len()) {
+        (0, 0) => {}
+        (_, 0) => ops.push(DiffOp::Delete(old.len())),
+        (0, _) => ops.push(DiffOp::Insert(new.len())),
+        (m, n) if m.saturating_mul(n) <= max_cells => {
+            ops.extend(crate::merge::diff_ops_with_budget(old, new, max_cells));
+        }
+        _ if depth >= 32 => {
+            ops.push(DiffOp::Delete(old.len()));
+            ops.push(DiffOp::Insert(new.len()));
+        }
+        _ => {
+            let anchors = unique_anchors(old, new);
+            if anchors.is_empty() {
+                ops.push(DiffOp::Delete(old.len()));
+                ops.push(DiffOp::Insert(new.len()));
+                return;
+            }
+            let (mut po, mut pn) = (0usize, 0usize);
+            for (ao, an) in anchors {
+                anchored_diff(&old[po..ao], &new[pn..an], max_cells, depth + 1, ops);
+                ops.push(DiffOp::Equal(1));
+                po = ao + 1;
+                pn = an + 1;
+            }
+            anchored_diff(&old[po..], &new[pn..], max_cells, depth + 1, ops);
+        }
+    }
+}
+
+/// Pairs `(old_idx, new_idx)` of lines that occur exactly once in each
+/// slice, kept in increasing order on both axes via a longest-increasing-
+/// subsequence pass over the new-side positions.
+fn unique_anchors(old: &[&str], new: &[&str]) -> Vec<(usize, usize)> {
+    use std::collections::HashMap;
+
+    let mut ocount: HashMap<&str, usize> = HashMap::with_capacity(old.len());
+    for &l in old {
+        *ocount.entry(l).or_insert(0) += 1;
+    }
+    let mut ncount: HashMap<&str, usize> = HashMap::with_capacity(new.len());
+    for &l in new {
+        *ncount.entry(l).or_insert(0) += 1;
+    }
+    // old position of each unique line.
+    let mut opos: HashMap<&str, usize> = HashMap::with_capacity(old.len());
+    for (i, &l) in old.iter().enumerate() {
+        if ocount[l] == 1 {
+            opos.insert(l, i);
+        }
+    }
+    // Candidate matches, sorted by old position.
+    let mut cand: Vec<(usize, usize)> = Vec::new();
+    for (j, &l) in new.iter().enumerate() {
+        if ncount[l] == 1 {
+            if let Some(&oi) = opos.get(l) {
+                cand.push((oi, j));
+            }
+        }
+    }
+    cand.sort_unstable();
+    if cand.is_empty() {
+        return cand;
+    }
+    // LIS over the new-side positions so anchors never cross.
+    let seq: Vec<usize> = cand.iter().map(|&(_, nj)| nj).collect();
+    let keep = lis_indices(&seq);
+    keep.into_iter().map(|k| cand[k]).collect()
+}
+
+/// Indices of a longest strictly-increasing subsequence of `seq`
+/// (patience sorting, O(n log n)).
+fn lis_indices(seq: &[usize]) -> Vec<usize> {
+    if seq.is_empty() {
+        return Vec::new();
+    }
+    // tails[i] = index into seq of the smallest tail value for LIS length i+1.
+    let mut tails: Vec<usize> = Vec::with_capacity(seq.len());
+    let mut prev: Vec<usize> = vec![usize::MAX; seq.len()];
+    for (i, &v) in seq.iter().enumerate() {
+        // First tail >= v (lower_bound).
+        let mut lo = 0usize;
+        let mut hi = tails.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if seq[tails[mid]] < v {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo > 0 {
+            prev[i] = tails[lo - 1];
+        }
+        if lo == tails.len() {
+            tails.push(i);
+        } else {
+            tails[lo] = i;
+        }
+    }
+    let mut out = Vec::with_capacity(tails.len());
+    let mut cur = *tails.last().unwrap();
+    loop {
+        out.push(cur);
+        if prev[cur] == usize::MAX {
+            break;
+        }
+        cur = prev[cur];
+    }
+    out.reverse();
+    out
+}
+
 /// `apply_edits` plus a caller-owned per-patch clipboard. `CUT` ops write
 /// captured lines into `clipboard` (keyed by register name); `PUT` ops read
 /// them back out. A `PUT` referencing a register that was never captured is
@@ -679,19 +1053,54 @@ pub fn apply_edits_with_clipboard(
         }
     };
     let mut i = 0;
-    use std::collections::HashMap;
-    let mut insert_count: HashMap<usize, usize> = HashMap::new();
 
-    // ---- live-position tracking (Bug #89-1) -------------------------------
+    // ---- gap-based position model -----------------------------------------
+    //
+    // The old implementation tracked a single net `shift[]` delta per
+    // original line plus an `insert_count` side table. A scalar delta per
+    // line cannot represent *interleaved* inserts: `INS.POST 50` + `DEL 50`
+    // + `INS.POST 50` + `DEL 51` corrupted the table so `DEL 51` removed the
+    // just-inserted payload instead of original line 51, and non-contiguous
+    // or duplicate deletes silently mis-shifted every later op.
+    //
+    // The new model never indexes the live buffer by computed position.
+    // The original document is `orig_len` lines separated by `orig_len + 1`
+    // gaps: gap 0 precedes line 1, gap k sits between original lines k and
+    // k+1, gap orig_len follows the last line. Every insert payload is
+    // appended to its gap in patch order; deletes and SWAPs only ever mark
+    // ORIGINAL lines as removed. Inserted text lives in gaps and can never
+    // be re-anchored or deleted by a later op, so interleaved INS+DEL
+    // sequences are structurally incapable of the old corruption.
+    //
+    // Final text = gap[0] ++ (line 1 if alive) ++ gap[1] ++ (line 2) ++ ...
+    // ++ (line orig_len) ++ gap[orig_len].
+    //
+    // One refinement: a SWAP's replacement payload is NOT a gap insert — it
+    // occupies the removed lines' content slot. Keeping it separate means
+    // `INS.PRE N` always lands before a `SWAP N` replacement and `INS.POST N`
+    // always after it, regardless of the order the ops appear in the patch.
+    // `lines` is only overwritten on success — on any error it still holds
+    // the original buffer, matching the pre-rewrite contract callers rely on.
+    let mut orig: Vec<String> = lines.clone();
+    let orig_len = orig.len();
     let n = entries.len();
-    let mut deleted: Vec<bool> = vec![false; n]; // 0‑indexed by original line
-    let mut shift: Vec<isize> = vec![0; n]; // cumulative offset per original line
+    let mut deleted: Vec<bool> = vec![false; orig_len]; // 0-indexed by original line
+    let mut gaps: Vec<Vec<String>> = vec![Vec::new(); orig_len + 1];
+    // Replacement payload per original line (SWAP / SWAP.BLK). `deleted[i]`
+    // is still true for these lines — the payload is emitted in the content
+    // slot, not in a gap.
+    let mut payload_at: Vec<Option<Vec<String>>> = vec![None; orig_len];
 
-    // Add `delta` to the shift of every original line >= `from` (1‑based).
-    fn apply_delta(shift: &mut [isize], from: usize, delta: isize) {
-        let start = (from.max(1) - 1).min(shift.len());
-        for j in start..shift.len() {
-            shift[j] += delta;
+    /// Record an overlap rejection: a second op tried to remove an
+    /// original line an earlier op already removed. Previously this was a
+    /// silent skip whose shift accounting then corrupted later ops.
+    fn already_deleted(line: usize) -> HashlineError {
+        HashlineError::PatchRejected {
+            reason: format!(
+                "line {line} is already deleted by an earlier operation in this patch; \
+                 each original line can be removed at most once"
+            )
+            .into_boxed_str(),
         }
     }
 
@@ -835,39 +1244,41 @@ pub fn apply_edits_with_clipboard(
                     }
                 }
 
-                if num_new > 0 {
-                    // ---- live-index adjustment (Bug #89-1) ----
-                    let start_idx =
-                        if anchor_line >= 1 && anchor_line <= n && !deleted[anchor_line - 1] {
-                            let raw = (anchor_line as isize - 1) + shift[anchor_line - 1];
-                            if raw >= 0 { Some(raw as usize) } else { None }
-                        } else {
-                            None
-                        }
-                        .ok_or_else(|| HashlineError::InvalidAnchor {
-                            anchor: format!("line {anchor_line} has been deleted by a prior edit"),
-                        })?;
-                    let remove_end = (start_idx + num_old).min(lines.len());
-                    for _ in start_idx..remove_end {
-                        lines.remove(start_idx);
-                    }
-                    for (k, text) in replacement_texts.iter().enumerate() {
-                        lines.insert(start_idx + k, text.clone());
+                // Overlap rejection: every line this SWAP removes must be an
+                // original line no earlier op already removed. The old code
+                // ignored `deleted[]` here and deleted whatever happened to
+                // sit at the shift-adjusted live index — eating unrelated
+                // lines. Reject instead of guessing.
+                let mut sorted_dels = delete_lines.clone();
+                sorted_dels.sort_unstable();
+                for w in sorted_dels.windows(2) {
+                    if w[0] == w[1] {
+                        return Err(already_deleted(w[0]));
                     }
                 }
-
-                // ---- update shift tracking (Bug #89-1) ----
-                let first_del = anchor_line;
-                let last_del = anchor_line + num_old.saturating_sub(1);
-                for dl in first_del..=last_del.min(n) {
+                for &dl in &sorted_dels {
+                    if dl < 1 || dl > orig_len {
+                        return Err(HashlineError::InvalidAnchor {
+                            anchor: format!("line {dl} not found (file has {visible_lines} lines)",),
+                        });
+                    }
+                    if deleted[dl - 1] {
+                        return Err(already_deleted(dl));
+                    }
+                }
+                for &dl in &sorted_dels {
                     deleted[dl - 1] = true;
                 }
-                if last_del < n {
-                    apply_delta(
-                        &mut shift,
-                        last_del + 1,
-                        (num_new as isize) - (num_old as isize),
-                    );
+
+                // The replacement payload occupies the content slot of the
+                // first removed original line — after the gap preceding it
+                // (so `INS.PRE N` still lands before the replacement) and
+                // before the gap following it (`INS.POST N` lands after).
+                if num_new > 0 {
+                    match sorted_dels.first() {
+                        Some(&first) => payload_at[first - 1] = Some(replacement_texts),
+                        None => gaps[anchor_line.saturating_sub(1)].extend(replacement_texts),
+                    }
                 }
 
                 i = j;
@@ -923,29 +1334,27 @@ pub fn apply_edits_with_clipboard(
                         });
                     }
                 }
-                // Delete from live buffer using shift-adjusted positions
-                // Sort DESCENDING so earlier removals don't shift later ones
-                del_lines.sort_by(|a, b| b.cmp(a));
-                for &orig_line in &del_lines {
-                    if orig_line >= 1 && orig_line <= n && !deleted[orig_line - 1] {
-                        let raw = (orig_line as isize - 1) + shift[orig_line - 1];
-                        let idx = if raw >= 0 { raw as usize } else { continue };
-                        if idx < lines.len() {
-                            lines.remove(idx);
-                        }
+                // Overlap rejection: duplicate or already-deleted targets are
+                // a patch bug, not a no-op. The old code silently skipped the
+                // live removal but still counted the line in its shift delta,
+                // corrupting every later op in the patch.
+                let mut sorted_dels = del_lines.clone();
+                sorted_dels.sort_unstable();
+                for w in sorted_dels.windows(2) {
+                    if w[0] == w[1] {
+                        return Err(already_deleted(w[0]));
                     }
                 }
-
-                // ---- update shift tracking (Bug #89-1) ----
-                for &dl in &del_lines {
-                    if dl <= n {
-                        deleted[dl - 1] = true;
+                for &dl in &sorted_dels {
+                    if dl < 1 || dl > orig_len {
+                        return Err(HashlineError::InvalidAnchor {
+                            anchor: format!("line {dl} not found (file has {visible_lines} lines)",),
+                        });
                     }
-                }
-                let last_del = del_lines.iter().max().copied().unwrap_or(0);
-                let del_count = del_lines.len();
-                if last_del < n && del_count > 0 {
-                    apply_delta(&mut shift, last_del + 1, -(del_count as isize));
+                    if deleted[dl - 1] {
+                        return Err(already_deleted(dl));
+                    }
+                    deleted[dl - 1] = true;
                 }
 
                 i = j;
@@ -999,65 +1408,21 @@ pub fn apply_edits_with_clipboard(
                     }
                 }
 
-                // Anchors address the ORIGINAL snapshot; translate to a live
-                // buffer index with the same shift table SWAP/DEL/CUT/PUT use.
-                let live = |orig: usize| -> usize {
-                    if orig >= 1 && orig <= n {
-                        let raw = (orig as isize - 1) + shift[orig - 1];
-                        if raw >= 0 { raw as usize } else { 0 }
-                    } else {
-                        orig.saturating_sub(1)
-                    }
+                // Anchors address the ORIGINAL snapshot. Inserts never touch
+                // original lines — the payload is appended to the gap the
+                // cursor names, in patch order. Because gap contents are
+                // emitted strictly by gap index at rebuild time, an insert
+                // can never be deleted or shifted by a later op (the old
+                // `insert_count`/`shift` pair mis-ordered exactly this case).
+                let gap_idx = match cursor {
+                    // INS.PRE N → gap before original line N.
+                    Cursor::BeforeAnchor(a) => a.line.saturating_sub(1),
+                    // INS.POST N → gap after original line N.
+                    Cursor::AfterAnchor(a) => a.line.min(orig_len),
+                    Cursor::Bof => 0,
+                    Cursor::Eof => orig_len,
                 };
-                let (base_line, stack_key) = match cursor {
-                    // INS.PRE bumps shift at a.line inclusive, so repeated
-                    // PREs at one anchor already stack via `live`.
-                    Cursor::BeforeAnchor(a) => (live(a.line), None),
-                    // INS.POST bumps shift only from a.line+1 (so a SWAP of
-                    // a.line still hits the original line), hence the counter.
-                    Cursor::AfterAnchor(a) => (live(a.line) + 1, Some(a.line)),
-                    Cursor::Bof => (0, Some(0)),
-                    Cursor::Eof => (lines.len(), None),
-                };
-
-                let offset = match stack_key {
-                    Some(key) => {
-                        let o = insert_count.get(&key).copied().unwrap_or(0);
-                        insert_count.insert(key, o + 1);
-                        o
-                    }
-                    None => 0,
-                };
-                let pos = if base_line + offset <= lines.len() {
-                    base_line + offset
-                } else {
-                    lines.len()
-                };
-                lines.insert(pos, text.clone());
-
-                // ---- update shift tracking (Bug #89-1) ----
-                match cursor {
-                    Cursor::BeforeAnchor(a) => {
-                        // Insert before original line N → lines at N+ shift by +1
-                        if a.line <= n {
-                            apply_delta(&mut shift, a.line, 1);
-                        }
-                    }
-                    Cursor::AfterAnchor(a) => {
-                        // Insert after original line N → lines > N shift by +1
-                        if a.line < n {
-                            apply_delta(&mut shift, a.line + 1, 1);
-                        }
-                    }
-                    Cursor::Bof => {
-                        if n > 0 {
-                            apply_delta(&mut shift, 1, 1);
-                        }
-                    }
-                    Cursor::Eof => {
-                        // Insert at end → no change to any original line's live position
-                    }
-                }
+                gaps[gap_idx].push(text.clone());
 
                 i += 1;
             }
@@ -1120,31 +1485,15 @@ pub fn apply_edits_with_clipboard(
                     clipboard.anon = Some(captured);
                 }
 
-                // Delete from the live buffer using shift-adjusted positions
-                // (same as DEL: sort descending so earlier removals don't
-                // shift later ones).
-                let mut del_lines: Vec<usize> = (start_line..=end_line).collect();
-                del_lines.sort_by(|a, b| b.cmp(a));
-                for &orig_line in &del_lines {
-                    if orig_line >= 1 && orig_line <= n && !deleted[orig_line - 1] {
-                        let raw = (orig_line as isize - 1) + shift[orig_line - 1];
-                        let idx = if raw >= 0 { raw as usize } else { continue };
-                        if idx < lines.len() {
-                            lines.remove(idx);
-                        }
-                    }
-                }
-
-                // ---- update shift tracking (Bug #89-1) ----
-                for &dl in &del_lines {
-                    if dl <= n {
+                // Remove the range from the original-line set. Members an
+                // earlier op already removed are skipped — CUT is a
+                // capture-plus-delete, and the captured text always comes
+                // from the original snapshot (see p9_cut_after_swap_*). This
+                // differs from a bare DEL, which rejects overlaps outright.
+                for dl in start_line..=end_line {
+                    if dl >= 1 && dl <= orig_len && !deleted[dl - 1] {
                         deleted[dl - 1] = true;
                     }
-                }
-                let last_del = del_lines.iter().max().copied().unwrap_or(0);
-                let del_count = del_lines.len();
-                if last_del < n && del_count > 0 {
-                    apply_delta(&mut shift, last_del + 1, -(del_count as isize));
                 }
 
                 i += 1;
@@ -1169,11 +1518,11 @@ pub fn apply_edits_with_clipboard(
                     i += 1;
                     continue;
                 }
-                let num_lines = captured.len();
 
-                // Resolve the live insertion index, shift-adjusted so a CUT
-                // earlier in the same patch is accounted for.
-                let pos = match cursor {
+                // Resolve the gap the captured lines paste into. PUT always
+                // targets "before line N" (gap N-1) or the file head (gap 0);
+                // like INS, the payload joins the gap's patch-ordered list.
+                let gap_idx = match cursor {
                     Cursor::BeforeAnchor(a) => {
                         if a.line > visible_lines {
                             return Err(HashlineError::InvalidAnchor {
@@ -1183,12 +1532,7 @@ pub fn apply_edits_with_clipboard(
                                 ),
                             });
                         }
-                        if a.line >= 1 && a.line <= n && !deleted[a.line - 1] {
-                            let raw = (a.line as isize - 1) + shift[a.line - 1];
-                            if raw >= 0 { raw as usize } else { 0 }
-                        } else {
-                            a.line.wrapping_sub(1)
-                        }
+                        a.line.saturating_sub(1)
                     }
                     Cursor::Bof => 0,
                     _ => {
@@ -1197,30 +1541,7 @@ pub fn apply_edits_with_clipboard(
                         });
                     }
                 };
-
-                let offset = insert_count.get(&pos).copied().unwrap_or(0);
-                insert_count.insert(pos, offset + num_lines);
-                let insert_pos = if pos + offset <= lines.len() {
-                    pos + offset
-                } else {
-                    lines.len()
-                };
-                for (k, text) in captured.iter().enumerate() {
-                    lines.insert(insert_pos + k, text.clone());
-                }
-
-                // ---- update shift tracking (Bug #89-1) ----
-                match cursor {
-                    Cursor::BeforeAnchor(a) => {
-                        if a.line <= n {
-                            apply_delta(&mut shift, a.line, num_lines as isize);
-                        }
-                    }
-                    Cursor::Bof if n > 0 => {
-                        apply_delta(&mut shift, 1, num_lines as isize);
-                    }
-                    _ => {}
-                }
+                gaps[gap_idx].extend(captured);
 
                 i += 1;
             }
@@ -1270,99 +1591,81 @@ pub fn apply_edits_with_clipboard(
                 // NOTE: this resolves against the ORIGINAL snapshot. After
                 // prior edits in the same patch remove/insert lines, the
                 // original line numbers may no longer correspond to the
-                // intended blocks. This is a known limitation of block ops
-                // in multi-edit patches.
+                // intended blocks. The gap model below makes the *position*
+                // translation exact, but the span itself is still resolved
+                // on the pre-edit text — a known limitation. To stay
+                // fail-closed, a block op whose resolved span overlaps lines
+                // an earlier op already removed is rejected outright rather
+                // than silently retargeting a neighbouring block.
                 let (orig_block_start, orig_block_end) =
                     resolve_block_span(entries, anchor_index, path)?;
 
-                // Translate block boundaries to live buffer indices through the
-                // same shift table used by SWAP/DEL/CUT/PUT/INS (Bug #106).
-                // Only translate block_start; derive block_end from it to
-                // preserve the original block span.
-                let block_start = {
-                    let raw = (orig_block_start as isize) + shift[orig_block_start.min(n - 1)];
-                    raw.max(0) as usize
-                };
-                let block_len = orig_block_end - orig_block_start + 1;
-                let block_end = block_start + block_len - 1;
+                // Convert the 0-based inclusive span over `entries` to 1-based
+                // original line numbers, clamped to real lines (`orig_len`).
+                // `entries` may carry a phantom trailing empty entry for the
+                // final newline — it is not a deletable line.
+                let start_l = orig_block_start + 1;
+                let end_l = (orig_block_end + 1).min(orig_len);
+                if start_l > end_l || start_l > orig_len {
+                    return Err(HashlineError::UnbalancedBlock { line_no });
+                }
+
+                // Overlap rejection: any already-removed line inside the
+                // resolved span means the block no longer exists as written.
+                for dl in start_l..=end_l {
+                    if deleted[dl - 1] {
+                        return Err(HashlineError::PatchRejected {
+                            reason: format!(
+                                "block op at line {line_no} overlaps line {dl}, already \
+                                 removed by an earlier operation in this patch"
+                            )
+                            .into_boxed_str(),
+                        });
+                    }
+                }
 
                 match mode {
                     None if payloads.is_empty() => {
-                        // DEL.BLK N — remove translated range in descending
-                        // order so earlier removals don't shift later indices.
-                        let del_end = block_end.min(lines.len().saturating_sub(1));
-                        for idx in (block_start..=del_end).rev() {
-                            if idx < lines.len() {
-                                lines.remove(idx);
-                            }
-                        }
-                        // Consume trailing blank line after the deleted block.
-                        // Track whether one was consumed so shift is updated.
-                        let consumed_blank =
-                            block_start < lines.len() && lines[block_start].trim().is_empty();
-                        if consumed_blank {
-                            lines.remove(block_start);
-                        }
-
-                        // ---- update shift tracking (uses original indices) ----
-                        for dl in (orig_block_start + 1)..=(orig_block_end + 1).min(n) {
+                        // DEL.BLK N — mark the whole span deleted.
+                        for dl in start_l..=end_l {
                             deleted[dl - 1] = true;
                         }
-                        // Account for both the block lines AND any consumed
-                        // trailing blank in the shift delta so subsequent block
-                        // ops translate against correct live positions.
-                        let total_removed = block_len + if consumed_blank { 1 } else { 0 };
-                        if orig_block_end + 1 < n {
-                            apply_delta(&mut shift, orig_block_end + 2, -(total_removed as isize));
+                        // Consume the trailing blank line after the block —
+                        // but only when it is a real, still-alive ORIGINAL
+                        // line that is blank in the snapshot. The old code
+                        // inspected the live buffer and neither marked the
+                        // consumed line deleted[] nor distinguished an
+                        // inserted blank from an original one.
+                        let blank_l = end_l + 1;
+                        if blank_l <= orig_len
+                            && !deleted[blank_l - 1]
+                            && entries
+                                .get(blank_l - 1)
+                                .map(|e| e.content.trim().is_empty())
+                                .unwrap_or(false)
+                        {
+                            deleted[blank_l - 1] = true;
                         }
                     }
                     None => {
-                        // SWAP.BLK N: replace the entire block with payload
-                        let num_old = block_end - block_start + 1;
-                        for _ in 0..num_old.min(lines.len()) {
-                            if block_start < lines.len() {
-                                lines.remove(block_start);
-                            }
-                        }
-                        for (k, payload) in payloads.iter().enumerate() {
-                            lines.insert(block_start + k, payload.clone());
-                        }
-
-                        // ---- update shift tracking (uses original indices) ----
-                        for dl in (orig_block_start + 1)..=(orig_block_end + 1).min(n) {
+                        // SWAP.BLK N: replace the entire block with payload.
+                        // The payload occupies the content slot of the
+                        // block's first line — same slot a line-range SWAP
+                        // uses.
+                        for dl in start_l..=end_l {
                             deleted[dl - 1] = true;
                         }
-                        if orig_block_end + 1 < n {
-                            apply_delta(
-                                &mut shift,
-                                orig_block_end + 2,
-                                (payloads.len() as isize) - (num_old as isize),
-                            );
-                        }
+                        payload_at[start_l - 1] = Some(payloads.clone());
                     }
                     Some(BlockMode::InsertAfter) => {
-                        // INS.BLK.POST N: insert after the last line of the block
-                        let insert_pos = (block_end + 1).min(lines.len());
-                        for (k, payload) in payloads.iter().enumerate() {
-                            lines.insert(insert_pos + k, payload.clone());
-                        }
-
-                        // ---- update shift tracking (uses original indices) ----
-                        if orig_block_end + 1 < n {
-                            apply_delta(&mut shift, orig_block_end + 2, payloads.len() as isize);
-                        }
+                        // INS.BLK.POST N: insert after the last line of the
+                        // block → the gap following original line `end_l`.
+                        gaps[end_l.min(orig_len)].extend(payloads.iter().cloned());
                     }
                     Some(BlockMode::InsertBefore) => {
-                        // INS.BLK.PRE N: insert before the first line of the block
-                        let insert_pos = block_start.min(lines.len());
-                        for (k, payload) in payloads.iter().enumerate() {
-                            lines.insert(insert_pos + k, payload.clone());
-                        }
-
-                        // ---- update shift tracking (uses original indices) ----
-                        if orig_block_start < n {
-                            apply_delta(&mut shift, orig_block_start + 1, payloads.len() as isize);
-                        }
+                        // INS.BLK.PRE N: insert before the first line of the
+                        // block → the gap preceding original line `start_l`.
+                        gaps[start_l - 1].extend(payloads.iter().cloned());
                     }
                 }
 
@@ -1370,6 +1673,20 @@ pub fn apply_edits_with_clipboard(
             }
         }
     }
+
+    // ---- rebuild the live buffer ------------------------------------------
+    // gap[0], then per original line: content slot (original text, SWAP
+    // payload, or nothing when deleted) followed by that line's trailing gap.
+    let mut out: Vec<String> = std::mem::take(&mut gaps[0]);
+    for idx in 0..orig_len {
+        if !deleted[idx] {
+            out.push(std::mem::take(&mut orig[idx]));
+        } else if let Some(payload) = payload_at[idx].take() {
+            out.extend(payload);
+        }
+        out.append(&mut gaps[idx + 1]);
+    }
+    *lines = out;
     Ok(())
 }
 
@@ -2789,6 +3106,7 @@ mod tests {
             std::path::Path::new(&path_str),
             &edits,
             count_operations(&edits),
+            original.ends_with('\n'),
         )
         .expect("edit should succeed")
     }
@@ -2999,5 +3317,541 @@ mod tests {
         let err = run_patch_result(dir.path(), "a.txt", "line1\n", "")
             .expect_err("an empty patch must be an error");
         assert_eq!(err.kind(), "EMPTY_PATCH");
+    }
+
+    // =====================================================================
+    // Gap-model position tracking regressions (bd-patch-shift-table-3r2)
+    // =====================================================================
+
+    #[test]
+    fn noncontiguous_dels_do_not_corrupt_later_ops() {
+        // Two far-apart deletes used to collapse into one shift delta and
+        // misplace every subsequent op.
+        let result = apply_text(
+            "L1\nL2\nL3\nL4\nL5\nL6\nL7",
+            "DEL 2\nDEL 6\nSWAP 7:\n+END\nINS.POST 4:\n+X",
+        );
+        // DEL 2 and DEL 6 removed; SWAP 7 rewrites L7; INS.POST 4 lands X.
+        assert_eq!(result, "L1\nL3\nL4\nX\nL5\nEND");
+    }
+
+    #[test]
+    fn duplicate_delete_is_rejected() {
+        let err = apply_text_result("L1\nL2\nL3", "DEL 2\nDEL 2", "txt").unwrap_err();
+        assert_eq!(err.kind(), "PATCH_REJECTED", "{err}");
+    }
+
+    #[test]
+    fn overlapping_delete_range_is_rejected() {
+        let err = apply_text_result("L1\nL2\nL3\nL4\nL5", "DEL 2..4\nDEL 3", "txt").unwrap_err();
+        assert_eq!(err.kind(), "PATCH_REJECTED", "{err}");
+    }
+
+    #[test]
+    fn swap_range_over_already_deleted_line_is_rejected() {
+        // SWAP 2..4 after DEL 3: the old code ignored deleted[] for range
+        // members and ate an extra unintended line.
+        let err =
+            apply_text_result("L1\nL2\nL3\nL4\nL5", "DEL 3\nSWAP 2..4:\n+x", "txt").unwrap_err();
+        assert_eq!(err.kind(), "PATCH_REJECTED", "{err}");
+    }
+
+    #[test]
+    fn interleaved_ins_del_at_same_anchor() {
+        // The verified corruption: INS.POST 50 + DEL 50 + INS.POST 50 +
+        // DEL 51 used to make DEL 51 remove the just-inserted payload.
+        // Scaled down: inserted payloads must survive and DEL 51 must
+        // remove ORIGINAL line 51.
+        let original = (1..=60)
+            .map(|i| format!("L{i:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = apply_text(
+            &original,
+            "INS.POST 50:\n+INS1\nDEL 50\nINS.POST 50:\n+INS2\nDEL 51",
+        );
+        let lines: Vec<&str> = result.split('\n').collect();
+        assert!(lines.contains(&"INS1"), "{result}");
+        assert!(lines.contains(&"INS2"), "{result}");
+        assert!(!lines.contains(&"L50"), "{result}");
+        assert!(!lines.contains(&"L51"), "{result}");
+        assert!(lines.contains(&"L52"), "{result}");
+        // Both inserts sit between L49 and L52, in patch order.
+        let i49 = lines.iter().position(|&l| l == "L49").unwrap();
+        assert_eq!(&lines[i49 + 1..i49 + 3], &["INS1", "INS2"]);
+    }
+
+    #[test]
+    fn interleaved_ins_del_storm() {
+        // 200-op storm of the same shape across many anchors — the old
+        // shift table misfired almost everywhere (changed=1).
+        let n = 200;
+        let original = (1..=n)
+            .map(|i| format!("L{i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut patch = String::new();
+        for k in (10..190).step_by(10) {
+            patch.push_str(&format!(
+                "INS.POST {k}:\n+INS{k}\nDEL {k}\nINS.POST {k}:\n+INS{k}b\nDEL {}\n",
+                k + 1
+            ));
+        }
+        let result = apply_text(&original, &patch);
+        let lines: Vec<&str> = result.split('\n').collect();
+        for k in (10..190).step_by(10) {
+            assert!(
+                lines.contains(&format!("INS{k}").as_str()),
+                "missing INS{k}"
+            );
+            assert!(
+                lines.contains(&format!("INS{k}b").as_str()),
+                "missing INS{k}b"
+            );
+            assert!(
+                !lines.contains(&format!("L{k:03}").as_str()),
+                "L{k} should be deleted"
+            );
+            assert!(
+                !lines.contains(&format!("L{:03}", k + 1).as_str()),
+                "L{} should be deleted",
+                k + 1
+            );
+        }
+        // Spot-check an untouched line survives.
+        assert!(lines.contains(&"L001"));
+        assert!(lines.contains(&"L200"));
+    }
+
+    #[test]
+    fn del_blk_trailing_blank_is_marked_deleted() {
+        // fn block (lines 1-2), blank line 3, second fn (4-5).
+        // DEL.BLK 1 consumes the blank separator; a later DEL 3 must now
+        // be rejected as an overlap instead of silently misplacing.
+        let original = "fn a() {\n}\n\nfn b() {\n}\n";
+        let err = apply_text_result(original, "DEL.BLK 1\nDEL 3", "rs").unwrap_err();
+        assert_eq!(err.kind(), "PATCH_REJECTED", "{err}");
+        // And the happy path: block + blank removed, second fn intact.
+        let result = apply_text(original, "DEL.BLK 1");
+        assert_eq!(result, "fn b() {\n}\n");
+    }
+
+    #[test]
+    fn block_op_overlapping_prior_edit_is_rejected() {
+        // SWAP 2 rewrites a line inside fn a's block; DEL.BLK 1 must not
+        // retarget against the stale original span.
+        let original = "fn a() {\n    let x = 1;\n}\nfn b() {\n}\n";
+        let err =
+            apply_text_result(original, "SWAP 2:\n+    let y = 2;\nDEL.BLK 1", "rs").unwrap_err();
+        assert_eq!(err.kind(), "PATCH_REJECTED", "{err}");
+    }
+
+    #[test]
+    fn swap_payload_sits_in_content_slot_not_gap() {
+        // INS.PRE lands before the replacement, INS.POST after it —
+        // regardless of op order in the patch.
+        assert_eq!(
+            apply_text("a\nb\nc", "SWAP 2:\n+X\nINS.PRE 2:\n+P\nINS.POST 2:\n+Q"),
+            "a\nP\nX\nQ\nc"
+        );
+        assert_eq!(
+            apply_text("a\nb\nc", "INS.PRE 2:\n+P\nINS.POST 2:\n+Q\nSWAP 2:\n+X"),
+            "a\nP\nX\nQ\nc"
+        );
+    }
+
+    // ---- changeset hash + fallback flood (bd-changeset-hash-6fu) ----
+
+    #[test]
+    fn changeset_hash_matches_read_for_no_trailing_newline() {
+        use crate::hash::compute_file_hash;
+        // No trailing newline: reported hash must be over "x\nb" not "x\nb\n".
+        let cs = apply_changeset_ext("a\nb", "SWAP 1:\n+x", "txt");
+        assert_eq!(cs.file_hash, compute_file_hash("x\nb"));
+        assert_ne!(cs.file_hash, compute_file_hash("x\nb\n"));
+        // With trailing newline the hash includes it — drive the same
+        // split_normalized path `run()` uses (the changeset helper above
+        // keeps the phantom trailing line, which would double-count).
+        let (edits, _w, _f, _a) = parse_patch("SWAP 1:\n+x");
+        let mut lines = split_normalized("a\nb\n");
+        let entries: Vec<crate::document::LineEntry> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, s)| crate::document::LineEntry {
+                content: s.clone(),
+                short_hash: crate::hash::short_hash_value_indexed(s, i + 1),
+            })
+            .collect();
+        let cs =
+            apply_edits_tracked(&mut lines, &entries, Path::new("t.txt"), &edits, 1, true).unwrap();
+        assert_eq!(cs.file_hash, compute_file_hash("x\nb\n"));
+    }
+
+    #[test]
+    fn changeset_sparse_deletes_on_huge_file_stay_small() {
+        // 10k-line file, two deletes at the extremes. The old LCS budget
+        // fallback paired ~10k lines as "modified" (changed=9999 flood).
+        let original = (1..=10_000)
+            .map(|i| format!("L{i:05}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cs = apply_changeset_ext(&original, "DEL 1\nDEL 9999", "txt");
+        assert_eq!(cs.deleted, vec![1, 9999], "{cs:?}");
+        assert!(cs.modified.is_empty(), "{cs:?}");
+        assert!(cs.inserted.is_empty(), "{cs:?}");
+        let changed = cs.modified.len() + cs.inserted.len() + cs.deleted.len();
+        assert!(changed <= 10, "changeset must stay small, got {changed}");
+    }
+
+    #[test]
+    fn changeset_truncates_genuinely_huge_rewrite() {
+        // A wholesale rewrite bigger than the report cap is bounded, with a
+        // warning — never a 50k-line flood.
+        let n = 3000;
+        let original = (1..=n)
+            .map(|i| format!("OLD{i:04}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut patch = String::from("SWAP 1..");
+        patch.push_str(&n.to_string());
+        patch.push_str(":\n");
+        for i in 1..=n {
+            patch.push_str(&format!("+NEW{i:04}\n"));
+        }
+        let cs = apply_changeset_ext(&original, &patch, "txt");
+        assert!(cs.modified.len() <= 1000, "{}", cs.modified.len());
+        assert!(cs.deleted.len() <= 1000, "{}", cs.deleted.len());
+    }
+
+    // ---- file ops (bd-rem-mv-ops-pe8) ----
+
+    #[test]
+    fn patch_rem_deletes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_result(dir.path(), "a.txt", "content\n", "REM").unwrap();
+        assert!(out.starts_with("OK "), "{out}");
+        assert!(!dir.path().join("a.txt").exists());
+    }
+
+    #[test]
+    fn patch_mv_renames_file_relative_to_source_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = run_patch_result(dir.path(), "a.txt", "content\n", "MV b.txt").unwrap();
+        assert!(out.starts_with("OK "), "{out}");
+        assert!(!dir.path().join("a.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "content\n"
+        );
+    }
+
+    #[test]
+    fn patch_mv_onto_existing_target_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), "other\n").unwrap();
+        let err = run_patch_result(dir.path(), "a.txt", "content\n", "MV b.txt").unwrap_err();
+        assert_eq!(err.kind(), "TARGET_EXISTS", "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "content\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "other\n"
+        );
+    }
+
+    #[test]
+    fn patch_file_op_combined_with_edits_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let err =
+            run_patch_result(dir.path(), "a.txt", "l1\nl2\n", "REM\nSWAP 1:\n+x").unwrap_err();
+        assert_eq!(err.kind(), "PATCH_REJECTED", "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "l1\nl2\n"
+        );
+    }
+
+    // ---- write-time stale-file guard (bd-concurrency-toctou-ch6) ----
+
+    #[test]
+    fn drifted_source_is_rejected_before_write() {
+        // Simulates the lost-update repro: the patch loads the file, another
+        // writer swaps in a decoy, and the write must fail closed instead of
+        // destroying the decoy's content.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        let loaded = FileContent::load(&path).unwrap();
+
+        // No drift → the guard passes.
+        super::reject_if_source_drifted(&path, &loaded).unwrap();
+
+        // A rewrite between load and write → STALE_FILE.
+        std::fs::write(&path, "decoy\n").unwrap();
+        let err = super::reject_if_source_drifted(&path, &loaded).unwrap_err();
+        assert_eq!(err.kind(), "STALE_FILE", "{err}");
+        // The decoy must be untouched.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "decoy\n");
+    }
+
+    #[test]
+    fn drifted_source_via_delete_and_recreate_is_rejected() {
+        // Same guard, but the "swap" is delete + recreate with different
+        // content — metadata identity is irrelevant, content is compared.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        let loaded = FileContent::load(&path).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "original\n").unwrap(); // same content → ok
+        super::reject_if_source_drifted(&path, &loaded).unwrap();
+
+        std::fs::write(&path, "changed\n").unwrap();
+        let err = super::reject_if_source_drifted(&path, &loaded).unwrap_err();
+        assert_eq!(err.kind(), "STALE_FILE", "{err}");
+    }
+
+    // ---- fuzz: random op sequences vs an independent position oracle ----
+
+    /// Independent oracle: the document is a sorted list of keyed elements —
+    /// original lines keyed `4*line`, boundary inserts keyed `4*boundary+2`,
+    /// SWAP payloads keyed `4*line-1` (the content slot between the
+    /// preceding boundary and the line). Every op resolves its anchor by
+    /// key ordering, never by a shift table.
+    #[derive(Clone, Debug)]
+    enum Elem {
+        Orig(usize),
+        Text(i64, String),
+    }
+
+    struct Oracle {
+        doc: Vec<Elem>,
+        deleted: std::collections::HashSet<usize>,
+    }
+
+    impl Oracle {
+        fn new(orig: &[String]) -> Self {
+            Self {
+                doc: orig
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| Elem::Orig(i + 1))
+                    .collect(),
+                deleted: std::collections::HashSet::new(),
+            }
+        }
+
+        fn key(e: &Elem) -> i64 {
+            match e {
+                Elem::Orig(l) => 4 * *l as i64,
+                Elem::Text(k, _) => *k,
+            }
+        }
+
+        /// First index whose key is > `k` (upper bound).
+        fn upper_bound(&self, k: i64) -> usize {
+            self.doc.partition_point(|e| Self::key(e) <= k)
+        }
+
+        fn ins_boundary(&mut self, boundary: usize, text: String) {
+            let pos = self.upper_bound(4 * boundary as i64 + 2);
+            self.doc
+                .insert(pos, Elem::Text(4 * boundary as i64 + 2, text));
+        }
+
+        fn del(&mut self, line: usize) -> Result<(), ()> {
+            if self.deleted.contains(&line) {
+                return Err(());
+            }
+            self.deleted.insert(line);
+            let key = 4 * line as i64;
+            if let Some(pos) = self
+                .doc
+                .iter()
+                .position(|e| matches!(e, Elem::Orig(l) if *l == line))
+            {
+                self.doc.remove(pos);
+                let _ = key;
+            }
+            Ok(())
+        }
+
+        fn swap(&mut self, start: usize, end: usize, payload: &[String]) -> Result<(), ()> {
+            for l in start..=end {
+                if self.deleted.contains(&l) {
+                    return Err(());
+                }
+            }
+            for l in start..=end {
+                self.deleted.insert(l);
+                if let Some(pos) = self
+                    .doc
+                    .iter()
+                    .position(|e| matches!(e, Elem::Orig(x) if *x == l))
+                {
+                    self.doc.remove(pos);
+                }
+            }
+            let pos = self.upper_bound(4 * start as i64 - 1);
+            for (k, t) in payload.iter().enumerate() {
+                self.doc
+                    .insert(pos + k, Elem::Text(4 * start as i64 - 1, t.clone()));
+            }
+            Ok(())
+        }
+
+        fn text(&self, orig: &[String]) -> String {
+            let mut out = String::new();
+            for e in &self.doc {
+                match e {
+                    Elem::Orig(l) => out.push_str(&orig[*l - 1]),
+                    Elem::Text(_, t) => out.push_str(t),
+                }
+                out.push('\n');
+            }
+            // Drop the trailing newline to match split/join comparison.
+            out.pop();
+            out
+        }
+    }
+
+    #[test]
+    fn fuzz_random_ops_match_oracle() {
+        // xorshift64* — deterministic, no external deps.
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545F4914F6CDD1D)
+        };
+
+        for round in 0..400 {
+            let n = 8;
+            let orig: Vec<String> = (1..=n).map(|i| format!("L{i}")).collect();
+            let original = orig.join("\n");
+            let mut oracle = Oracle::new(&orig);
+            let mut patch = String::new();
+            let ops = 3 + (next() % 12) as usize;
+            let mut failed = false;
+
+            for _ in 0..ops {
+                let choice = next() % 7;
+                let a = 1 + (next() as usize % n);
+                let b = (a + next() as usize % (n - a + 1)).min(n);
+                macro_rules! payload {
+                    ($tag:expr) => {
+                        format!("+{}{}", $tag, next() % 1000)
+                    };
+                }
+                match choice {
+                    0 => {
+                        // DEL a (or range)
+                        if a == b {
+                            patch.push_str(&format!("DEL {a}\n"));
+                            if oracle.del(a).is_err() {
+                                failed = true;
+                                break;
+                            }
+                        } else {
+                            patch.push_str(&format!("DEL {a}..{b}\n"));
+                            let mut err = false;
+                            for l in a..=b {
+                                if oracle.del(l).is_err() {
+                                    err = true;
+                                    break;
+                                }
+                            }
+                            if err {
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    1 => {
+                        // SWAP a..b with payload
+                        let np = 1 + (next() % 3) as usize;
+                        patch.push_str(&format!("SWAP {a}..{b}:\n"));
+                        let mut texts = Vec::new();
+                        for _ in 0..np {
+                            let t = payload!("s");
+                            patch.push_str(&t);
+                            patch.push('\n');
+                            texts.push(t[1..].to_string());
+                        }
+                        if oracle.swap(a, b, &texts).is_err() {
+                            failed = true;
+                            break;
+                        }
+                    }
+                    2 => {
+                        // INS.POST a
+                        let t = payload!("p");
+                        patch.push_str(&format!("INS.POST {a}:\n{t}\n"));
+                        oracle.ins_boundary(a, t[1..].to_string());
+                    }
+                    3 => {
+                        // INS.PRE a
+                        let t = payload!("q");
+                        patch.push_str(&format!("INS.PRE {a}:\n{t}\n"));
+                        oracle.ins_boundary(a - 1, t[1..].to_string());
+                    }
+                    4 => {
+                        // INS.HEAD
+                        let t = payload!("h");
+                        patch.push_str(&format!("INS.HEAD:\n{t}\n"));
+                        oracle.ins_boundary(0, t[1..].to_string());
+                    }
+                    5 => {
+                        // INS.TAIL
+                        let t = payload!("t");
+                        patch.push_str(&format!("INS.TAIL:\n{t}\n"));
+                        oracle.ins_boundary(n, t[1..].to_string());
+                    }
+                    _ => {
+                        // Single-line SWAP
+                        let t = payload!("w");
+                        patch.push_str(&format!("SWAP {a}:\n{t}\n"));
+                        if oracle.swap(a, a, &[t[1..].to_string()]).is_err() {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if failed {
+                // The patch must be rejected (overlap) — apply_edits errors.
+                let (edits, _, _, aborted) = parse_patch(&patch);
+                assert!(!aborted, "round {round}: unexpected abort\n{patch}");
+                let mut lines = split_normalized(&original);
+                let entries: Vec<crate::document::LineEntry> = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| crate::document::LineEntry {
+                        content: s.clone(),
+                        short_hash: crate::hash::short_hash_value_indexed(s, i + 1),
+                    })
+                    .collect();
+                let err = apply_edits(&mut lines, &entries, Path::new("fuzz.txt"), &edits)
+                    .expect_err("overlapping op must be rejected");
+                assert_eq!(
+                    err.kind(),
+                    "PATCH_REJECTED",
+                    "round {round}: {err}\n{patch}"
+                );
+                continue;
+            }
+
+            let result = apply_text(&original, &patch);
+            let expected = oracle.text(&orig);
+            assert_eq!(
+                result, expected,
+                "round {round}\npatch:\n{patch}\noriginal:\n{original}"
+            );
+        }
     }
 }

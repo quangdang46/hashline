@@ -602,6 +602,7 @@ fn handle_patch(
         path,
         &edits,
         crate::commands::patch::count_operations(&edits),
+        fc.trailing_newline,
     ) {
         Ok(cs) => cs,
         Err(e) => return err_output(&e),
@@ -667,6 +668,11 @@ fn handle_patch(
         return ok_output(out, structured);
     }
 
+    // Same write-time stale-file guard as the CLI patch path: refuse to
+    // clobber a file that drifted since `FileContent::load` above.
+    if let Err(e) = crate::commands::patch::reject_if_source_drifted(path, &fc) {
+        return err_output(&e);
+    }
     match crate::commands::common::fast_write(path, final_text.as_bytes()) {
         Ok(_) => {
             let changed_count =
