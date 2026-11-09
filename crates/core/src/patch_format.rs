@@ -25,13 +25,13 @@ pub const HL_INSERT_AFTER: &str = "POST";
 pub const HL_INSERT_HEAD: &str = "HEAD";
 /** Insert position keyword for inserting at the end of the file. */
 pub const HL_INSERT_TAIL: &str = "TAIL";
-/** Hunk-header keyword: `SWAP.BLK N:` resolves N to a tree-sitter block range and replaces its span. */
+/** Hunk-header keyword: `SWAP.BLK N:` resolves N to a block range via the language-aware heuristic resolver and replaces its span. */
 pub const HL_REPLACE_BLOCK_KEYWORD: &str = "SWAP.BLK";
-/** Hunk-header keyword: `DEL.BLK N` resolves N to a tree-sitter block range and deletes its span. */
+/** Hunk-header keyword: `DEL.BLK N` resolves N to a block range via the language-aware heuristic resolver and deletes its span. */
 pub const HL_DELETE_BLOCK_KEYWORD: &str = "DEL.BLK";
-/** Hunk-header keyword: `INS.BLK.POST N:` inserts after the last line of the tree-sitter block at N. */
+/** Hunk-header keyword: `INS.BLK.POST N:` inserts after the last line of the block at N (heuristic resolver). */
 pub const HL_INSERT_AFTER_BLOCK_KEYWORD: &str = "INS.BLK.POST";
-/** Hunk-header keyword: `INS.BLK.PRE N:` inserts before the first line of the tree-sitter block at N. */
+/** Hunk-header keyword: `INS.BLK.PRE N:` inserts before the first line of the block at N (heuristic resolver). */
 pub const HL_INSERT_BEFORE_BLOCK_KEYWORD: &str = "INS.BLK.PRE";
 /** Short alias for `INS.BLK.POST`. */
 pub const HL_INSERT_AFTER_BLOCK_SHORT: &str = "INS.BLK";

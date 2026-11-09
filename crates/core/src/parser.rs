@@ -510,9 +510,10 @@ impl Executor {
         true
     }
 
-    /// `DEL`/`DEL.BLK` take no payload: a content line in their body is
-    /// either an op candidate (reject the patch atomically) or stray text
-    /// that would previously be dropped silently — warn once instead.
+    /// Payload-less ops (`DEL`, `DEL.BLK`, `CUT`, `PUT`, `REM`, `MV`) take
+    /// no body: a content line in their body is either an op candidate
+    /// (reject the patch atomically) or stray text that would previously
+    /// be dropped silently — warn once instead.
     fn flag_content_after_no_payload_op(&mut self, text: &str, op: &str) {
         if self.flag_op_candidate(text) {
             return;
@@ -524,10 +525,16 @@ impl Executor {
     }
 
     /// The payload-less op (if any) a pending target belongs to.
+    /// `CUT`/`PUT`/`REM`/`MV` likewise ignore any collected payload lines
+    /// at flush time, so stray content after them warns the same way.
     fn no_payload_op_name(target: &BlockTarget) -> Option<&'static str> {
         match target {
             BlockTarget::Delete(_, _) => Some("DEL"),
             BlockTarget::DeleteBlock(..) => Some("DEL.BLK"),
+            BlockTarget::Cut(..) => Some("CUT"),
+            BlockTarget::Paste(..) => Some("PUT"),
+            BlockTarget::Remove => Some("REM"),
+            BlockTarget::MoveTo(..) => Some("MV"),
             _ => None,
         }
     }
@@ -543,7 +550,7 @@ impl Executor {
             }
         };
         if let Some(op) = Self::no_payload_op_name(&pending.target) {
-            // DEL/DEL.BLK take no payload, but garbage lines must still
+            // Payload-less ops take no payload, but garbage lines must still
             // pass through the unknown-op guard and at least warn —
             // previously they were swallowed silently until the next
             // valid op.
@@ -583,7 +590,7 @@ impl Executor {
                 return;
             }
             if let Some(op) = Self::no_payload_op_name(&pending.target) {
-                // DEL/DEL.BLK take no payload — run the unknown-op guard
+                // Payload-less ops take no payload — run the unknown-op guard
                 // and warn on stray text so it can't slip through silently.
                 self.flag_content_after_no_payload_op(text, op);
                 return;
@@ -2100,6 +2107,72 @@ mod inline_payload_tests {
         // Blank separators after a payload-less op are not content — no
         // warning should be emitted for them.
         let (edits, warnings, _f, aborted) = parse_patch("DEL 2\n\n\nDEL 3");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 2);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("takes no payload lines")),
+            "unexpected payload warning, got {warnings:?}"
+        );
+    }
+
+    // ---- bd-polish-residuals-y6vx: same stray-content warning for the
+    // other payload-less ops (CUT/PUT/REM/MV) ----
+
+    #[test]
+    fn prose_after_cut_put_rem_mv_warns_but_applies() {
+        for (patch, op, expect_file_op) in [
+            ("CUT 2..3\nthis is garbage", "CUT", false),
+            ("PUT @r <2:\nthis is garbage", "PUT", false),
+            ("REM\nthis is garbage", "REM", true),
+            ("MV new/name.rs\nthis is garbage", "MV", true),
+        ] {
+            let (edits, warnings, file_op, aborted) = parse_patch(patch);
+            assert!(!aborted, "patch {patch:?} aborted");
+            if expect_file_op {
+                assert!(file_op.is_some(), "patch {patch:?}: no file op");
+            } else {
+                assert_eq!(edits.len(), 1, "patch {patch:?}: edits {edits:?}");
+            }
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains(&format!("content after `{op}` was ignored"))),
+                "patch {patch:?}: expected ignored-content warning, got {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plus_payload_after_cut_warns() {
+        let (edits, warnings, _f, aborted) = parse_patch("CUT 2\n+stray payload");
+        assert!(!aborted);
+        assert_eq!(edits.len(), 1);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("content after `CUT` was ignored")),
+            "expected ignored-content warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn op_candidate_after_cut_still_rejects_atomically() {
+        for patch in ["CUT 2\nFOO 1:", "PUT @r <2:\nEND", "REM\nSWAP"] {
+            let (edits, warnings, _f, aborted) = parse_patch(patch);
+            assert!(edits.is_empty(), "patch {patch:?} produced edits");
+            assert!(aborted, "patch {patch:?} was not aborted");
+            assert!(
+                warnings.iter().any(|w| w.contains("operation")),
+                "patch {patch:?}, warnings: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_lines_after_cut_stay_silent() {
+        let (edits, warnings, _f, aborted) = parse_patch("CUT 2\n\n\nDEL 3");
         assert!(!aborted);
         assert_eq!(edits.len(), 2);
         assert!(
