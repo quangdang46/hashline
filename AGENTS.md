@@ -100,11 +100,7 @@ All editing goes through `hashline patch`. The `<patch>` argument is a string wi
 
 **Payload format:** the header line ends with `:` and payload lines follow on **subsequent lines**, each starting with `+` at column 1 (everything after `+` is literal content, including indentation). `+` alone inserts a blank line; `++x` inserts literal `+x`; `+-x` inserts literal `-x`. Bare `-` lines warn but are preserved.
 
-**⚠ Payload must start on the NEXT line.** `hashline patch f 'SWAP 3: +new'` does NOT insert `+new` — the same-line text is not payload, so the SWAP has an empty body and **silently deletes line 3**. Always write:
-```
-SWAP 3:a7:
-+    let version = "0.9.1";
-```
+**Inline payload (first line only):** the first payload line may also sit on the header line itself — `SWAP 3:a7:+    let version = "0.9.1";` is equivalent to putting `+    let version = "0.9.1";` on the next line. A space before the `+` is fine (`SWAP 3:a7: +x`). Works for `SWAP`, `SWAP.BLK`, and all `INS.*` ops, with or without a hash (`SWAP 3:+x`, `INS.TAIL:+x`). Inline text *without* a leading `+` is treated as a bare payload row (same auto-pipe warning as a bare next-line body) — it is never silently dropped. Ops with no payload (`DEL`, `DEL.BLK`, `CUT`, `PUT`, `REM`, `MV`) **reject** trailing junk on the header line. `SWAP N:` with no payload at all still deletes (documented below).
 
 **Operations:**
 | Op | Syntax | What it does |
@@ -128,7 +124,7 @@ SWAP 3:a7:
 
 **Block ops are heuristics, not parsing.** `*.BLK` ops resolve the enclosing block by extension: brace-balanced `{}` for `.rs .js .ts .tsx .jsx .go .java .c .cpp .h .hpp .cs` (and unknown extensions, with indent fallback), indentation for `.py .verse` (brace pairs tried first, then indentation), `def/class/end` keywords for `.rb`. Results are best-effort — inspect with `find-block` first and prefer separate patches for interacting block edits.
 
-**Section headers & envelopes:** a patch may contain `[path#hash]` section headers grouping ops per file (consecutive same-path sections merge; for a single-file `hashline patch` the bracketed path is not enforced). `*** Begin Patch` / `*** End Patch` envelope markers are accepted. `*** Abort` discards the whole patch — the command then exits **1** with `ERR PATCH_REJECTED` (it looks like a failure; check the exit code, not just stdout). Two range syntaxes are accepted: `N..M` and `N.=M` (oh-my-pi compatible).
+**Section headers & envelopes:** a patch may contain `[path#hash]` section headers grouping ops per file (consecutive same-path sections merge; for a single-file `hashline patch` the bracketed path is not enforced). `*** Begin Patch` / `*** End Patch` envelope markers are accepted. `*** End of File` (apply_patch grammar) ends the current file's hunks — content after it is ignored with a warning until the next `[path]` section header. `*** Abort` discards the whole patch — the command then exits **1** with `ERR PATCH_REJECTED` (it looks like a failure; check the exit code, not just stdout). Two range syntaxes are accepted: `N..M` and `N.=M` (oh-my-pi compatible).
 
 **File-level ops:** the parser recognizes `REM` (delete file) and `MV <dest>` (rename) inside a section, but `hashline patch` currently does **not** apply them — a patch containing only `REM`/`MV` fails with `ERR EMPTY_PATCH`. Use `hashline remove` / `hashline rename` instead.
 
@@ -259,7 +255,7 @@ are direct (non-atomic) unless `--safe` is passed.
 - **Stale anchor:** Content changed since last read → re-run `hashline read`
 - **File doesn't exist:** `hashline patch` fails with I/O error
 - **Binary file:** hashline only works on UTF-8 text files
-- **Same-line payload silently deletes:** `SWAP 3: +new` has an empty body → deletes line 3. Payload lines must follow the header on their own lines.
+- **Inline payload needs the `+` sigil for literal text:** `SWAP 3:a7:+new` inserts `new`; `SWAP 3:a7:new` (no `+`) inserts `new` as a *bare* payload row with a warning. Only a truly empty body (`SWAP 3:`) deletes.
 - **`-` rows generate a warning and are still preserved as content:** hashline patch uses `+` payload syntax; bare `-` items (e.g. Markdown list items) produce a warning but are preserved. Use the `+-` escape to suppress the warning: `+- list item` → `- list item`
 - **Leading sigil is consumed:** The `+` payload prefix is stripped; if you need a literal leading `+`, double it: `++plus` → `+plus`. Same for bare body (no `+`) lines — they're treated as body content but may trigger a warning about missing `+` prefix
 - **Boundary echo:** warning when payload first line duplicates the line above the target range
@@ -306,7 +302,7 @@ hashline patch sample.rs "SWAP 3:a7:
 - **Stale-anchor errors are safety signals, never bypass them**
 - **hashline is NOT str_replace, NOT sed.** For fuzzy matching, use the `patch` tool
 - **For multi-op patches, ALWAYS use stdin** (`hashline patch file - <<'EOF'`)
-- **Payload lines go on their own lines after the `:` header** — never inline
+- **Payload may be inline or on following lines:** `SWAP 3:a7:+new` works, but multi-line payloads still need one `+` row per line after the header
 
 
 ## Beads Workflow Integration

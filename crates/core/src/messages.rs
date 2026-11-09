@@ -6,6 +6,9 @@
 pub const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
 pub const END_PATCH_MARKER: &str = "*** End Patch";
 pub const ABORT_MARKER: &str = "*** Abort";
+/// apply_patch per-file terminator: ends the current file's hunks. Anything
+/// after it (until the next section header) is not hashline payload.
+pub const END_OF_FILE_MARKER: &str = "*** End of File";
 
 // === Parser warnings ===
 

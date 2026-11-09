@@ -7,7 +7,7 @@
 //! +literal new line
 //! ```
 
-use crate::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER};
+use crate::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_OF_FILE_MARKER, END_PATCH_MARKER};
 use crate::patch_format::{
     HL_CUT_KEYWORD, HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH,
     HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER, HL_INSERT_AFTER_BLOCK_KEYWORD,
@@ -336,6 +336,18 @@ fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> HashSuffix {
         };
     }
     if !is_hex_digit_code(bytes[after]) {
+        // `N:` immediately followed by a `+` payload sigil is the inline-
+        // payload form (`SWAP 2:+new`, `INS.PRE 3:+x`) — `+` can never be a
+        // hex hash digit, so this is unambiguous. Hand the `+` position back
+        // as `next` (hash stays `None`) so the op scan sees the payload
+        // instead of reporting a malformed hash.
+        if bytes[after] == CHAR_PAYLOAD_REPLACE {
+            return HashSuffix {
+                next: after,
+                hash: None,
+                malformed: false,
+            };
+        }
         return HashSuffix {
             next: after,
             hash: None,
@@ -657,6 +669,11 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         if next < end && bytes[next] == CHAR_DOT {
             return None;
         }
+        // DEL.BLK takes no payload — reject any other trailing junk too,
+        // consistent with DEL (a `+x` tail must not be silently dropped).
+        if next < end {
+            return None;
+        }
         return Some(TargetScan {
             target: BlockTarget::DeleteBlock(Anchor { line: anchor.line }, hash),
             next_index: next,
@@ -675,9 +692,10 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
         }
         range.range.end_hash = suffix.hash;
         let next = suffix.next;
-        // Ensure DEL does not take a body (a colon after the optional hash
-        // suffix means there's trailing content, which DEL doesn't accept).
-        if next < end && bytes[next] == CHAR_COLON {
+        // DEL takes no payload — reject ANY trailing content (not just a
+        // second `:`), so `DEL 2:67:+x` fails loudly instead of silently
+        // deleting while ignoring the would-be payload.
+        if next < end {
             return None;
         }
         return Some(TargetScan {
@@ -839,7 +857,20 @@ fn scan_hunk_anchor(line: &str, bytes: &[u8], start: usize, end: usize) -> Optio
     None
 }
 
-pub(crate) fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
+/// Scan a hunk header line, returning the parsed [`BlockTarget`] and the
+/// byte index where any inline payload begins (`== end` when the header
+/// consumes the whole line).
+///
+/// Fix #113/#115: Be lenient about trailing garbage after a valid scan.
+/// Agents may send malformed hashes like `SWAP 99:zz` where `zz` is not
+/// valid hex. The scan succeeded (recognized the operation keyword and
+/// line number), but trailing non-whitespace chars remain. Accept the
+/// operation — the applier will handle the stale/out-of-range anchor.
+/// Only reject if trailing chars are whitespace (indicates a valid range
+/// continuation that failed to parse, e.g. `SWAP 2 `). For payload-taking
+/// ops that trailing text IS the inline payload — see
+/// [`inline_payload_start`].
+fn scan_hunk(line: &str) -> Option<(BlockTarget, usize)> {
     let end = trim_end_index(line);
     let bytes = line.as_bytes();
     let start = skip_whitespace(bytes, 0, end);
@@ -848,20 +879,42 @@ pub(crate) fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
     }
     let scan = scan_hunk_anchor(line, bytes, start, end)?;
     if scan.next_index != end {
-        // Fix #113/#115: Be lenient about trailing garbage after a valid scan.
-        // Agents may send malformed hashes like `SWAP 99:zz` where `zz` is not
-        // valid hex. The scan succeeded (recognized the operation keyword and
-        // line number), but trailing non-whitespace chars remain. Accept the
-        // operation — the applier will handle the stale/out-of-range anchor.
-        // Only reject if trailing chars are whitespace (indicates a valid range
-        // continuation that failed to parse, e.g. `SWAP 2 `).
         let trailing = &bytes[scan.next_index..end];
         if trailing.iter().all(|&b| is_whitespace_code(b)) {
             return None;
         }
         // Trailing non-whitespace after a valid scan: accept with leniency.
     }
-    Some(scan.target)
+    Some((scan.target, scan.next_index))
+}
+
+pub(crate) fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
+    scan_hunk(line).map(|(target, _)| target)
+}
+
+/// Byte index where an inline payload begins for payload-taking hunk ops:
+/// `SWAP 2:67:+new`, `SWAP 2:+new`, `SWAP 2..4:hh:bare`, `INS.TAIL:+x`.
+///
+/// Returns `None` when the line is not a valid hunk header, when the header
+/// consumes the whole line, or when the op takes no payload (DEL, DEL.BLK,
+/// CUT, PUT, REM, MV — those reject trailing junk inside the scan itself,
+/// so `DEL 2:+x` never reaches here as a valid header).
+pub(crate) fn inline_payload_start(line: &str) -> Option<usize> {
+    let (target, next) = scan_hunk(line)?;
+    if next >= trim_end_index(line) {
+        return None;
+    }
+    match target {
+        BlockTarget::Replace(..)
+        | BlockTarget::Block(..)
+        | BlockTarget::InsertBefore(..)
+        | BlockTarget::InsertAfter(..)
+        | BlockTarget::InsertAfterBlock(..)
+        | BlockTarget::InsertBeforeBlock(..)
+        | BlockTarget::Bof
+        | BlockTarget::Eof => Some(next),
+        _ => None,
+    }
 }
 
 /// Strip common apply-patch path noise that LLMs prepend to file headers.
@@ -1064,6 +1117,12 @@ pub enum Token {
     Abort {
         line_num: usize,
     },
+    /// `*** End of File` — apply_patch per-file terminator. Ends the
+    /// current file's hunks; following content is ignored until the next
+    /// section header.
+    EndOfFile {
+        line_num: usize,
+    },
     Header {
         line_num: usize,
         path: String,
@@ -1095,6 +1154,9 @@ fn classify_line(line: &str, line_num: usize) -> Token {
     }
     if marker_line_equals(line, ABORT_MARKER) {
         return Token::Abort { line_num };
+    }
+    if marker_line_equals(line, END_OF_FILE_MARKER) {
+        return Token::EndOfFile { line_num };
     }
 
     let first_byte = line.as_bytes().first().copied().unwrap_or(0);

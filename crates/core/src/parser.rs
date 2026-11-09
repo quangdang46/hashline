@@ -250,6 +250,13 @@ pub struct Executor {
     /// rejected because every op would otherwise hit the single target.
     header_paths: Vec<String>,
     header_warned: bool,
+    /// `*** End of File` seen: the current file's hunks are over. Content is
+    /// ignored (with a warning) until the next `[path]` section header —
+    /// matching apply_patch grammar where the marker ends the file section.
+    file_ended: bool,
+    /// Whether the "content after `*** End of File` ignored" warning was
+    /// already emitted for the current ended section.
+    eof_content_warned: bool,
 }
 
 impl Default for Executor {
@@ -271,11 +278,48 @@ impl Executor {
             had_unknown_op: false,
             header_paths: Vec::new(),
             header_warned: false,
+            file_ended: false,
+            eof_content_warned: false,
         }
     }
 
     pub fn feed(&mut self, token: Token) {
         if self.terminated || self.aborted {
+            return;
+        }
+        if self.file_ended {
+            // After `*** End of File` only envelope markers and a new
+            // `[path]` section header are meaningful; everything else is
+            // ignored with a single warning (it is NOT payload — the
+            // section's hunks already ended).
+            match token {
+                Token::Header {
+                    path, file_hash, ..
+                } => {
+                    self.file_ended = false;
+                    self.eof_content_warned = false;
+                    self.note_section_header(&path, file_hash.as_deref());
+                }
+                Token::EnvelopeBegin { .. } | Token::Blank { .. } | Token::EndOfFile { .. } => {}
+                Token::EnvelopeEnd { .. } => {
+                    self.terminated = true;
+                }
+                Token::Abort { .. } => {
+                    self.terminated = true;
+                    self.aborted = true;
+                }
+                _ => {
+                    if !self.eof_content_warned {
+                        self.eof_content_warned = true;
+                        self.warnings.push(
+                            "content after `*** End of File` was ignored \
+                             (the marker ends the current file's hunks; \
+                             start a new `[path]` section for more ops)"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
             return;
         }
         match token {
@@ -286,6 +330,15 @@ impl Executor {
             Token::Abort { .. } => {
                 self.terminated = true;
                 self.aborted = true;
+            }
+            Token::EndOfFile { .. } => {
+                // apply_patch per-file terminator: flush the pending op and
+                // end this file's hunks. Following content is ignored until
+                // the next section header (see the `file_ended` branch in
+                // `feed`).
+                self.flush_pending();
+                self.file_ended = true;
+                self.eof_content_warned = false;
             }
             Token::Header {
                 path, file_hash, ..
@@ -344,6 +397,8 @@ impl Executor {
             self.pending = None;
             self.header_paths.clear();
             self.header_warned = false;
+            self.file_ended = false;
+            self.eof_content_warned = false;
             let aborted = true;
             self.edit_index = 0;
             self.terminated = false;
@@ -364,6 +419,8 @@ impl Executor {
             self.had_unknown_op = false;
             self.header_paths.clear();
             self.header_warned = false;
+            self.file_ended = false;
+            self.eof_content_warned = false;
             self.edit_index = 0;
             self.terminated = false;
             self.aborted = false;
@@ -382,6 +439,8 @@ impl Executor {
         self.aborted = false;
         self.header_paths.clear();
         self.header_warned = false;
+        self.file_ended = false;
+        self.eof_content_warned = false;
         (edits, warnings, file_op, aborted)
     }
 
@@ -1137,6 +1196,42 @@ fn normalize_pipe_separators(text: &str) -> String {
     result
 }
 
+/// Normalize inline payloads: `SWAP 2:67:+new`, `SWAP 2:+new`,
+/// `SWAP 2..4:hh:bare`, `INS.TAIL:+x` carry their first payload line on the
+/// header line itself. Split them into the canonical two-line form
+/// (`header` newline `payload row`) so the executor sees an ordinary
+/// `+`-prefixed or bare payload row — identical to writing the payload on
+/// the next line.
+///
+/// Semantics for the inline text (chosen to match the next-line convention
+/// and avoid the old silent-delete bug):
+/// - leading `+` → literal payload row (the `+` sigil is preserved on the
+///   emitted line, so `++x` still escapes to `+x`);
+/// - anything else → bare payload row, which the executor auto-pipes with
+///   the standard bare-body warning. This deliberately does NOT keep the
+///   old "trailing text = delete the target" behavior: silently deleting a
+///   line because the user wrote text after the header was the data-loss
+///   bug. Ops that take no payload (DEL, DEL.BLK, CUT, PUT, REM, MV)
+///   reject trailing junk in the tokenizer scan, so they never produce an
+///   inline payload here.
+fn normalize_inline_payloads(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            result.push('\n');
+        }
+        match crate::tokenizer::inline_payload_start(line) {
+            Some(start) => {
+                result.push_str(line[..start].trim_end());
+                result.push('\n');
+                result.push_str(&line[start..]);
+            }
+            None => result.push_str(line),
+        }
+    }
+    result
+}
+
 /// Parse a complete patch diff body into `Edit`s, warnings, file-level operations,
 /// and a flag indicating whether parsing was halted by an `*** Abort` marker.
 pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool) {
@@ -1148,6 +1243,10 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
     // Fix #113/#115: Normalize pipe-separated single-line operations
     // before tokenization (e.g. `SWAP 2:97 |content` → multiline).
     let normalized = normalize_pipe_separators(&merged);
+
+    // Inline payloads (`SWAP 2:67:+new`) become canonical header+payload
+    // line pairs before tokenization.
+    let normalized = normalize_inline_payloads(&normalized);
 
     let tokenizer = crate::tokenizer::Tokenizer;
     let mut executor = Executor::new();
@@ -1599,5 +1698,249 @@ mod audit_hardening_tests {
             warnings.iter().any(|w| w.contains("outside any operation")),
             "expected orphan-payload warning, got {warnings:?}"
         );
+    }
+}
+
+#[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+mod inline_payload_tests {
+    use super::*;
+    use crate::types::InsertMode;
+
+    /// Collect `(kind, text)` summaries for easy assertions.
+    fn summarize(edits: &[Edit]) -> Vec<String> {
+        edits
+            .iter()
+            .map(|e| match e {
+                Edit::Insert { text, mode, .. } => format!(
+                    "ins:{}:{}",
+                    if *mode == Some(InsertMode::Replacement) {
+                        "rep"
+                    } else {
+                        "plain"
+                    },
+                    text
+                ),
+                Edit::Delete { anchor, .. } => format!("del:{}", anchor.line),
+                Edit::Block { .. } => "block".to_string(),
+                Edit::Cut { .. } => "cut".to_string(),
+                Edit::Paste { .. } => "paste".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn swap_inline_plus_payload_replaces_not_deletes() {
+        // The silent-data-loss bug: `SWAP 2:67:+REPLACED` used to drop the
+        // `+REPLACED` tail and delete line 2 with exit 0.
+        let (edits, warnings, _f, aborted) = parse_patch("SWAP 2:67:+REPLACED");
+        assert!(!aborted, "warnings: {warnings:?}");
+        assert_eq!(
+            summarize(&edits),
+            vec!["ins:rep:REPLACED".to_string(), "del:2".to_string()]
+        );
+    }
+
+    #[test]
+    fn swap_inline_payload_no_hash() {
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 2:+NOHASH");
+        assert!(!aborted);
+        assert_eq!(summarize(&edits)[0], "ins:rep:NOHASH");
+    }
+
+    #[test]
+    fn swap_inline_payload_space_before_plus() {
+        for patch in ["SWAP 2:67: +SPACED", "SWAP 2: +SPACED2"] {
+            let (edits, _w, _f, aborted) = parse_patch(patch);
+            assert!(!aborted, "patch: {patch}");
+            assert!(
+                edits
+                    .iter()
+                    .any(|e| matches!(e, Edit::Insert { text, .. } if text.starts_with("SPACED"))),
+                "patch: {patch}, edits: {edits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn swap_range_inline_payload() {
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 2..3:+RANGE");
+        assert!(!aborted);
+        assert_eq!(
+            summarize(&edits),
+            vec![
+                "ins:rep:RANGE".to_string(),
+                "del:2".to_string(),
+                "del:3".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn swap_inline_bare_text_is_bare_payload_with_warning() {
+        // Semantics choice: trailing text without `+` is a BARE payload row
+        // (auto-piped warning), NOT a silent delete.
+        let (edits, warnings, _f, aborted) = parse_patch("SWAP 2:67:baretext");
+        assert!(!aborted);
+        assert!(
+            edits
+                .iter()
+                .any(|e| matches!(e, Edit::Insert { text, .. } if text == "baretext"))
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("bare body auto-piped")),
+            "expected bare-body warning, got {warnings:?}"
+        );
+        // Still a replacement: the target line is deleted too.
+        assert!(
+            edits
+                .iter()
+                .any(|e| matches!(e, Edit::Delete { anchor, .. } if anchor.line == 2))
+        );
+    }
+
+    #[test]
+    fn swap_empty_body_still_deletes() {
+        // Documented convention: `SWAP N:` with no payload deletes.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 2:");
+        assert!(!aborted);
+        assert_eq!(summarize(&edits), vec!["del:2".to_string()]);
+    }
+
+    #[test]
+    fn swap_next_line_payload_unaffected() {
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 2:\n+NEXTLINE");
+        assert!(!aborted);
+        assert_eq!(
+            summarize(&edits),
+            vec!["ins:rep:NEXTLINE".to_string(), "del:2".to_string()]
+        );
+    }
+
+    #[test]
+    fn swap_inline_plus_following_lines_combine() {
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 2:+FIRST\n+SECOND");
+        assert!(!aborted);
+        let texts: Vec<&str> = edits
+            .iter()
+            .filter_map(|e| match e {
+                Edit::Insert { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["FIRST", "SECOND"]);
+    }
+
+    #[test]
+    fn ins_variants_inline_payload() {
+        for (patch, expect) in [
+            ("INS.PRE 1:+x", "ins:plain:x"),
+            ("INS.POST 1:+x", "ins:plain:x"),
+            ("INS 1:+x", "ins:plain:x"),
+            ("INS.HEAD:+x", "ins:plain:x"),
+            ("INS.TAIL:+x", "ins:plain:x"),
+        ] {
+            let (edits, _w, _f, aborted) = parse_patch(patch);
+            assert!(!aborted, "patch: {patch}");
+            assert_eq!(
+                summarize(&edits),
+                vec![expect.to_string()],
+                "patch: {patch}"
+            );
+        }
+    }
+
+    #[test]
+    fn ins_inline_bare_text_warns() {
+        // `INS.TAIL:raw` (no `+`, no hash ambiguity) → bare payload + warning.
+        let (edits, warnings, _f, aborted) = parse_patch("INS.TAIL:rawtail");
+        assert!(!aborted);
+        assert!(
+            edits
+                .iter()
+                .any(|e| matches!(e, Edit::Insert { text, .. } if text == "rawtail"))
+        );
+        assert!(warnings.iter().any(|w| w.contains("bare body auto-piped")));
+    }
+
+    #[test]
+    fn del_family_rejects_inline_payload() {
+        for patch in [
+            "DEL 2:+x",
+            "DEL 2:67:+x",
+            "DEL 2..3:+x",
+            "DEL 2:67: junk",
+            "DEL 2 junk",
+        ] {
+            let (edits, warnings, _f, aborted) = parse_patch(patch);
+            assert!(edits.is_empty(), "patch: {patch} produced edits: {edits:?}");
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains("malformed operation") || w.contains("unknown operation")),
+                "patch: {patch}, warnings: {warnings:?}"
+            );
+            let _ = aborted;
+        }
+    }
+
+    #[test]
+    fn del_blk_rejects_trailing_junk() {
+        let (edits, _w, _f, _a) = parse_patch("DEL.BLK 1:+x");
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn end_of_file_marker_is_not_payload() {
+        // `*** End of File` must not be inserted as a payload row; it ends
+        // the file's hunks and later content is ignored with a warning.
+        let (edits, warnings, _f, aborted) =
+            parse_patch("SWAP 1:+one\n*** End of File\n+not_payload\nDEL 3");
+        assert!(!aborted);
+        assert_eq!(
+            summarize(&edits),
+            vec!["ins:rep:one".to_string(), "del:1".to_string()]
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("End of File")),
+            "expected End-of-File warning, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn end_of_file_then_new_section_header_resumes() {
+        // Same-path `[path]` sections merge before tokenizing, so the `DEL`
+        // still lands after the marker and is ignored with a warning — the
+        // patch must not error and must not apply the post-marker op.
+        let (edits, warnings, _f, aborted) =
+            parse_patch("[f.txt#1234]\nSWAP 1:+one\n*** End of File\n[f.txt#1234]\nDEL 2");
+        assert!(!aborted);
+        assert_eq!(
+            summarize(&edits),
+            vec!["ins:rep:one".to_string(), "del:1".to_string()]
+        );
+        assert!(warnings.iter().any(|w| w.contains("End of File")));
+    }
+
+    #[test]
+    fn end_of_file_with_plus_prefix_still_payload() {
+        // `+*** End of File` is literal payload (marker match requires the
+        // line to start with `***`), preserving the escape hatch.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 1:\n+*** End of File");
+        assert!(!aborted);
+        assert!(
+            edits
+                .iter()
+                .any(|e| matches!(e, Edit::Insert { text, .. } if text == "*** End of File"))
+        );
+    }
+
+    #[test]
+    fn malformed_hash_still_rejected_not_payload() {
+        // `SWAP 2:zz` — `z` is not hex and not `+`, so this stays a malformed
+        // hash rejection, not an inline payload.
+        let (edits, _w, _f, aborted) = parse_patch("SWAP 2:zz");
+        assert!(edits.is_empty());
+        assert!(aborted);
     }
 }
