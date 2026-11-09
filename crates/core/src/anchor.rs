@@ -22,6 +22,11 @@ pub struct ResolvedLine {
     pub index: usize,
     pub line_no: usize,
     pub short_hash: String,
+    /// Non-fatal resolution warning (e.g. fuzzy anchor relocation). `None`
+    /// when the anchor resolved exactly. Surfaced in-band by callers that
+    /// support warnings (compact `WARN` line / JSON field) instead of being
+    /// stderr-only.
+    pub warning: Option<String>,
 }
 
 pub fn parse_anchor(s: &str) -> Result<Anchor, HashlineError> {
@@ -150,6 +155,7 @@ fn resolve_unqualified(
             index: *idx,
             line_no: idx + 1,
             short_hash: rendered_short,
+            warning: None,
         }),
         many => {
             let lines = many
@@ -193,10 +199,16 @@ fn resolve_qualified(
             index: idx,
             line_no: line,
             short_hash: rendered_short,
+            warning: None,
         });
     }
 
-    // Fuzzy relocation.
+    // Fuzzy relocation. BOTH the single-match and multi-match paths are
+    // bounded by FUZZY_RELOCATE_RADIUS — previously a lone match relocated
+    // from anywhere in the file (verified: 295 lines away) with only a
+    // stderr warning and an OK status. Beyond the radius we fall through to
+    // StaleAnchor so the caller fails closed instead of silently editing the
+    // wrong line.
     const FUZZY_RELOCATE_RADIUS: isize = 3;
 
     let matching: Vec<usize> = entries
@@ -208,7 +220,10 @@ fn resolve_qualified(
 
     let relocated = match matching.as_slice() {
         [] => None,
-        [single] => Some(*single),
+        [single] => {
+            let dist = (*single as isize - idx as isize).abs();
+            (dist <= FUZZY_RELOCATE_RADIUS).then_some(*single)
+        }
         many => {
             let target = idx as isize;
             let closest = many
@@ -226,16 +241,26 @@ fn resolve_qualified(
 
     if let Some(new_idx) = relocated {
         if new_idx != idx {
-            eprintln!(
-                "warning: hash {rendered_short} is at line {}, not line {line} — using line {}",
-                new_idx + 1,
+            let warning = format!(
+                "hash {rendered_short} expected at line {line}, found at line {} — relocated",
                 new_idx + 1
             );
+            // Keep the stderr notice for callers that don't surface
+            // `ResolvedLine::warning` (patch/editor paths), and carry the
+            // same message in-band via the `warning` field.
+            eprintln!("warning: {warning}");
+            return Ok(ResolvedLine {
+                index: new_idx,
+                line_no: new_idx + 1,
+                short_hash: rendered_short,
+                warning: Some(warning),
+            });
         }
         return Ok(ResolvedLine {
             index: new_idx,
             line_no: new_idx + 1,
             short_hash: rendered_short,
+            warning: None,
         });
     }
 
@@ -310,6 +335,7 @@ fn resolve_block_anchor(
         index: idx,
         line_no: line,
         short_hash: String::new(),
+        warning: None,
     })
 }
 
@@ -582,5 +608,80 @@ mod tests {
         let (idx, hash) = try_parse_line_anchor("3:ab").unwrap();
         assert_eq!(idx, 2);
         assert_eq!(hash, 0xab);
+    }
+
+    // -- bd-find-block-quality-vff: bounded fuzzy relocation -------------
+
+    /// File where a known hash sits far from the anchor line. 12 distinct
+    /// content lines; we anchor on line 10 with the hash of line 1
+    /// (distance 9 > FUZZY_RELOCATE_RADIUS=3).
+    fn relocation_fixture() -> FileContent {
+        let content = (1..=12)
+            .map(|i| format!("unique content line number {i} xyzzy"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        make_fc(&content)
+    }
+
+    #[test]
+    fn test_single_match_relocation_beyond_radius_fails_closed() {
+        // Regression: single-match fuzzy relocation had NO distance limit —
+        // a hash 295 lines away resolved with only a stderr warning. Now it
+        // must fail with StaleAnchor like the multi-match path.
+        let fc = relocation_fixture();
+        let entries = fc.lines_with_hashes();
+        let hash = entries[0].short_hash; // hash of line 1
+
+        let err = resolve(
+            &Anchor::LineHash {
+                line: 10,
+                short: hash,
+            },
+            &fc,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, HashlineError::StaleAnchor { .. }),
+            "expected StaleAnchor, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_single_match_relocation_within_radius_warns() {
+        // Same fixture, anchor line 4 vs hash on line 1 → distance 3, inside
+        // the radius: resolves but carries an in-band warning.
+        let fc = relocation_fixture();
+        let entries = fc.lines_with_hashes();
+        let hash = entries[0].short_hash;
+
+        let resolved = resolve(
+            &Anchor::LineHash {
+                line: 4,
+                short: hash,
+            },
+            &fc,
+        )
+        .unwrap();
+        assert_eq!(resolved.line_no, 1);
+        let warning = resolved.warning.expect("relocation must warn in-band");
+        assert!(warning.contains("relocated"), "warning: {warning}");
+    }
+
+    #[test]
+    fn test_exact_match_has_no_warning() {
+        let fc = make_fc("alpha\nbeta\ngamma\n");
+        let entries = fc.lines_with_hashes();
+        let hash = entries[1].short_hash;
+        let resolved = resolve(
+            &Anchor::LineHash {
+                line: 2,
+                short: hash,
+            },
+            &fc,
+        )
+        .unwrap();
+        assert_eq!(resolved.line_no, 2);
+        assert_eq!(resolved.warning, None);
     }
 }
