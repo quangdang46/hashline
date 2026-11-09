@@ -1,22 +1,22 @@
-## hashline — Hash-Anchored File Editing (v0.8.5)
+## hashline — Hash-Anchored File Editing (v0.9.22)
 
-`hashline` is a file editing tool that uses content-hashed line anchors (`12:ab3f`) instead of fragile exact-text matching. Designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
+`hashline` is a file editing tool that uses content-hashed line anchors (`42:a3`) instead of fragile exact-text matching. Designed for agent-driven editing where concurrent changes are expected and edit safety is critical.
 
 ### Why It's Useful
 
 - **Agent-first output:** Default output is compact, token-minimal, machine-readable — designed for AI agents, not humans
-- **Stable anchors:** `line:hash` format survives nearby edits — line numbers shift but hashes stay valid
+- **Stable anchors:** `line:hash` format survives nearby edits for content lines — line numbers shift but hashes stay valid
 - **Concurrent-safe:** Detects stale anchors when content changed; fails explicitly instead of guessing
 - **No merge conflicts:** Each edit is independent; no patch files needed
-- **Works with any text:** Language-agnostic; no parsing required
-- **xxh32 hashes:** 2-char short hashes from xxHash32 (seeded at 0) — deterministic, fast, collision-detected
+- **Works with any text:** Language-agnostic; no parsing required for line ops
+- **xxh32 hashes:** 2-char (8-bit) short hashes — deterministic and fast, but collision-prone on large files; always keep the line number in the anchor
 
 ### The Anchor Format
 
 Anchors are `line_number:content_hash` pairs like `3:a7`:
 
-- **line_number**: 1-based line number (for human readability, may shift)
-- **content_hash**: 2-char short xxh32 hash (stable against nearby edits)
+- **line_number**: 1-based line number (for human readability and disambiguation — the hash alone is only 8 bits)
+- **content_hash**: 2-char lowercase hex, the low byte of xxh32 (seed 0) of the trimmed line content
 
 Example output from `hashline read`:
 ```
@@ -25,6 +25,10 @@ src/main.rs#3a58
 2:89|    let name = "hashline";
 3:a7|    let version = "0.9.0";
 ```
+
+The `#3a58` file tag is a separate 4-hex-char xxh3-64 content hash of the whole file — it is a snapshot tag, **not** a line anchor.
+
+**Hash stability caveat:** lines containing at least one letter or digit hash by content only, so their hash survives nearby edits. Symbol-only lines (`}`, `)`, `//`, blank) are *position-seeded* — their hash mixes in the line number, so it changes when lines are inserted/deleted above them. Prefer anchoring content lines when possible.
 
 ### Output Architecture
 
@@ -84,39 +88,59 @@ hashline rename old.txt new.txt
 | `hashline find-block <file> <anchor>` | Find enclosing brace/indent block around anchor |
 | `hashline write <file> <content>` | Create file (overwrite with `--force`) |
 | `hashline remove <file>` | Delete a file |
-| `hashline rename <old> <new>` | Rename/move a file |
-| `hashline guide` | Interactive user guide |
+| `hashline rename <old> <new>` | Rename/move a file (`--force` overwrites destination) |
+| `hashline guide` | Interactive user guide (`--json` flag accepted) |
 | `hashline serve` | Daemon mode over Unix socket or HTTP |
-| `hashline mcp` | MCP server over stdio |
-| `hashline update` | Self-update the binary from GitHub Releases (`--check` to only compare) |
+| `hashline mcp` | MCP server over stdio (6 tools) |
+| `hashline update` | Self-update the binary from GitHub Releases (`--check` to only compare, `--json` for structured output, `--version <v>` for a specific release) |
 
 ### Patch Operations (hashline patch)
 
-All editing goes through `hashline patch`. The `<patch>` argument is a string with operations in the format below. Use stdin (`hashline patch file - <<'EOF'`) for multi-op patches.
+All editing goes through `hashline patch`. The `<patch>` argument is a string with operations in the format below. Use stdin (`hashline patch file - <<'EOF'`) for multi-op patches; `@/path/to/file` reads the patch from a file.
+
+**Payload format:** the header line ends with `:` and payload lines follow on **subsequent lines**, each starting with `+` at column 1 (everything after `+` is literal content, including indentation). `+` alone inserts a blank line; `++x` inserts literal `+x`; `+-x` inserts literal `-x`. Bare `-` lines warn but are preserved.
+
+**⚠ Payload must start on the NEXT line.** `hashline patch f 'SWAP 3: +new'` does NOT insert `+new` — the same-line text is not payload, so the SWAP has an empty body and **silently deletes line 3**. Always write:
+```
+SWAP 3:a7:
++    let version = "0.9.1";
+```
 
 **Operations:**
 | Op | Syntax | What it does |
 |----|--------|-------------|
 | **SWAP** | `SWAP N:hh:` | Replace line at anchor with payload |
-| **SWAP** | `SWAP N..M:` | Replace range N..M with payload |
-| **DEL** | `DEL N:hh` | Delete single line at anchor |
-| **DEL** | `DEL N..M` | Delete range N..M |
-| **INS.POST** | `INS.POST N:hh:` | Insert payload lines **after** anchor |
+| **SWAP** | `SWAP N..M:` or `SWAP N:hh..M:` | Replace inclusive range (hash, if given, validates only the start line) |
+| **SWAP** | `SWAP N:` *(no payload)* | Empty-body SWAP **deletes** the target line(s) |
+| **DEL** | `DEL N`, `DEL N:hh`, `DEL N..M` | Delete line/range (no payload, no trailing colon) |
 | **INS.PRE** | `INS.PRE N:hh:` | Insert payload lines **before** anchor |
+| **INS.POST** | `INS.POST N:hh:` | Insert payload lines **after** anchor |
+| **INS** | `INS N:` | Shorthand for `INS.POST N:` |
 | **INS.HEAD** | `INS.HEAD:` | Insert payload lines at top of file |
 | **INS.TAIL** | `INS.TAIL:` | Append payload lines at end of file |
-| **SWAP.BLK** | `SWAP.BLK N:` | Replace the syntactic block containing N (tree-sitter based) |
-| **DEL.BLK** | `DEL.BLK N` | Delete the syntactic block containing N |
-| **INS.BLK.POST** | `INS.BLK.POST N:` | Insert payload as a new block **after** the block at N |
-| **INS.BLK.PRE** | `INS.BLK.PRE N:` | Insert payload as a new block **before** the block at N |
+| **SWAP.BLK** | `SWAP.BLK N:` | Replace the block containing N (brace/indent/end heuristics — see below) |
+| **DEL.BLK** | `DEL.BLK N` | Delete the block containing N (no payload) |
+| **INS.BLK.PRE** | `INS.BLK.PRE N:` | Insert payload before the block at N |
+| **INS.BLK.POST** | `INS.BLK.POST N:` | Insert payload after the block at N |
+| **INS.BLK** | `INS.BLK N:` | Alias for `INS.BLK.POST N:` |
+| **CUT** | `CUT N..M [@name]` | Delete lines N..M and capture them into a patch-local register |
+| **PUT** | `PUT [@name] <N` or bare `PUT [@name]` | Paste a register's lines before original line N (bare PUT = file head). No payload. |
 
-**Payload format:** Each line starts with `+`:
+**Block ops are heuristics, not parsing.** `*.BLK` ops resolve the enclosing block by extension: brace-balanced `{}` for `.rs .js .ts .tsx .jsx .go .java .c .cpp .h .hpp .cs` (and unknown extensions, with indent fallback), indentation for `.py .verse` (brace pairs tried first, then indentation), `def/class/end` keywords for `.rb`. Results are best-effort — inspect with `find-block` first and prefer separate patches for interacting block edits.
+
+**Section headers & envelopes:** a patch may contain `[path#hash]` section headers grouping ops per file (consecutive same-path sections merge; for a single-file `hashline patch` the bracketed path is not enforced). `*** Begin Patch` / `*** End Patch` envelope markers are accepted. `*** Abort` discards the whole patch — the command then exits **1** with `ERR PATCH_REJECTED` (it looks like a failure; check the exit code, not just stdout). Two range syntaxes are accepted: `N..M` and `N.=M` (oh-my-pi compatible).
+
+**File-level ops:** the parser recognizes `REM` (delete file) and `MV <dest>` (rename) inside a section, but `hashline patch` currently does **not** apply them — a patch containing only `REM`/`MV` fails with `ERR EMPTY_PATCH`. Use `hashline remove` / `hashline rename` instead.
+
+**Example:**
 ```
 SWAP 3:a7:
 +    let version = "0.9.0";
 +    println!("version: {}", version);
 INS.POST 4:6c:
 +    log::info!("done");
+CUT 8..9 @tmp
+PUT @tmp <12
 ```
 
 ### Typical Agent Workflow
@@ -126,7 +150,7 @@ INS.POST 4:6c:
    hashline read src/main.rs
    ```
 
-2. **Find scope:**
+2. **Find scope (for block ops):**
    ```bash
    hashline find-block src/main.rs 12:2e
    ```
@@ -144,7 +168,7 @@ INS.POST 4:6c:
    ```bash
    hashline read src/main.rs
    ```
-   
+
 5. **If stale anchor:** read file > get fresh anchors > retry. Never force, never bypass.
 
 ### Options
@@ -152,12 +176,13 @@ INS.POST 4:6c:
 | Flag | Available on | Effect |
 |------|-------------|--------|
 | `--dry-run` | `patch` | Show what would change without modifying file |
-| `--safe` | `patch`, `write` | Atomic temp-file + fsync (crash-safe, slower) |
-| `--json` | `read`, `patch`, `find-block`, `write`, `remove` | Structured JSON output |
-| `--verbose` | `patch`, `write`, `find-block`, `remove`, `rename` | Human-readable format (full file after mutations) |
+| `--safe` | `patch`, `write` | Atomic temp-file + fsync (crash-safe, slower). **Default is a fast direct write — NOT atomic/crash-safe.** |
+| `--emit-anchors` | `patch` | Append a fresh `[path#hash]` + `N:hh|content` listing after the summary so follow-up patches skip the re-read (also `HASHLINE_RETURN_ANCHORS=1`; in `--json` mode adds `updated_anchors`) |
+| `--json` | `read`, `patch`, `find-block`, `write`, `remove`, `rename`, `guide`, `update` | Structured JSON output |
+| `--verbose` | `patch`, `write`, `find-block`, `remove`, `rename` | Human-readable format (full file after mutations); conflicts with `--json` |
 | `--no-cache` | `read` | Skip snapshot cache |
 | `--pretty` | `find-block` | Formatted JSON output (with `--json`) |
-| `--force` | `write` | Overwrite existing file |
+| `--force` | `write`, `rename` | Overwrite existing destination file |
 | `--detach` | `serve` | Fork to background as daemon |
 | `--pid-file` | `serve` | Write PID to file |
 | `--socket` | `serve` | Unix socket path (default ~/.hashline/daemon.sock) |
@@ -165,6 +190,8 @@ INS.POST 4:6c:
 | `--proxy-to-daemon` | `mcp` | Proxy MCP requests to running daemon |
 | `--check` | `update` | Only compare installed vs latest release; do not install |
 | `--version <v>` | `update` | Install a specific release version instead of the latest |
+
+**Environment variables:** `HASHLINE_RETURN_ANCHORS=1` (same as `--emit-anchors`), `HASHLINE_URL` / `HASHLINE_SOCKET` (route CLI calls to a running daemon), `HASHLINE_NO_UPDATE_CHECK=1` (disable update notice), `HASHLINE_RELEASES_BASE_URL` (mirror/test override for release lookups), `HASHLINE_NO_FALLBACK` (disable snapshot-recovery fallback on stale anchors), `HASHLINE_LOG` / `HASHLINE_LOG_PATH` / `HASHLINE_LOG_MAX_BYTES` (logging).
 
 ### Self-Update
 
@@ -221,18 +248,23 @@ Hint: re-read the file with `hashline read <file>`; ...
 **Fix:** `hashline read <file>` → use the new hash → retry.
 
 **Exit codes:** `0` = success, `1` = any failure. A patch that is rejected
-(e.g. an unknown or malformed operation) is applied atomically — nothing is
-written and the command exits `1` with `ERR PATCH_REJECTED` on stderr, so a
-rejected edit is never mistaken for a successful one.
+(e.g. an unknown or malformed operation, an `*** Abort` marker, or a parse
+error) is applied atomically — nothing is written and the command exits `1`
+with `ERR PATCH_REJECTED` on stderr, so a rejected edit is never mistaken for
+a successful one. Note this is true for *rejected* patches; successful writes
+are direct (non-atomic) unless `--safe` is passed.
 
 ### Common Pitfalls
 
 - **Stale anchor:** Content changed since last read → re-run `hashline read`
 - **File doesn't exist:** `hashline patch` fails with I/O error
 - **Binary file:** hashline only works on UTF-8 text files
+- **Same-line payload silently deletes:** `SWAP 3: +new` has an empty body → deletes line 3. Payload lines must follow the header on their own lines.
 - **`-` rows generate a warning and are still preserved as content:** hashline patch uses `+` payload syntax; bare `-` items (e.g. Markdown list items) produce a warning but are preserved. Use the `+-` escape to suppress the warning: `+- list item` → `- list item`
 - **Leading sigil is consumed:** The `+` payload prefix is stripped; if you need a literal leading `+`, double it: `++plus` → `+plus`. Same for bare body (no `+`) lines — they're treated as body content but may trigger a warning about missing `+` prefix
 - **Boundary echo:** warning when payload first line duplicates the line above the target range
+- **Hash collisions:** line hashes are only 8 bits — `hash 'ab' matches N lines` means the bare hash is ambiguous; always use the line-qualified `N:hh` form
+- **Symbol-only anchors are position-dependent:** `}`, `)`, blank lines get position-seeded hashes that change when surrounding lines shift
 
 ### Patch Output (Compact)
 
@@ -253,15 +285,20 @@ Prefix convention:
 
 ### JSON Output
 
-`read`, `patch`, and `find-block` all support `--json`:
+`read`, `patch`, `find-block`, `write`, `remove`, `rename`, `guide`, and `update` all support `--json`:
 
 ```bash
 hashline read sample.rs --json
 # {"hash":"3a58","lines":[{"content":"fn main() {","hash":"9b","n":1},...],"path":"sample.rs"}
 
-hashline patch sample.rs "SWAP 3:a7:+replaced" --json
+hashline patch sample.rs "SWAP 3:a7:
++replaced" --json
 # {"success":true,"file":"sample.rs","hash":"7f2a","edits_applied":1,"changed":[{"type":"modified","line":3,"hash":"b1","content":"replaced"}]}
 ```
+
+### MCP Server
+
+`hashline mcp` runs a stdio JSON-RPC MCP server exposing exactly 6 tools: `read`, `patch`, `write`, `find_block`, `remove_file`, `rename_file`. The `initialize` handshake returns `instructions` with the authoritative usage rules (read→patch→verify, `return_updated_anchors` for chaining). `hashline mcp --proxy-to-daemon` forwards requests to a running `hashline serve` daemon. There are no other MCP tools — do not call `ensure_project`, `send_message`, or similar; they do not exist here.
 
 ### Rules for Agents (MANDATORY)
 
@@ -269,197 +306,9 @@ hashline patch sample.rs "SWAP 3:a7:+replaced" --json
 - **Stale-anchor errors are safety signals, never bypass them**
 - **hashline is NOT str_replace, NOT sed.** For fuzzy matching, use the `patch` tool
 - **For multi-op patches, ALWAYS use stdin** (`hashline patch file - <<'EOF'`)
+- **Payload lines go on their own lines after the `:` header** — never inline
 
 
-## MCP Agent Mail — Multi-Agent Coordination
-
-A mail-like layer that lets coding agents coordinate asynchronously via MCP tools and resources. Provides identities, inbox/outbox, searchable threads, and advisory file reservations with human-auditable artifacts in Git.
-
-### Why It's Useful
-
-- **Prevents conflicts:** Explicit file reservations (leases) for files/globs
-- **Token-efficient:** Messages stored in per-project archive, not in context
-- **Quick reads:** `resource://inbox/...`, `resource://thread/...`
-
-### Same Repository Workflow
-
-1. **Register identity:**
-   ```
-   ensure_project(project_key=<abs-path>)
-   register_agent(project_key, program, model)
-   ```
-
-2. **Reserve files before editing:**
-   ```
-   file_reservation_paths(project_key, agent_name, ["src/**"], ttl_seconds=3600, exclusive=true)
-   ```
-
-3. **Communicate with threads:**
-   ```
-   send_message(..., thread_id="FEAT-123")
-   fetch_inbox(project_key, agent_name)
-   acknowledge_message(project_key, agent_name, message_id)
-   ```
-
-4. **Quick reads:**
-   ```
-   resource://inbox/{Agent}?project=<abs-path>&limit=20
-   resource://thread/{id}?project=<abs-path>&include_bodies=true
-   ```
-
-### Macros vs Granular Tools
-
-- **Prefer macros for speed:** `macro_start_session`, `macro_prepare_thread`, `macro_file_reservation_cycle`, `macro_contact_handshake`
-- **Use granular tools for control:** `register_agent`, `file_reservation_paths`, `send_message`, `fetch_inbox`, `acknowledge_message`
-
-### Common Pitfalls
-
-- `"from_agent not registered"`: Always `register_agent` in the correct `project_key` first
-- `"FILE_RESERVATION_CONFLICT"`: Adjust patterns, wait for expiry, or use non-exclusive reservation
-- **Auth errors:** If JWT+JWKS enabled, include bearer token with matching `kid`
-
----
-
-## Beads (br) — Dependency-Aware Issue Tracking
-
-Beads provides a lightweight, dependency-aware issue database and CLI (`br` - beads_rust) for selecting "ready work," setting priorities, and tracking status. It complements MCP Agent Mail's messaging and file reservations.
-
-**Important:** `br` is non-invasive—it NEVER runs git commands automatically. You must manually commit changes after `br sync --flush-only`.
-
-### Conventions
-
-- **Single source of truth:** Beads for task status/priority/dependencies; Agent Mail for conversation and audit
-- **Shared identifiers:** Use Beads issue ID (e.g., `br-123`) as Mail `thread_id` and prefix subjects with `[br-123]`
-- **Reservations:** When starting a task, call `file_reservation_paths()` with the issue ID in `reason`
-
-### Typical Agent Flow
-
-1. **Pick ready work (Beads):**
-   ```bash
-   br ready --json  # Choose highest priority, no blockers
-   ```
-
-2. **Reserve edit surface (Mail):**
-   ```
-   file_reservation_paths(project_key, agent_name, ["src/**"], ttl_seconds=3600, exclusive=true, reason="br-123")
-   ```
-
-3. **Announce start (Mail):**
-   ```
-   send_message(..., thread_id="br-123", subject="[br-123] Start: <title>", ack_required=true)
-   ```
-
-4. **Work and update:** Reply in-thread with progress
-
-5. **Complete and release:**
-   ```bash
-   br close 123 --reason "Completed"
-   br sync --flush-only  # Export to JSONL (no git operations)
-   ```
-   ```
-   release_file_reservations(project_key, agent_name, paths=["src/**"])
-   ```
-   Final Mail reply: `[br-123] Completed` with summary
-
-### Mapping Cheat Sheet
-
-| Concept | Value |
-|---------|-------|
-| Mail `thread_id` | `br-###` |
-| Mail subject | `[br-###] ...` |
-| File reservation `reason` | `br-###` |
-| Commit messages | Include `br-###` for traceability |
-
----
-
-## bv — Graph-Aware Triage Engine
-
-bv is a graph-aware triage engine for Beads projects (`.beads/beads.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
-
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
-
-**CRITICAL: Use ONLY `--robot-*` flags. Bare `bv` launches an interactive TUI that blocks your session.**
-
-### The Workflow: Start With Triage
-
-**`bv --robot-triage` is your single entry point.** It returns:
-- `quick_ref`: at-a-glance counts + top 3 picks
-- `recommendations`: ranked actionable items with scores, reasons, unblock info
-- `quick_wins`: low-effort high-impact items
-- `blockers_to_clear`: items that unblock the most downstream work
-- `project_health`: status/type/priority distributions, graph metrics
-- `commands`: copy-paste shell commands for next steps
-
-```bash
-bv --robot-triage        # THE MEGA-COMMAND: start here
-bv --robot-next          # Minimal: just the single top pick + claim command
-```
-
-### Command Reference
-
-**Planning:**
-| Command | Returns |
-|---------|---------|
-| `--robot-plan` | Parallel execution tracks with `unblocks` lists |
-| `--robot-priority` | Priority misalignment detection with confidence |
-
-**Graph Analysis:**
-| Command | Returns |
-|---------|---------|
-| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core, articulation points, slack |
-| `--robot-label-health` | Per-label health: `health_level`, `velocity_score`, `staleness`, `blocked_count` |
-| `--robot-label-flow` | Cross-label dependency: `flow_matrix`, `dependencies`, `bottleneck_labels` |
-| `--robot-label-attention [--attention-limit=N]` | Attention-ranked labels |
-
-**History & Change Tracking:**
-| Command | Returns |
-|---------|---------|
-| `--robot-history` | Bead-to-commit correlations |
-| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues, cycles |
-
-**Other:**
-| Command | Returns |
-|---------|---------|
-| `--robot-burndown <sprint>` | Sprint burndown, scope changes, at-risk items |
-| `--robot-forecast <id\|all>` | ETA predictions with dependency-aware scheduling |
-| `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
-| `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions |
-| `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
-| `--export-graph <file.html>` | Interactive HTML visualization |
-
-### Scoping & Filtering
-
-```bash
-bv --robot-plan --label backend              # Scope to label's subgraph
-bv --robot-insights --as-of HEAD~30          # Historical point-in-time
-bv --recipe actionable --robot-plan          # Pre-filter: ready to work
-bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank
-bv --robot-triage --robot-triage-by-track    # Group by parallel work streams
-bv --robot-triage --robot-triage-by-label    # Group by domain
-```
-
-### Understanding Robot Output
-
-**All robot JSON includes:**
-- `data_hash` — Fingerprint of source beads.jsonl
-- `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
-- `as_of` / `as_of_commit` — Present when using `--as-of`
-
-**Two-phase analysis:**
-- **Phase 1 (instant):** degree, topo sort, density
-- **Phase 2 (async, 500ms timeout):** PageRank, betweenness, HITS, eigenvector, cycles
-
-### jq Quick Reference
-
-```bash
-bv --robot-triage | jq '.quick_ref'                        # At-a-glance summary
-bv --robot-triage | jq '.recommendations[0]'               # Top recommendation
-bv --robot-plan | jq '.plan.summary.highest_impact'        # Best unblock target
-bv --robot-insights | jq '.status'                         # Check metric readiness
-bv --robot-insights | jq '.Cycles'                         # Circular deps (must fix!)
-```
-
----
 ## Beads Workflow Integration
 
 This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.

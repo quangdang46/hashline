@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 Format: grouped by release tag (newest first). `Thanks` credits non-maintainer contributors/authors/co-authors in that release range.
 
+> **Correction (docs audit, bd-docs-aiux-og5):** the v0.8.4 entry below claims
+> `REM`/`MV` file operations were added. The parser recognizes `REM` and
+> `MV <dest>` inside `[path#hash]` sections, but `hashline patch` (CLI, MCP,
+> and daemon paths) currently discards the parsed file-op, so a patch
+> containing only `REM`/`MV` fails with `ERR EMPTY_PATCH`. Use the dedicated
+> `hashline remove` / `hashline rename` commands instead. Documented as a
+> known gap pending a fix; not a supported feature yet.
+
 ## [v0.9.22] - 2026-11-08
 - fix(editor): block ops dropped expected_hash, accepting stale anchors (#126)
 - fix(editor): block ops used 0-based span as 1-based, corrupting a page (#125)

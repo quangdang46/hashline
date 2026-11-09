@@ -29,7 +29,7 @@ pub fn run<W: Write, E: Write>(
 
     $ hashline read src/auth.js
 
-    src/auth.js#1A2B
+    src/auth.js#1a2b
     1:ee|function verifyToken(token) {
     2:c6|  const decoded = jwt.verify(token, process.env.SECRET)
     3:a3|  if (!decoded.exp) throw new TokenError('missing expiry')
@@ -93,6 +93,9 @@ pub fn run<W: Write, E: Write>(
   │ DEL.BLK N    │ Delete syntactic block around N              │
   ├──────────────┼──────────────────────────────────────────────┤
   │ INS.BLK.POST │ Insert after syntactic block around N        │
+  │ N: +content  │ (INS.BLK N: is a short alias for this)       │
+  ├──────────────┼──────────────────────────────────────────────┤
+  │ INS.BLK.PRE  │ Insert before syntactic block around N       │
   │ N: +content  │                                              │
   ├──────────────┼──────────────────────────────────────────────┤
   │ CUT N..M     │ Capture lines N..M into a register and       │
@@ -101,6 +104,17 @@ pub fn run<W: Write, E: Write>(
   │ PUT [@name]  │ Paste a captured register before line N      │
   │ <N:          │ (bare PUT = file head)                       │
   └──────────────┴──────────────────────────────────────────────┘
+
+  Notes:
+  • Line hashes are 2 hex chars (e.g. 3:a3) — the #tag on the read
+    header is a separate 4-hex file hash, not a line anchor.
+  • Payload lines MUST start on the line AFTER the header. A
+    same-line payload is ignored: 'SWAP 3: +new' has an empty body
+    and silently DELETES line 3. Write payload on following lines.
+  • SWAP/DEL with no payload deletes the target line(s).
+  • Bare 'INS N:' is shorthand for 'INS.POST N:'.
+  • Block ops (* .BLK) use brace/indent/end heuristics by file
+    extension — best-effort, not a parser. Check find-block first.
 
 ───────────────────  RANGE SYNTAX  ──────────────────────────
 
@@ -118,24 +132,32 @@ pub fn run<W: Write, E: Write>(
     +new content
     *** End Patch
 
-  Use *** Abort to suppress a patch without applying it.
+  Use *** Abort to suppress a patch without applying it — note it
+  still exits 1 (ERR PATCH_REJECTED), same as a failure. Check the
+  exit code, not just the output text.
 
 ───────────────────  PATCH SOURCE MODES  ──────────────────────
 
   The patch argument accepts 3 forms:
 
-    hashline patch file 'SWAP 3: +new'        Literal text (simple patches)
     hashline patch file - <<'EOF' ... EOF     Stdin — PREFERRED for multi-op
     hashline patch file @/path/to/file.patch  File reference (rare)
+
+  Payload always goes on the lines AFTER the header:
+
+    $ hashline patch src/auth.js 'SWAP 3:a3:
+    +  if (!decoded || !decoded.exp) throw TokenError("expired")'
+
+  NOT 'SWAP 3: +new' on one line — that deletes line 3 (empty body).
 
   ✅ PREFERRED — stdin via heredoc (no disk I/O):
 
     $ hashline patch src/auth.js - <<'EOF'
     *** Begin Patch
-    SWAP 5:1a2b:
+    SWAP 5:a1:
     +  const decoded = jwt.verify(token, env.SECRET)
     DEL 9
-    SWAP 12:c3d4:
+    SWAP 12:c3:
     +  return decoded
     *** End Patch
     EOF
@@ -248,9 +270,9 @@ pub fn run<W: Write, E: Write>(
   # Multi-op patch — use stdin to avoid creating a .patch file
   $ hashline patch model.rs - <<'EOF'
   *** Begin Patch
-  SWAP 20:1a2b:
+  SWAP 20:a1:
   +  pub fn new(name: String) -> Self {
-  SWAP 25:c3d4:
+  SWAP 25:c3:
   +      Self { name, enabled: true }
   +  }
   *** End Patch
@@ -285,14 +307,19 @@ pub fn run<W: Write, E: Write>(
   • Always read before editing — anchors change when files change
   • --emit-anchors (or MCP return_updated_anchors) appends fresh anchors so follow-up patches skip the re-read
   • Use --dry-run to preview patches before writing
-  • An anchor like "42:a3" refers to line 42 with xxh32 hash a3
+  • An anchor like "42:a3" refers to line 42 with a 2-hex xxh32 hash
   • If an anchor fails, re-read the file for fresh hashes
-  • For block ops, hashline auto-detects language by extension:
-      .rs .js .ts .go .java → brace-balanced { }
-      .py .verse            → indentation-based
+  • For block ops, hashline picks a strategy by extension:
+      .rs .js .ts .go .java .c .cpp .h .cs → brace-balanced { }
+      .py .verse            → brace pairs first, then indentation
       .rb                   → keyword (def/class/end)
-  • hashline writes atomically (temp file + rename)
+      unknown               → brace pairs, then indentation
+    All are heuristics (best-effort), not a real parser.
+  • Default writes are direct (fast, not crash-safe); --safe uses
+    atomic temp-file + fsync
   • Use write to create new files: hashline write <file> <content>
+  • Remove/rename files with dedicated commands:
+      hashline remove <file>   /   hashline rename <old> <new>
   • Wrap complex patches in *** Begin/End Patch markers
   • Use ++ for literal +, +- for literal - in payload lines
   • A.=B range syntax is accepted alongside A..B

@@ -80,8 +80,8 @@ AI coding agents (`str_replace`, `sed`, bespoke edit LLM tools) routinely botch 
 | **Agent-first output** | Compact, token-minimal by default — `OK path#hash edits=N` + changed lines only |
 | **Stable anchors** | xxh32 hashes survive nearby edits; re-targeting is one anchor change |
 | **Stale-read detection** | Hard error if file changed between read and patch |
-| **Block-aware ops** | `SWAP.BLK` / `DEL.BLK` / `INS.BLK.POST` for brace-delimited, indent-based, and Ruby `def…end` blocks |
-| **Atomic writes** | Temp file + rename. No partial writes, no torn edits |
+| **Block-aware ops** | `SWAP.BLK` / `DEL.BLK` / `INS.BLK.POST` / `INS.BLK.PRE` for brace-delimited, indent-based, and Ruby `def…end` blocks (heuristic, best-effort) |
+| **Crash-safe writes** | `--safe` = atomic temp file + fsync (default is a fast direct write) |
 | **Multi-op patches** | Several SWAP/DEL/INS in one pass via stdin pipe |
 | **MCP server** | 6-tool stdio MCP for Claude Code, Codex, Cursor, and friends |
 | **Daemon mode** | Background JSON-RPC over Unix socket or HTTP |
@@ -93,8 +93,8 @@ AI coding agents (`str_replace`, `sed`, bespoke edit LLM tools) routinely botch 
 |-----------|----------|--------------------------|-------|
 | **Stable anchors** | ✅ xxh32 hash `42:a3` | ❌ Exact text match | ❌ Fragile regex |
 | **Stale-read detection** | ✅ Hard error on mismatch | ❌ Applies blindly | ❌ Applies blindly |
-| **Block replacement** | ✅ SWAP.BLK / DEL.BLK / INS.BLK.POST | ❌ Line-granularity | ❌ Line-granularity |
-| **Atomic writes** | ✅ Temp file + rename | ✅ Temp file + rename | ❌ In-place (torn writes possible) |
+| **Block replacement** | ✅ SWAP.BLK / DEL.BLK / INS.BLK.* | ❌ Line-granularity | ❌ Line-granularity |
+| **Crash-safe writes** | ✅ `--safe` opt-in (temp file + fsync); default is direct write | ✅ Temp file + rename | ❌ In-place (torn writes possible) |
 | **Multi-op batches** | ✅ stdin `*** Begin Patch` | ❌ One replacement per call | ✅ `-e` flag chaining |
 | **Dry-run preview** | ✅ `--dry-run` with diff | ❌ Not supported | ❌ Not supported |
 | **MCP server** | ✅ `hashline mcp` (6 tools) | N/A | N/A |
@@ -138,7 +138,7 @@ hashline patch src/app.ts --json 'SWAP 3:c3:
 | **Anchors over content matching** | xxh32 hashes are stable, short, and easy for agents to copy. Re-targeting after an edit is a single anchor change. |
 | **Stale-read is a hard error** | If the file changed between `read` and `patch`, `hashline` refuses — the agent must re-read and re-anchor. Better fail-fast than corrupt. |
 | **Block awareness** | Brace-delimited, indentation-based, and Ruby `def…end` block ops eliminate the "find the closing brace" problem that LLMs struggle with. |
-| **Atomic writes only** | Temp file + rename. No partial writes, no torn edits. |
+| **Crash-safe writes opt-in** | Default is a fast direct write; `--safe` gives atomic temp-file + fsync for crash safety. Rejected patches never write at all. |
 
 ## Limitation vs Alternatives
 
@@ -171,7 +171,7 @@ irm "https://raw.githubusercontent.com/quangdang46/hashline/main/install.ps1" | 
 cargo install --path crates/core
 ```
 
-The installers auto-detect your platform, fetch the matching binary from GitHub Releases, verify the SHA-256, and atomically install to `~/.local/bin/hashline`. They also auto-detect supported MCP hosts (claude-code, codex, cursor, windsurf, vscode, gemini, opencode) and upsert a `hashline` MCP server entry for each.
+The installers auto-detect your platform, fetch the matching binary from GitHub Releases, and install to `~/.local/bin/hashline`. The `.sha256` checksum is verified **when the checksum file downloads successfully** — verification is conditional on that fetch, not guaranteed. They also auto-detect supported MCP hosts (claude-code, codex, cursor, windsurf, vscode, gemini, opencode, amp, droid) and upsert a `hashline` MCP server entry for each.
 
 An **update-available notice does not install anything**. `hashline update --check` only checks; `hashline update` downloads and installs a release, verifying the candidate's version and the installed executable's bytes and version before reporting success. Release archive checksums are verified when published.
 
@@ -268,8 +268,7 @@ EOF
 | `write` | Write content to a new file (`--force` overwrites) | |
 | `find-block` | Find enclosing brace/indent/Ruby block around anchor | |
 | `remove` | Delete a file | |
-| `rename` | Rename (move) a file | |
-| `remove` | Delete a file | |
+| `rename` | Rename (move) a file (`--force` overwrites destination) | |
 | `guide` | Interactive user guide — always matches your binary | built-in |
 | `serve` | daemon over Unix socket or HTTP | `hashline guide` → _Daemon Mode_ |
 | `mcp` | MCP stdio server (6 tools) | `hashline guide` → _MCP Mode_ |
@@ -302,15 +301,17 @@ EOF
                ▼
 ┌─────────────────────────────┐
 │ 4. File updated             │
-│    (atomic write)           │
+│    (direct write; --safe    │
+│     for atomic temp+rename) │
 └─────────────────────────────┘
 ```
 
 Block-aware resolution by extension:
 ```
 .rs .js .ts .go .java .c .cpp .h .cs → brace-balanced { }
-.py .verse                         → indentation-based
+.py .verse                         → brace pairs, then indentation
 .rb                               → def … end matching
+unknown extension                 → brace pairs, then indentation
 ```
 
 ---
@@ -349,8 +350,8 @@ INS.POST 2:
 |---|---|---|
 | `I/O error: No such file or directory` | Path does not exist | Check path + permissions |
 | `line 2 content changed since last read` | File modified after `read` | `hashline read <file>` retry patch |
-| `hash 'ff' not found in demo.txt` | Anchor copied from wrong read | Re-read + copy fresh hash |
-| `hash 'ab' matches 3 lines` | 4-hex hash is ambiguous | Use line-qualified `2:ab` |
+| `hash 'ff' not found in demo.txt` | Anchor copied from wrong/stale read | Re-read + copy fresh hash |
+| `hash 'ab' matches 3 lines` | 2-hex hash collides with other lines | Use line-qualified `2:ab` anchor |
 
 ---
 
