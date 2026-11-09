@@ -12,7 +12,7 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 > path fails with `ERR TARGET_EXISTS`). The dedicated `hashline remove` /
 > `hashline rename` commands remain available.
 
-## [Unreleased]
+## [v0.9.23] - 2026-11-09
 
 Comprehensive audit remediation (~50-agent audit → 30 tracked fixes → independent verification swarm). Highlights below; full audit report in repo history.
 
@@ -50,6 +50,8 @@ Comprehensive audit remediation (~50-agent audit → 30 tracked fixes → indepe
 - CI: GitHub Actions pinned to SHAs, workflow-dispatch version naming fixed, `scripts/e2e.sh` unset-arg handling fixed.
 - Docs: AGENTS.md foreign-product sections removed, all examples verified against the real binary, patch grammar/envelope/env vars/MCP tools documented, `changed[]` vs anchor-array JSON key difference documented.
 - Polish: stray content after `CUT`/`PUT`/`REM`/`MV` warns instead of silently dropping; ~300 lines of dead code removed.
+
+Thanks: @cleg (Pavlo Dmytriiev) for #127.
 
 ## [v0.9.22] - 2026-11-08
 - fix(editor): block ops dropped expected_hash, accepting stale anchors (#126)

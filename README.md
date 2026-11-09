@@ -361,6 +361,6 @@ INS.POST 2:
 
 **Can I use `hashline` as a daemon?** Yes — `hashline serve` runs a background daemon that accepts JSON-RPC over Unix socket (default: `~/.hashline/daemon.sock`) or HTTP (`--http 17300`). Set `HASHLINE_URL` to route CLI calls through it.
 
-**Is it fast?** Anchor resolution on a 10k-line file takes ~280 µs. Full patch (parse + apply) is ~297 µs. File I/O dominates at scale, not hashing.
+**Is it fast?** Yes — measured on `hashline 0.9.23` (Windows, release build): startup ~8 ms, `read` of a 500k-line file ~170 ms, single-line `patch` ~400 ms, `patch --dry-run` on 500k lines ~355 ms with bounded memory (no diff blowup). Full numbers and reproduction steps: `bench-results/bench-2026-11-09.md` via `scripts/bench-features.sh`. Anchor resolution itself is microseconds — file I/O dominates at scale, not hashing.
 
 **What about tree-sitter?** `hashline` does **not** use tree-sitter. Block resolution is purely syntactic (brace depth, indentation, `end` keyword). This keeps the binary small and startup instant.

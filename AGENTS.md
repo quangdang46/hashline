@@ -201,8 +201,9 @@ push — there is **no crates.io publish** (the `hashline` crate there is an
 unrelated stale 0.2.1; distribution is GitHub Releases).
 
 1. **Write the CHANGELOG section by hand** (`CHANGELOG.md`, newest first),
-   including the `Thanks: @user` credit line. cargo-release does not generate
-   it — the credits cannot be derived from commits.
+   including the `Thanks: @user` credit line. Generate the credits with
+   `scripts/gen-release-thanks.sh` (scans the release range for PR authors
+   and commit authors via `gh`, excludes owner/bots/already-credited PRs).
 2. **Preview:** `cargo release patch` (dry run is the default).
 3. **Release:** `cargo release patch --execute`.
 
