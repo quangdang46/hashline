@@ -237,21 +237,27 @@ fn build_fixture_mode(tag: &str, payload_tag: &str, mode: &str, dir: &Path) -> P
 /// Library tests that touch this var serialize on [`ENV_LOCK`] so they
 /// cannot observe each other's mirror; CLI tests always set the var
 /// explicitly on the child process.
+///
+/// The mutex guard is a field (not a sibling binding) so `Drop::drop`
+/// removes the var while the lock is still held — releasing the lock
+/// first would let another test set the var and then have it removed
+/// underneath it.
 struct EnvGuard {
     key: &'static str,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> (Self, std::sync::MutexGuard<'static, ()>) {
+    fn set(key: &'static str, value: &str) -> Self {
         let lock = ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // SAFETY: env access is serialized through ENV_LOCK and the value
         // is removed again on drop.
         unsafe { std::env::set_var(key, value) };
-        (Self { key }, lock)
+        Self { key, _lock: lock }
     }
 }
 
@@ -479,7 +485,7 @@ fn library_download_verifies_and_replaces_target() {
         fixture: Some(fixture),
         fail_api: false,
     });
-    let (_env, _lock) = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
+    let _env = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
 
     let target_dir = tempfile::tempdir().expect("temp target dir");
     let target = target_dir.path().join("bin").join(binary_name());
@@ -555,7 +561,7 @@ fn windows_repeated_update_with_running_images_and_legacy_backup() {
         fixture: Some(fixture),
         fail_api: false,
     });
-    let (_env, _lock) = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
+    let _env = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
     let target = compile_binary(&temp.path().join("installed"), &current_version_tag(), "ok");
     let legacy = target.with_extension("exe.old");
     std::fs::copy(&target, &legacy).unwrap();
@@ -587,7 +593,7 @@ fn windows_retirement_failure_preserves_target_and_returns_error() {
         fixture: Some(fixture),
         fail_api: false,
     });
-    let (_env, _lock) = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
+    let _env = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
     let target = temporary_cli(&temp.path().join("installed"));
     let before = std::fs::read(&target).unwrap();
     // FILE_SHARE_READ but deliberately no FILE_SHARE_DELETE: a real OS-level
@@ -617,7 +623,7 @@ fn library_fetch_falls_back_to_redirect_when_api_fails() {
         fixture: None,
         fail_api: true,
     });
-    let (_env, _lock) = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
+    let _env = EnvGuard::set("HASHLINE_RELEASES_BASE_URL", &mirror.base);
 
     let latest = update::fetch_latest_release().expect("redirect fallback");
     assert_eq!(
