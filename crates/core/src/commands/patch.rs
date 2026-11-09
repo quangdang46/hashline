@@ -196,13 +196,11 @@ pub fn run<W: Write, E: Write>(
     // process swapped or rewrote the file since the load, writing would
     // silently destroy their change (or, for a swapped-in decoy, destroy an
     // unrelated file). Re-read and compare content; fail closed on drift.
-    reject_if_source_drifted(&cmd.file, &fc)?;
-
-    if cmd.safe {
-        crate::commands::common::atomic_write(&cmd.file, final_text.as_bytes())?;
-    } else {
-        crate::commands::common::fast_write(&cmd.file, final_text.as_bytes())?;
-    }
+    // `write_patch_output` additionally re-checks drift inside the atomic
+    // persist loop (--safe) and byte-verifies the result afterwards, so a
+    // concurrent overwrite is reported as CONCURRENT_MODIFICATION instead
+    // of a silent OK.
+    write_patch_output(&cmd.file, &final_text, &fc, cmd.safe)?;
 
     // Render output based on output mode.
     match ctx.output_mode() {
@@ -414,6 +412,9 @@ fn write_updated_anchors<W: Write>(
 /// is still possible — closing it fully needs OS-level locking (or a
 /// compare-and-swap write), which hashline deliberately does not take.
 /// This narrows the window from "whole patch apply" to a single re-read.
+/// [`write_patch_output`] shrinks it further: `--safe` re-runs this check
+/// inside the persist retry loop, and every mode byte-verifies the file
+/// after writing.
 pub(crate) fn reject_if_source_drifted(
     path: &Path,
     loaded: &FileContent,
@@ -425,6 +426,48 @@ pub(crate) fn reject_if_source_drifted(
         });
     }
     Ok(())
+}
+
+/// Write a computed patch result to `path` with drift protection and
+/// post-write verification. Shared by the CLI `patch` command, the MCP
+/// `patch` tool, and `Editor::patch`.
+///
+/// Sequence:
+/// 1. [`reject_if_source_drifted`] — refuse to clobber a file that changed
+///    since `fc` was loaded.
+/// 2. Write: `atomic_write_with_check` for `--safe` (the drift check runs
+///    again inside the persist retry loop, so a swap during temp-write or
+///    persist backoff is caught before the rename), `fast_write` otherwise.
+/// 3. [`verify_written_bytes`] — byte-exact re-read. A mismatch means
+///    another process overwrote us between write and verify (or the write
+///    itself was intercepted); fail with
+///    [`HashlineError::ConcurrentModification`] instead of reporting OK
+///    for content that is no longer on disk.
+///
+/// Residual: without OS-level locking a writer can still land in the
+/// nanoseconds between the last drift check and the rename, or between a
+/// fast write and the verify — that writer wins and *this* command reports
+/// the failure, so no silent OK survives. What cannot be detected is a
+/// writer whose content lands and is itself overwritten before anyone
+/// verifies; see the `fast_write` docs for the torn-read caveat.
+pub(crate) fn write_patch_output(
+    path: &Path,
+    final_text: &str,
+    fc: &FileContent,
+    safe: bool,
+) -> Result<(), HashlineError> {
+    let bytes = final_text.as_bytes();
+    reject_if_source_drifted(path, fc)?;
+    if safe {
+        crate::commands::common::atomic_write_with_check(
+            path,
+            |file| file.write_all(bytes),
+            || reject_if_source_drifted(path, fc),
+        )?;
+    } else {
+        crate::commands::common::fast_write(path, bytes)?;
+    }
+    crate::commands::common::verify_written_bytes(path, bytes)
 }
 
 /// Execute a patch that consists solely of a file-level operation (`REM` or
@@ -3521,6 +3564,70 @@ mod tests {
         std::fs::write(&path, "changed\n").unwrap();
         let err = super::reject_if_source_drifted(&path, &loaded).unwrap_err();
         assert_eq!(err.kind(), "STALE_FILE", "{err}");
+    }
+
+    // ---- write_patch_output: drift guard + post-write verification ----
+    // (bd-concurrency-residual-ubpl)
+
+    #[test]
+    fn write_patch_output_writes_and_byte_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        let fc = FileContent::load(&path).unwrap();
+
+        for safe in [false, true] {
+            super::write_patch_output(&path, "patched\n", &fc, safe).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "patched\n",
+                "safe={safe}"
+            );
+            // Restore for the next iteration.
+            std::fs::write(&path, "original\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn write_patch_output_rejects_drifted_source() {
+        // A decoy swapped in after load must survive untouched in BOTH
+        // modes — including --safe, where the drift check now also runs
+        // inside the persist retry loop.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        let fc = FileContent::load(&path).unwrap();
+        std::fs::write(&path, "decoy\n").unwrap();
+
+        for safe in [false, true] {
+            let err = super::write_patch_output(&path, "patched\n", &fc, safe).unwrap_err();
+            assert_eq!(err.kind(), "STALE_FILE", "safe={safe}: {err}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "decoy\n");
+        }
+    }
+
+    #[test]
+    fn write_patch_output_surfaces_concurrent_modification() {
+        // If the file on disk no longer matches what was written when the
+        // post-write verification runs, the command must fail loudly —
+        // never report OK for content that isn't there. Simulated by
+        // verifying against bytes that were never written.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "ours\n").unwrap();
+        let fc = FileContent::load(&path).unwrap();
+
+        // "ours\n" written via the normal path verifies fine.
+        super::write_patch_output(&path, "ours\n", &fc, false).unwrap();
+
+        // A concurrent writer lands different content; verifying OUR bytes
+        // now reports CONCURRENT_MODIFICATION.
+        std::fs::write(&path, "theirs\n").unwrap();
+        let err = crate::commands::common::verify_written_bytes(&path, b"ours\n").unwrap_err();
+        assert_eq!(err.kind(), "CONCURRENT_MODIFICATION", "{err}");
+        assert_eq!(err.report_url(), None);
+        // The other writer's content is preserved — we did not clobber it.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
     }
 
     // ---- fuzz: random op sequences vs an independent position oracle ----

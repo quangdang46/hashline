@@ -210,7 +210,10 @@ pub fn run<W: Write, E: Write>(
 
   Other flags:
   hashline patch <file> <patch> --dry-run    Preview only
-  hashline patch <file> <patch> --safe       Atomic temp-file + fsync
+  hashline patch <file> <patch> --safe       Atomic temp-file + fsync;
+                                             re-checks for drift before
+                                             persisting (best concurrent
+                                             safety short of --safe locking)
   hashline patch <file> <patch> --emit-anchors  Append fresh anchors (chain edits without re-read; or HASHLINE_RETURN_ANCHORS=1 / MCP return_updated_anchors)
   hashline find-block <f> <a>   --pretty     Pretty-print JSON (with --json)
   hashline write <file> <cont> --force       Overwrite existing file
@@ -349,6 +352,15 @@ pub fn run<W: Write, E: Write>(
   • Use ++ for literal +, +- for literal - in payload lines
   • A.=B range syntax is accepted alongside A..B
   • stdin (-) is always faster than @path — no file create/write overhead
+  • Concurrency: patch re-reads the file before writing (STALE_FILE on
+    drift); --safe re-checks again inside the persist retry loop, and all
+    writes are byte-verified afterwards — a concurrent overwrite fails
+    with ERR CONCURRENT_MODIFICATION instead of a silent OK. There is no
+    OS-level lock: two writers can still race, but the loser now errors
+    rather than both reporting OK
+  • Default (non-safe) writes are truncate+write: concurrent readers can
+    observe a 0-byte/partial file. Use --safe when readers must never see
+    a torn file
   • Patch output prefix convention: ~modified +inserted -deleted
 "#;
 

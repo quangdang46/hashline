@@ -689,13 +689,10 @@ fn handle_patch(
         return ok_output(out, structured);
     }
 
-    // Same write-time stale-file guard as the CLI patch path: refuse to
-    // clobber a file that drifted since `FileContent::load` above.
-    if let Err(e) = crate::commands::patch::reject_if_source_drifted(path, &fc) {
-        return err_output(&e);
-    }
-    match crate::commands::common::fast_write(path, final_text.as_bytes()) {
-        Ok(_) => {
+    // Same write-time stale-file guard + post-write byte verification as
+    // the CLI patch path.
+    match crate::commands::patch::write_patch_output(path, &final_text, &fc, false) {
+        Ok(()) => {
             let changed_count =
                 changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
             let mut structured = serde_json::json!({
@@ -779,6 +776,11 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> ToolOutpu
     }
 
     if let Err(e) = crate::commands::common::fast_write(path, disk_content.as_bytes()) {
+        return err_output(&e);
+    }
+    // Byte-exact post-write check: a concurrent overwrite is reported as
+    // CONCURRENT_MODIFICATION, never a silent OK.
+    if let Err(e) = crate::commands::common::verify_written_bytes(path, disk_content.as_bytes()) {
         return err_output(&e);
     }
 
@@ -1337,17 +1339,19 @@ mod tests {
             let mut args = example["arguments"].clone();
             args["file"] = json!(path.to_str().unwrap());
             // The examples deliberately use placeholders, not fabricated real hashes.
-            args["patch"] = json!(args["patch"]
-                .as_str()
-                .unwrap()
-                .replace(
-                    "2:ab",
-                    &format!("2:{}", read["lines"][1]["hash"].as_str().unwrap())
-                )
-                .replace(
-                    "5:cd",
-                    &format!("5:{}", read["lines"][4]["hash"].as_str().unwrap())
-                ));
+            args["patch"] = json!(
+                args["patch"]
+                    .as_str()
+                    .unwrap()
+                    .replace(
+                        "2:ab",
+                        &format!("2:{}", read["lines"][1]["hash"].as_str().unwrap())
+                    )
+                    .replace(
+                        "5:cd",
+                        &format!("5:{}", read["lines"][4]["hash"].as_str().unwrap())
+                    )
+            );
             let result = call_tool(example["name"].as_str().unwrap(), &args).unwrap();
             assert!(result.get("isError").is_none(), "{result}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), expected_text);

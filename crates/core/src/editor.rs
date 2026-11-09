@@ -429,11 +429,10 @@ impl Editor {
         }
 
         if !dry_run {
-            // Same write-time stale-file guard as the CLI patch path: if the
-            // file drifted since `FileContent::load` above, refuse to clobber
-            // the other writer's change.
-            crate::commands::patch::reject_if_source_drifted(path, &fc)?;
-            crate::commands::common::fast_write(path, final_text.as_bytes())?;
+            // Same write-time stale-file guard + post-write byte
+            // verification as the CLI patch path: drift fails closed, and a
+            // concurrent overwrite is reported instead of silently OK.
+            crate::commands::patch::write_patch_output(path, &final_text, &fc, false)?;
         }
 
         // Record the post-patch state as a new snapshot version. Prior
@@ -619,6 +618,10 @@ impl Editor {
         }
 
         crate::commands::common::fast_write(path, disk_content.as_bytes())?;
+        // Byte-exact post-write check: a concurrent writer that landed
+        // between the write and this read is reported as
+        // CONCURRENT_MODIFICATION, never a silent OK.
+        crate::commands::common::verify_written_bytes(path, disk_content.as_bytes())?;
 
         // Record new snapshot
         if self.config.enable_snapshots {

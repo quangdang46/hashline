@@ -45,10 +45,11 @@ pub fn run<W: Write, E: Write>(
     }
 
     // 3b. Verify the write actually landed: the target must now be a
-    //     regular file with the expected length. Without this, writes to
-    //     device paths (e.g. `d\NUL` on Windows) report OK while creating
-    //     nothing.
-    crate::commands::common::verify_written_file(&cmd.file, disk_content.len())?;
+    //     regular file whose bytes are exactly what we wrote. The byte
+    //     comparison (not just length) also catches a concurrent writer
+    //     that overwrote us between the write and this check — reported
+    //     as CONCURRENT_MODIFICATION rather than a silent OK.
+    crate::commands::common::verify_written_bytes(&cmd.file, disk_content.as_bytes())?;
 
     // 3c. On Windows the OS silently normalizes trailing dots/spaces and
     //     casing in file names (`literal.` writes `literal`). Surface a

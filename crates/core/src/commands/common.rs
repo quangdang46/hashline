@@ -217,10 +217,40 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }
 
+/// Byte-exact post-write verification: re-reads `path` and compares the
+/// on-disk bytes against `expected`.
+///
+/// Stronger than [`verify_written_file`]'s length check — it catches
+/// truncated/torn writes, silent redirects, and (for callers that just
+/// wrote) concurrent overwrites that landed between the write and this
+/// check. On mismatch returns [`HashlineError::ConcurrentModification`]
+/// so the caller fails loudly instead of reporting a silent OK; I/O
+/// errors reading back propagate as [`HashlineError::Io`].
+pub fn verify_written_bytes(path: &Path, expected: &[u8]) -> Result<(), HashlineError> {
+    let actual = fs::read(path)?;
+    if actual == expected {
+        return Ok(());
+    }
+    Err(HashlineError::ConcurrentModification {
+        path: path.display().to_string(),
+    })
+}
+
 /// Fast variant of atomic_write that skips fsync and uses a simple
 /// read-modify-write instead of temp-file + rename. Suitable for agent
 /// use cases where crash safety is not critical (the agent can always
 /// re-read and re-edit on failure).
+///
+/// Residual races (documented, not fully fixable without OS-level locks):
+/// - **Torn reads:** truncate-then-write exposes 0-byte/partial states to
+///   concurrent readers. Use [`atomic_write`] (`--safe`) when readers must
+///   never observe a torn file.
+/// - **Lost updates:** two writers can interleave; callers that care run
+///   [`verify_written_bytes`] afterwards and surface
+///   [`HashlineError::ConcurrentModification`] instead of a silent OK.
+/// - Writes go through the existing inode, so hardlinked names all see the
+///   new content (unlike [`atomic_write`], which replaces the directory
+///   entry and leaves other links on the old content).
 pub fn fast_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     use std::io::Write;
     reject_special_write_path(path)?;
@@ -237,6 +267,32 @@ pub fn fast_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
 pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), HashlineError>
 where
     F: FnOnce(&mut fs::File) -> io::Result<()>,
+{
+    atomic_write_with_check(path, write_contents, || Ok(()))
+}
+
+/// Like [`atomic_write_with`], but runs `pre_persist` immediately before
+/// **each** persist (rename) attempt — including every retry inside the
+/// Windows persist backoff loop.
+///
+/// This shrinks the check→persist TOCTOU window for read-modify-write
+/// callers (e.g. `patch --safe`): the drift check that ran before the
+/// (potentially slow) temp-file write/fsync is repeated right before the
+/// rename, so a file swapped in during temp-write is caught instead of
+/// being silently overwritten by the persist. The remaining window is a
+/// single rename syscall — closing it fully would need an OS-level lock,
+/// which hashline deliberately does not take.
+///
+/// `pre_persist` errors abort the write; the temp file is dropped
+/// (deleted) and the target is left untouched.
+pub fn atomic_write_with_check<F, G>(
+    path: &Path,
+    write_contents: F,
+    pre_persist: G,
+) -> Result<(), HashlineError>
+where
+    F: FnOnce(&mut fs::File) -> io::Result<()>,
+    G: Fn() -> Result<(), HashlineError>,
 {
     reject_special_write_path(path)?;
     // For a bare relative path like "sample.js", `path.parent()` returns
@@ -265,15 +321,24 @@ where
 
     // On Windows, antivirus or the OS may briefly hold a lock on the target
     // file after a previous write. Retry the persist a few times to work
-    // around transient ACCESS_DENIED errors.
-    persist_with_retry(temp, path)?;
+    // around transient ACCESS_DENIED errors. `pre_persist` re-validates the
+    // target before every attempt so a drifted/swapped file is not
+    // clobbered by a late retry.
+    persist_with_retry(temp, path, &pre_persist)?;
 
     sync_parent_directory(parent)?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), HashlineError> {
+fn persist_with_retry<G>(
+    mut temp: NamedTempFile,
+    path: &Path,
+    pre_persist: &G,
+) -> Result<(), HashlineError>
+where
+    G: Fn() -> Result<(), HashlineError>,
+{
     use std::io::Read;
     use std::io::Seek;
     use std::thread;
@@ -283,6 +348,12 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Hashli
     // On Windows, antivirus/Defender may briefly lock the target file after
     // it was created/written, causing MoveFileExW to fail with ACCESS_DENIED.
     for attempt in 0..10 {
+        // Re-validate the target before every attempt: the backoff sleeps
+        // widen the drift window, and a check that only ran once before the
+        // loop would miss a swap landing between attempts. A `pre_persist`
+        // error aborts the whole write — it must NOT fall through to the
+        // non-atomic fallback, which would clobber the drifted file.
+        pre_persist()?;
         match temp.persist(path) {
             Ok(_) => return Ok(()),
             Err(err) => {
@@ -305,6 +376,10 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Hashli
                     temp.as_file_mut().seek(std::io::SeekFrom::Start(0))?;
                     temp.as_file_mut().read_to_end(&mut buf)?;
                     drop(temp);
+                    // The fallback is non-atomic AND bypasses the rename —
+                    // re-run the drift check so it cannot clobber a file
+                    // that changed while persist was retrying.
+                    pre_persist()?;
                     // Retry direct write a few times too
                     for write_attempt in 0..5 {
                         match fs::write(path, &buf) {
@@ -324,7 +399,15 @@ fn persist_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<(), Hashli
 }
 
 #[cfg(not(windows))]
-fn persist_with_retry(temp: NamedTempFile, path: &Path) -> Result<(), HashlineError> {
+fn persist_with_retry<G>(
+    temp: NamedTempFile,
+    path: &Path,
+    pre_persist: &G,
+) -> Result<(), HashlineError>
+where
+    G: Fn() -> Result<(), HashlineError>,
+{
+    pre_persist()?;
     temp.persist(path)
         .map_err(|error| HashlineError::Io(error.error))?;
     Ok(())
@@ -396,6 +479,51 @@ mod tests {
             verify_written_file(&dir.path().join("nope.txt"), 0),
             Err(HashlineError::Io(_))
         ));
+    }
+
+    #[test]
+    fn verify_written_bytes_detects_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f.txt");
+        fs::write(&file, "hello").unwrap();
+
+        assert!(verify_written_bytes(&file, b"hello").is_ok());
+        // Same length, different bytes — a length-only check would miss
+        // this; the byte comparison must not.
+        let err = verify_written_bytes(&file, b"world").unwrap_err();
+        assert_eq!(err.kind(), "CONCURRENT_MODIFICATION");
+        assert_eq!(err.report_url(), None);
+        // Missing file surfaces as Io, not a false OK.
+        assert!(matches!(
+            verify_written_bytes(&dir.path().join("nope.txt"), b""),
+            Err(HashlineError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn atomic_write_with_check_runs_pre_persist_and_aborts_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "original\n").unwrap();
+
+        // A failing pre_persist check must abort the write entirely: the
+        // target keeps its content and no temp file is persisted.
+        let err = atomic_write_with_check(
+            &target,
+            |f| f.write_all(b"new\n"),
+            || {
+                Err(HashlineError::StaleFile {
+                    path: target.display().to_string(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), "STALE_FILE");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
+
+        // A passing check lets the write through.
+        atomic_write_with_check(&target, |f| f.write_all(b"new\n"), || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
     }
 
     #[test]

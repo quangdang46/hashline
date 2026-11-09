@@ -13,6 +13,11 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 > `hashline rename` commands remain available.
 
 ## [Unreleased]
+- fix(concurrency): post-write byte verification + pre-persist drift re-check (bd-concurrency-residual-ubpl)
+  - `patch`/`write` (CLI, MCP, `Editor`) now re-read the file after writing and byte-compare; a concurrent overwrite fails with `ERR CONCURRENT_MODIFICATION` instead of a silent `OK`.
+  - `patch --safe` re-runs the source-drift check inside the atomic persist retry loop, closing most of the temp-write→persist TOCTOU window that could destroy a swapped-in file.
+  - Windows os errors 32/33/303/1224 (sharing violation, lock violation, delete-pending, user-mapped file) and Unix EBUSY/ETXTBSY are classified as routine environmental I/O errors: no bogus `REPORT` bug-report line, with actionable hints.
+  - Documented residual: no OS-level locking, so a writer landing in the final check→rename window still wins (the loser now errors); default `fast_write` remains truncate+write and can expose torn reads to concurrent readers — use `--safe` for reader safety.
 - docs: fix verify-wave doc drift — inline `+payload` after op headers, removed retired `--no-cache` flag, corrected `ERR STALE_ANCHOR` name, bracketed `[path#hash]` read headers, documented `REM`/`MV` patch ops, `*** End of File` marker, find-block relocation warnings, and the `changed[]` vs anchor-array JSON key difference (`line` vs `n`) (bd-docs-drift-2-i4v3)
 
 ## [v0.9.22] - 2026-11-08
