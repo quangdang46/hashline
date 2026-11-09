@@ -35,7 +35,9 @@ pub struct ReadCmd {
     pub file: PathBuf,
     #[arg(long)]
     pub json: bool,
-    #[arg(long)]
+    /// Retired flag: `read` never consults the snapshot cache, so there is
+    /// nothing to skip. Kept (skipped by clap) for struct-literal callers.
+    #[arg(skip)]
     pub no_cache: bool,
 }
 
@@ -119,7 +121,9 @@ pub struct ServeCmd {
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(about = "Run as an MCP server over stdio")]
 pub struct McpCmd {
-    #[arg(long)]
+    /// Unwired flag: the MCP server does not proxy to a running daemon.
+    /// Kept (skipped by clap) for struct-literal callers.
+    #[arg(skip)]
     pub proxy_to_daemon: bool,
 }
 

@@ -171,52 +171,6 @@ pub fn repair_boundary_echo(
     None
 }
 
-/// Check if a payload likely has a leading duplicate prefix (restates content above range).
-/// Returns the number of leading duplicate lines, or 0.
-pub fn duplicate_prefix_count(
-    payload: &[String],
-    start_line: usize,
-    entries: &[crate::document::LineEntry],
-) -> usize {
-    if payload.is_empty() || start_line <= 1 {
-        return 0;
-    }
-    let max_check = payload.len().min(start_line - 1);
-    let mut count = 0;
-    for i in 0..max_check {
-        let line_above = &entries[start_line - 2 - i].content;
-        if payload[payload.len() - 1 - i] == *line_above {
-            count += 1;
-        } else {
-            break;
-        }
-    }
-    count
-}
-
-/// Check if a payload likely has a trailing duplicate suffix (restates content below range).
-/// Returns the number of trailing duplicate lines, or 0.
-pub fn duplicate_suffix_count(
-    payload: &[String],
-    end_line: usize,
-    entries: &[crate::document::LineEntry],
-) -> usize {
-    if payload.is_empty() || end_line >= entries.len() {
-        return 0;
-    }
-    let max_check = payload.len().min(entries.len() - end_line);
-    let mut count = 0;
-    for i in 0..max_check {
-        let line_below = &entries[end_line + i].content;
-        if payload[payload.len() - 1 - i] == *line_below {
-            count += 1;
-        } else {
-            break;
-        }
-    }
-    count
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,20 +263,6 @@ mod tests {
         ];
         let warnings = detect_boundary_issues(&payload, 1, 3, &entries);
         assert!(warnings.iter().any(|w| w.contains("Dropped closers")));
-    }
-
-    #[test]
-    fn test_duplicate_prefix_count() {
-        let payload = vec!["keep me".to_string(), "same line".to_string()];
-        let entries = vec![make_entry("same line")];
-        assert_eq!(duplicate_prefix_count(&payload, 2, &entries), 1);
-    }
-
-    #[test]
-    fn test_duplicate_suffix_count() {
-        let payload = vec!["same line".to_string()];
-        let entries = vec![make_entry("keep me"), make_entry("same line")];
-        assert_eq!(duplicate_suffix_count(&payload, 1, &entries), 1);
     }
 
     #[test]

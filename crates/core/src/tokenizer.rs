@@ -10,15 +10,13 @@
 use crate::messages::{ABORT_MARKER, BEGIN_PATCH_MARKER, END_PATCH_MARKER};
 use crate::patch_format::{
     HL_CUT_KEYWORD, HL_DELETE_BLOCK_KEYWORD, HL_DELETE_KEYWORD, HL_FILE_HASH_LENGTH,
-    HL_FILE_HASH_SEP, HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER,
-    HL_INSERT_AFTER_BLOCK_KEYWORD, HL_INSERT_AFTER_BLOCK_SHORT, HL_INSERT_BEFORE,
-    HL_INSERT_BEFORE_BLOCK_KEYWORD, HL_INSERT_HEAD, HL_INSERT_KEYWORD, HL_INSERT_TAIL,
-    HL_MAX_RANGE_LINES, HL_MV_KEYWORD, HL_PUT_KEYWORD, HL_REM_KEYWORD, HL_REPLACE_BLOCK_KEYWORD,
-    HL_REPLACE_KEYWORD, describe_anchor_examples,
+    HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_INSERT_AFTER, HL_INSERT_AFTER_BLOCK_KEYWORD,
+    HL_INSERT_AFTER_BLOCK_SHORT, HL_INSERT_BEFORE, HL_INSERT_BEFORE_BLOCK_KEYWORD, HL_INSERT_HEAD,
+    HL_INSERT_KEYWORD, HL_INSERT_TAIL, HL_MAX_RANGE_LINES, HL_MV_KEYWORD, HL_PUT_KEYWORD,
+    HL_REM_KEYWORD, HL_REPLACE_BLOCK_KEYWORD, HL_REPLACE_KEYWORD,
 };
 use crate::types::{Anchor, Cursor, ParsedRange};
 
-const CHAR_LINE_FEED: u8 = b'\n';
 const CHAR_CARRIAGE_RETURN: u8 = b'\r';
 const CHAR_ZERO: u8 = b'0';
 const CHAR_NINE: u8 = b'9';
@@ -45,12 +43,6 @@ const FILE_SUFFIX_LEN: usize = HL_FILE_SUFFIX.len();
 #[inline]
 fn is_digit_code(c: u8) -> bool {
     (CHAR_ZERO..=CHAR_NINE).contains(&c)
-}
-
-#[inline]
-#[allow(dead_code)]
-fn is_non_zero_digit_code(c: u8) -> bool {
-    c > CHAR_ZERO && c <= CHAR_NINE
 }
 
 #[inline]
@@ -100,35 +92,6 @@ fn marker_line_equals(line: &str, marker: &str) -> bool {
     }
 }
 
-/// Split text into LF-delimited lines, stripping trailing CR.
-pub fn split_hashline_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    let mut lines = Vec::new();
-    let bytes = text.as_bytes();
-    let mut start = 0;
-    for i in 0..bytes.len() {
-        if bytes[i] != CHAR_LINE_FEED {
-            continue;
-        }
-        let mut end = i;
-        if end > start && bytes[end - 1] == CHAR_CARRIAGE_RETURN {
-            end -= 1;
-        }
-        lines.push(text[start..end].to_owned());
-        start = i + 1;
-    }
-    if start < text.len() {
-        let mut end = text.len();
-        if end > start && bytes[end - 1] == CHAR_CARRIAGE_RETURN {
-            end -= 1;
-        }
-        lines.push(text[start..end].to_owned());
-    }
-    lines
-}
-
 pub fn clone_cursor(cursor: &crate::types::Cursor) -> crate::types::Cursor {
     match cursor {
         crate::types::Cursor::BeforeAnchor(a) => {
@@ -171,23 +134,6 @@ pub fn scan_line_number(bytes: &[u8], index: usize, end: usize) -> Option<Number
         line: line_number,
         next_index,
     })
-}
-
-/// Parse a bare line-number anchor. Returns error on malformed input.
-pub fn parse_lid(raw: &str, line_num: usize) -> Result<Anchor, String> {
-    let end = trim_end_index(raw);
-    let bytes = raw.as_bytes();
-    let number_start = skip_whitespace(bytes, 0, end);
-    let scan = scan_line_number(bytes, number_start, end);
-    match scan {
-        Some(s) if skip_whitespace(bytes, s.next_index, end) == end => Ok(Anchor { line: s.line }),
-        _ => Err(format!(
-            "line {line_num}: expected a line number such as {}; \
-             got {raw:?}. Use {HL_FILE_PREFIX}PATH{HL_FILE_HASH_SEP}hash{HL_FILE_SUFFIX} \
-             from your latest read for file-version binding.",
-            describe_anchor_examples(Some("119")),
-        )),
-    }
 }
 
 struct RangeScan {
@@ -346,23 +292,6 @@ fn consume_optional_colon(bytes: &[u8], index: usize, end: usize) -> usize {
     }
 }
 
-/// In hunk headers like `SWAP 2:67:` the optional `HH?` (1-2 hex digits)
-/// hash suffix sits between the line number and the terminating colon.
-/// Both colons and the hash are consumed here so the hunk header parses
-/// as a whole. The hash itself is treated as a fingerprint hint and is
-/// NOT validated at tokenize time (no file content is available); the
-/// applier ignores the hash for SWAP/DEL and only requires the line
-/// number to be in range.
-///
-/// Accepts:
-///   `SWAP 2:`         — single colon, no hash
-///   `SWAP 2:67:`      — hash + trailing colon
-///   `SWAP 2..3:67:`   — range with hash suffix
-/// Delegates to `consume_with_hash` which returns (next_index, hash).
-pub fn consume_optional_colon_with_hash(bytes: &[u8], index: usize, end: usize) -> usize {
-    consume_with_hash(bytes, index, end).next
-}
-
 fn hex_val(b: u8) -> u8 {
     match b {
         b'0'..=b'9' => b - b'0',
@@ -384,7 +313,7 @@ struct HashSuffix {
     malformed: bool,
 }
 
-/// Like consume_optional_colon_with_hash but returns the full [`HashSuffix`].
+/// Returns the full [`HashSuffix`] for an optional `:HH` hash suffix.
 fn consume_with_hash(bytes: &[u8], index: usize, end: usize) -> HashSuffix {
     let cursor = skip_whitespace(bytes, index, end);
     if cursor >= end || bytes[cursor] != CHAR_COLON {
@@ -1231,18 +1160,8 @@ impl Tokenizer {
         classify_line(line, line_num)
     }
 
-    pub fn is_op(&self, line: &str) -> bool {
-        try_parse_hunk_header(line).is_some()
-    }
-
     pub fn is_header(&self, line: &str) -> bool {
         try_parse_header(line).is_some() || try_parse_recovery_header(line).is_some()
-    }
-
-    pub fn is_envelope_marker(&self, line: &str) -> bool {
-        marker_line_equals(line, BEGIN_PATCH_MARKER)
-            || marker_line_equals(line, END_PATCH_MARKER)
-            || marker_line_equals(line, ABORT_MARKER)
     }
 }
 

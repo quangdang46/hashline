@@ -227,34 +227,3 @@ pub struct BlockResolverRequest {
 pub trait BlockResolver: Send + Sync {
     fn resolve(&self, request: &BlockResolverRequest) -> Option<BlockSpan>;
 }
-
-/// Optional hints for [`Patch::parse`](crate::input::Patch::parse).
-#[derive(Clone, Debug, Default)]
-pub struct SplitOptions {
-    /// Resolves absolute paths inside hashline headers to cwd-relative form.
-    pub cwd: Option<String>,
-    /// Fallback path used when the input lacks a `[PATH]` header but contains
-    /// recognizable hashline operations.
-    pub path: Option<String>,
-}
-
-/// Streaming-formatter knobs.
-#[derive(Clone, Debug)]
-pub struct StreamOptions {
-    /// First line number to use when formatting (1-indexed, default 1).
-    pub start_line: usize,
-    /// Maximum formatted lines per yielded chunk (default 200).
-    pub max_chunk_lines: usize,
-    /// Maximum UTF-8 bytes per yielded chunk (default 64 KiB).
-    pub max_chunk_bytes: usize,
-}
-
-impl Default for StreamOptions {
-    fn default() -> Self {
-        Self {
-            start_line: 1,
-            max_chunk_lines: 200,
-            max_chunk_bytes: 64 * 1024,
-        }
-    }
-}

@@ -179,7 +179,11 @@ fn is_bare_literal_value(s: &str) -> bool {
     trimmed.parse::<f64>().is_ok()
 }
 
-fn detect_apply_patch_contamination(text: &str, _has_pending: bool) -> Option<String> {
+fn detect_apply_patch_contamination(text: &str, has_pending: bool) -> Option<String> {
+    // Inside a pending op these lines are payload content, not contamination.
+    if has_pending {
+        return None;
+    }
     let trimmed = text.trim_start();
     if trimmed.is_empty() {
         return None;
@@ -480,8 +484,13 @@ impl Executor {
     }
 
     fn handle_raw(&mut self, text: &str, line_num: usize) {
-        let contamination = detect_apply_patch_contamination(text, self.pending.is_some());
-        if let Some(_msg) = contamination {
+        if let Some(msg) = detect_apply_patch_contamination(text, self.pending.is_some()) {
+            // Surface the diagnostic and reject the patch atomically instead
+            // of silently dropping the line.
+            if !self.warnings.contains(&msg) {
+                self.warnings.push(msg);
+            }
+            self.had_unknown_op = true;
             return;
         }
 
