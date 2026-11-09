@@ -80,6 +80,13 @@ pub struct PatchResult {
     pub text: String,
     /// Whether this was a dry-run (no file was written).
     pub dry_run: bool,
+    /// Whether the patch contained an explicit abort marker (`*** Abort`).
+    ///
+    /// An aborted patch is a deliberate no-op, NOT a successful apply —
+    /// consumers must check this flag (or treat `applied_edits == 0` with
+    /// `aborted == true` as "nothing was applied") instead of assuming `Ok`
+    /// means the edits landed.
+    pub aborted: bool,
 }
 
 /// Result of an [`Editor::write`] call.
@@ -171,7 +178,13 @@ impl Editor {
     }
 
     /// Set custom config (builder style).
+    ///
+    /// Rebuilds the no-op guard so `noop_guard_limit` (and
+    /// `noop_guard_enabled`, read at patch time) take effect — previously
+    /// the guard kept the limit captured at construction and silently
+    /// ignored the new config's value.
     pub fn with_config(mut self, config: HashlineConfig) -> Self {
+        self.noop_guard = crate::noop_guard::NoopGuard::new(config.noop_guard_limit);
         self.config = config;
         self
     }
@@ -269,6 +282,7 @@ impl Editor {
                     warnings,
                     text: text.clone(),
                     dry_run,
+                    aborted: true,
                 });
             }
             return if warnings.is_empty() {
@@ -290,56 +304,79 @@ impl Editor {
         .map_err(|err| block_resolve_error(err, path))?;
 
         // Apply edits to in-memory lines. On a stale anchor, attempt
-        // snapshot-based recovery (Phase 3): replay the edits against the
-        // cached snapshot whose hashes match, then 3-way-merge onto the live
-        // content. Fail-closed — if recovery is unavailable or ambiguous, the
-        // original StaleAnchor error is surfaced.
+        // snapshot-based recovery (Phase 3): replay the edits against each
+        // cached snapshot whose hashes match (newest first), then
+        // 3-way-merge onto the live content. Fail-closed — if recovery is
+        // unavailable or ambiguous, the original StaleAnchor error is
+        // surfaced.
         let mut lines: Vec<String> = split_normalized(text);
         let entries = fc.lines_with_hashes();
         let had_trailing_newline = fc.trailing_newline;
+        let mut all_warnings = warnings;
 
         let apply_result =
             crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved);
         if let Err(HashlineError::StaleAnchor { .. }) = apply_result {
+            let mut recovered_lines: Option<Vec<String>> = None;
             if self.config.enable_snapshots {
-                let recovery = crate::recovery::Recovery::new(&*self.snapshot_store);
-                // The anchor came from the most-recently-read snapshot of this
-                // path, not the current (drifted) file. `try_recover` looks the
-                // snapshot up by its tag; use the head snapshot's hash.
-                let snapshot_hash = self
+                // Candidate snapshots: every retained version of this path,
+                // newest first. The anchor may name ANY snapshot a producer
+                // read — not just the head — so recovery must try them all;
+                // passing only the head hash made strategy-2 (session-chain)
+                // unreachable because `is_head` was always true.
+                let path_key = path.to_string_lossy();
+                let mut candidates: Vec<String> = self
                     .snapshot_store
-                    .head(&path.to_string_lossy())
-                    .map(|s| s.hash)
-                    .unwrap_or_else(|| fc.hash.clone());
-                let args = crate::recovery::RecoveryArgs {
-                    path: path.to_string_lossy().into_owned(),
-                    current_text: text.clone(),
-                    file_hash: snapshot_hash,
-                    edits: resolved.clone(),
-                };
+                    .versions(&path_key)
+                    .iter()
+                    .map(|s| s.hash.clone())
+                    .collect();
+                if candidates.is_empty() {
+                    if let Some(head) = self.snapshot_store.head(&path_key) {
+                        candidates.push(head.hash);
+                    }
+                }
+                if candidates.is_empty() {
+                    candidates.push(fc.hash.clone());
+                }
+
                 let apply_fn = |snapshot_text: &str, edits: &[Edit]| {
                     crate::commands::patch::apply_edits_pure(snapshot_text, edits, path)
                         .map_err(|e| e.to_string())
                 };
-                if let Some(recovered) = recovery.try_recover(&args, apply_fn) {
-                    for w in &recovered.warnings {
-                        eprintln!("warning: {w}");
+                for file_hash in candidates {
+                    let recovery = crate::recovery::Recovery::new(&*self.snapshot_store);
+                    let args = crate::recovery::RecoveryArgs {
+                        path: path_key.to_string(),
+                        current_text: text.clone(),
+                        file_hash,
+                        edits: resolved.clone(),
+                    };
+                    if let Some(recovered) = recovery.try_recover(&args, &apply_fn) {
+                        for w in &recovered.warnings {
+                            eprintln!("warning: {w}");
+                        }
+                        // Surface recovery warnings in the result too —
+                        // library consumers never saw the stderr copy.
+                        all_warnings.extend(recovered.warnings);
+                        // Rejoin the recovered text (LF-normalized already).
+                        recovered_lines = Some(split_normalized(&recovered.text));
+                        break;
                     }
-                    // Rejoin the recovered text (LF-normalized already).
-                    lines = split_normalized(&recovered.text);
-                    let _ = had_trailing_newline;
-                } else {
+                }
+            }
+            match recovered_lines {
+                Some(recovered) => lines = recovered,
+                None => {
                     // Recovery failed — surface the original stale error.
                     apply_result?;
                 }
-            } else {
-                apply_result?;
             }
         } else {
             apply_result?;
         }
 
-        // Rejoin
+        // Rejoin (LF-normalized)
         let result = if had_trailing_newline && !lines.is_empty() {
             lines.join("\n") + "\n"
         } else if lines.is_empty() {
@@ -348,20 +385,18 @@ impl Editor {
             lines.join("\n")
         };
 
-        let line_ending = detect_line_ending(&fc.raw);
-        let final_text = if line_ending == LineEnding::Crlf {
-            restore_line_endings(&result, line_ending)
-        } else {
-            result
-        };
-
-        let new_hash = hash::compute_file_hash(&final_text);
+        // Content hash is computed over the LF-normalized text — the same
+        // contract `FileContent::load` uses — so `PatchResult.hash` matches
+        // what a subsequent `read` reports even for CRLF files.
+        let new_hash = hash::compute_file_hash(&result);
 
         // No-op loop guard: a patch that produces no net content change on the
         // same path with the same text, repeated `noop_guard_limit` times, is a
         // loop — surface a hard error so the agent re-reads and re-anchors
-        // instead of spinning.
-        let was_noop = final_text == *text;
+        // instead of spinning. Compare the LF-normalized result against the
+        // LF-normalized original (`text`), not the EOL-restored `final_text`,
+        // or CRLF files would never register as no-ops.
+        let was_noop = result == *text;
         if !dry_run && self.config.noop_guard_enabled {
             let fp = crate::noop_guard::fingerprint(patch_str);
             let path_str = path.to_string_lossy();
@@ -371,32 +406,37 @@ impl Editor {
                     attempts: streak,
                 });
             }
-            if !was_noop {
-                // A real change resets the streak; nothing more to do.
-            }
         }
+
+        let line_ending = detect_line_ending(&fc.raw);
+        let final_text = if line_ending == LineEnding::Crlf {
+            restore_line_endings(&result, line_ending)
+        } else {
+            result
+        };
 
         if !dry_run {
             crate::commands::common::fast_write(path, final_text.as_bytes())?;
         }
 
-        // Record new snapshot (if enabled)
+        // Record the post-patch state as a new snapshot version. Prior
+        // versions are RETAINED (bounded by max_versions_per_path): they are
+        // what recovery replays stale anchors against. The old code recorded
+        // and then immediately invalidated the whole path history, which
+        // made recovery dead across every patch boundary and wasted the
+        // record.
         if self.config.enable_snapshots && !dry_run {
             self.snapshot_store
                 .record(&path.to_string_lossy(), &final_text, None);
         }
 
-        // Invalidate old snapshot entry
-        if !dry_run {
-            self.snapshot_store.invalidate(&path.to_string_lossy());
-        }
-
         Ok(PatchResult {
             applied_edits: resolved.len(),
             hash: new_hash,
-            warnings,
+            warnings: all_warnings,
             text: final_text,
             dry_run,
+            aborted: false,
         })
     }
     // ------------------------------------------------------------------
@@ -434,6 +474,7 @@ impl Editor {
                     warnings,
                     text: text.to_string(),
                     dry_run: false,
+                    aborted: true,
                 });
             }
             return if warnings.is_empty() {
@@ -445,34 +486,23 @@ impl Editor {
             };
         }
 
-        // Resolve block edits
-        let resolved = resolve_block_edits(&edits, text, path, self.block_resolver.as_deref())
+        // Resolve block edits against the normalized (LF, no-BOM) text —
+        // the same view `patch` gives the resolver via `FileContent`.
+        let (work, entries, had_trailing_newline, line_ending) = prepare_in_memory(text);
+        let resolved = resolve_block_edits(&edits, &work, path, self.block_resolver.as_deref())
             .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
-        // Build fake FileContent-like data for apply_edits
-        let entries: Vec<crate::document::LineEntry> = text
-            .split('\n')
-            .map(|s| crate::document::LineEntry {
-                content: s.to_string(),
-                short_hash: hash::short_hash_value(s),
-            })
-            .collect();
-
-        let mut lines: Vec<String> = split_normalized(text);
-        let had_trailing_newline = text.ends_with('\n');
+        let mut lines: Vec<String> = split_normalized(&work);
         let path_obj = std::path::Path::new(path);
 
         crate::commands::patch::apply_edits(&mut lines, &entries, path_obj, &resolved)?;
 
-        let result = if had_trailing_newline && !lines.is_empty() {
-            lines.join("\n") + "\n"
-        } else if lines.is_empty() {
-            String::new()
-        } else {
-            lines.join("\n")
-        };
-
+        let result = join_lines(&lines, had_trailing_newline);
+        // Hash over the LF-normalized text — the same contract
+        // `FileContent::load` uses — then restore the caller's dominant
+        // line ending so CRLF input doesn't come back LF-mixed.
         let new_hash = hash::compute_file_hash(&result);
+        let result = restore_dominant_ending(&result, line_ending);
 
         Ok(PatchResult {
             applied_edits: resolved.len(),
@@ -480,6 +510,7 @@ impl Editor {
             warnings,
             text: result,
             dry_run: false,
+            aborted: false,
         })
     }
 
@@ -498,33 +529,19 @@ impl Editor {
         edits: &[crate::types::Edit],
         path: &str,
     ) -> Result<PatchResult, HashlineError> {
-        // Resolve block edits
-        let resolved = resolve_block_edits(edits, text, path, self.block_resolver.as_deref())
+        // Resolve block edits against the normalized text.
+        let (work, entries, had_trailing_newline, line_ending) = prepare_in_memory(text);
+        let resolved = resolve_block_edits(edits, &work, path, self.block_resolver.as_deref())
             .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
-        let entries: Vec<crate::document::LineEntry> = text
-            .split('\n')
-            .map(|s| crate::document::LineEntry {
-                content: s.to_string(),
-                short_hash: hash::short_hash_value(s),
-            })
-            .collect();
-
-        let mut lines: Vec<String> = split_normalized(text);
-        let had_trailing_newline = text.ends_with('\n');
+        let mut lines: Vec<String> = split_normalized(&work);
         let path_obj = std::path::Path::new(path);
 
         crate::commands::patch::apply_edits(&mut lines, &entries, path_obj, &resolved)?;
 
-        let result = if had_trailing_newline && !lines.is_empty() {
-            lines.join("\n") + "\n"
-        } else if lines.is_empty() {
-            String::new()
-        } else {
-            lines.join("\n")
-        };
-
+        let result = join_lines(&lines, had_trailing_newline);
         let new_hash = hash::compute_file_hash(&result);
+        let result = restore_dominant_ending(&result, line_ending);
 
         Ok(PatchResult {
             applied_edits: resolved.len(),
@@ -532,6 +549,7 @@ impl Editor {
             warnings: Vec::new(),
             text: result,
             dry_run: false,
+            aborted: false,
         })
     }
 
@@ -667,6 +685,56 @@ fn split_normalized(text: &str) -> Vec<String> {
         parts.pop();
     }
     parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// Rejoin mutated lines into text, restoring the trailing newline when the
+/// input had one.
+fn join_lines(lines: &[String], had_trailing_newline: bool) -> String {
+    if had_trailing_newline && !lines.is_empty() {
+        lines.join("\n") + "\n"
+    } else if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n")
+    }
+}
+
+/// Prepare an in-memory text buffer for patching.
+///
+/// Normalizes to LF and strips the BOM (the same view `FileContent::load`
+/// gives the disk path), then builds per-line entries with the
+/// **position-indexed** short hash — identical to
+/// [`FileContent::lines_with_hashes`]. The previous implementation used the
+/// non-indexed `short_hash_value`, which disagrees with `read`/`patch` on
+/// symbol-only lines (`}`, `)`, blanks) and produced false `StaleAnchor`
+/// errors for anchors obtained via [`Editor::read`].
+///
+/// Returns `(normalized_text, entries, had_trailing_newline, line_ending)`.
+/// `entries` includes the trailing empty line from `split('\n')`, matching
+/// the disk path's `lines_with_hashes` contract.
+fn prepare_in_memory(text: &str) -> (String, Vec<crate::document::LineEntry>, bool, LineEnding) {
+    let bom = crate::normalize::strip_bom(&crate::normalize::normalize_to_lf(text));
+    let work = bom.text;
+    let entries: Vec<crate::document::LineEntry> = work
+        .split('\n')
+        .enumerate()
+        .map(|(i, s)| crate::document::LineEntry {
+            content: s.to_string(),
+            short_hash: hash::short_hash_value_indexed(s, i + 1),
+        })
+        .collect();
+    let had_trailing_newline = work.ends_with('\n');
+    let line_ending = detect_line_ending(text);
+    (work, entries, had_trailing_newline, line_ending)
+}
+
+/// Restore the dominant line ending detected in the caller's input text.
+fn restore_dominant_ending(text: &str, ending: LineEnding) -> String {
+    if ending == LineEnding::Crlf {
+        restore_line_endings(text, ending)
+    } else {
+        text.to_string()
+    }
 }
 
 /// Map a [`BlockResolveError`] onto the public error type.
@@ -1050,5 +1118,162 @@ mod tests {
         let mut ed = Editor::without_snapshots().with_builtin_resolver();
         ed.patch(&path, "DEL.BLK 1").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    // ------------------------------------------------------------------
+    // bd-editor-library-2rn regressions
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn aborted_patch_is_distinguishable_from_success() {
+        let (_d, path) = temp_file("line1\nline2\n");
+        let mut ed = Editor::without_snapshots();
+
+        let result = ed.patch(&path, "*** Abort\nSWAP 1:\n+x").unwrap();
+        assert!(result.aborted, "abort marker must set aborted=true");
+        assert_eq!(result.applied_edits, 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "line1\nline2\n");
+
+        // A normal patch reports aborted=false.
+        let ok = ed.patch(&path, "SWAP 1:\n+x").unwrap();
+        assert!(!ok.aborted);
+    }
+
+    #[test]
+    fn apply_to_text_aborted_is_distinguishable() {
+        let mut ed = Editor::without_snapshots();
+        let result = ed.apply_to_text("a\nb\n", "*** Abort", "x.txt").unwrap();
+        assert!(result.aborted);
+        assert_eq!(result.applied_edits, 0);
+        assert_eq!(result.text, "a\nb\n");
+    }
+
+    #[test]
+    fn patch_retains_snapshot_history_across_patches() {
+        // bd-editor-library-2rn(a): record-then-invalidate wiped the whole
+        // path history on every patch, so recovery was dead across patch
+        // boundaries. After a patch, prior versions must survive.
+        let (_d, path) = temp_file("alpha\nbeta\ngamma\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        ed.read(&path).unwrap();
+        ed.patch(&path, "SWAP 2:\n+changed").unwrap();
+
+        let versions = ed.snapshot_store().versions(&path.to_string_lossy());
+        assert!(
+            versions.len() >= 2,
+            "pre- and post-patch snapshots must both be retained, got {}",
+            versions.len()
+        );
+        // The post-patch state is the head.
+        let head = ed.snapshot_store().head(&path.to_string_lossy()).unwrap();
+        assert_eq!(head.text, "alpha\nchanged\ngamma\n");
+    }
+
+    #[test]
+    fn recovery_survives_across_a_patch_boundary() {
+        // Read v1 → patch to v2 → external drift disjoint from the edit
+        // region → patch anchored to v1's hash goes stale and must recover
+        // against the retained v2 snapshot. Before the fix, patch()
+        // invalidated the whole path history after every patch, so no
+        // snapshot survived the boundary and this surfaced StaleAnchor.
+        let (_d, path) = temp_file("alpha\nbeta\ngamma\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        let read = ed.read(&path).unwrap();
+        let beta_hash = read.lines[1].hash.clone(); // "beta" at line 2 (v1)
+
+        // First patch succeeds normally (v1 → v2 = "ALPHA\nbeta\ngamma\n").
+        ed.patch(&path, "SWAP 1:\n+ALPHA").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ALPHA\nbeta\ngamma\n");
+
+        // External drift: insert a line above "beta" (now line 3) and append
+        // a tail — disjoint from the line-2 swap we are about to request.
+        fs::write(&path, "ALPHA\nNEW\nbeta\ngamma\ntail\n").unwrap();
+
+        // Anchor to the v1 hash at line 2 — current line 2 is "NEW", so the
+        // anchor is stale and recovery must kick in.
+        let result = ed
+            .patch(&path, &format!("SWAP 2:{beta_hash}:\n+replaced"))
+            .unwrap();
+        assert!(
+            result.text.contains("replaced"),
+            "recovery across patch boundary should apply the swap: {:?}",
+            result.text
+        );
+        // The disjoint external edits must survive the merge.
+        assert!(result.text.contains("NEW"), "got: {:?}", result.text);
+        assert!(result.text.contains("tail"), "got: {:?}", result.text);
+    }
+
+    #[test]
+    fn recovery_warnings_reach_patch_result() {
+        let (_d, path) = temp_file("alpha\nbeta\ngamma\n");
+        let store = InMemorySnapshotStore::new();
+        let mut ed = Editor::with_store(store);
+
+        let read = ed.read(&path).unwrap();
+        let beta_hash = read.lines[1].hash.clone();
+        fs::write(&path, "alpha\ninserted\nbeta\ngamma\n").unwrap();
+
+        let result = ed
+            .patch(&path, &format!("SWAP 2:{beta_hash}:\n+replaced"))
+            .unwrap();
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("3-way merge") || w.contains("replay")),
+            "recovery warning must appear in PatchResult.warnings: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn apply_to_text_uses_indexed_hashes() {
+        // Anchors from `read` use position-indexed hashes. `apply_to_text`
+        // must validate against the same scheme or symbol-only lines
+        // (`}`, `)`, blanks) produce false StaleAnchor errors.
+        let body = "fn a() {\n    let x = 1;\n}\n";
+        let (_d, path) = temp_file(body);
+        let mut ed = Editor::without_snapshots().with_builtin_resolver();
+        let read = ed.read(&path).unwrap();
+        // Line 3 is "}" — a symbol-only line whose hash is position-seeded.
+        let brace_hash = read.lines[2].hash.clone();
+
+        let result = ed
+            .apply_to_text(body, &format!("SWAP 3:{brace_hash}:\n+}}"), "x.rs")
+            .unwrap();
+        assert!(result.text.contains("}"), "got: {:?}", result.text);
+    }
+
+    #[test]
+    fn apply_to_text_preserves_crlf() {
+        let mut ed = Editor::without_snapshots();
+        let result = ed
+            .apply_to_text("a\r\nb\r\n", "SWAP 2:\n+B", "x.txt")
+            .unwrap();
+        assert_eq!(result.text, "a\r\nB\r\n", "CRLF must not come back mixed");
+    }
+
+    #[test]
+    fn with_config_honors_noop_guard_limit() {
+        // with_config used to keep the guard built at construction time,
+        // silently ignoring the new limit.
+        let (_d, path) = temp_file("line1\nline2\n");
+        let config = HashlineConfig {
+            noop_guard_limit: 1,
+            ..HashlineConfig::default()
+        };
+        let mut ed = Editor::with_store(InMemorySnapshotStore::new()).with_config(config);
+
+        // A single identical no-op patch must trip a limit of 1.
+        let err = ed.patch(&path, "SWAP 2:\n+line2").unwrap_err();
+        assert!(
+            err.to_string().contains("no-op loop"),
+            "expected NoopLoop with limit=1, got: {err}"
+        );
     }
 }

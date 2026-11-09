@@ -5,6 +5,7 @@
 //! implementation backed by `HashMap` + `Vec` with simple first-in eviction
 //! (no external LRU crate).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A [`SnapshotStore`] that records nothing and returns nothing.
@@ -44,7 +45,8 @@ impl SnapshotStore for NoopSnapshotStore {
     }
 
     fn record(&mut self, _path: &str, full_text: &str, _seen_lines: Option<&[usize]>) -> String {
-        crate::hash::compute_file_hash(full_text)
+        let normalized = normalize_contract(full_text);
+        crate::hash::compute_file_hash(&normalized)
     }
 
     fn record_seen_lines(&mut self, _path: &str, _hash: &str, _lines: &[usize]) {}
@@ -87,9 +89,25 @@ pub trait SnapshotStore: Send + Sync {
     /// The patcher uses it on the no-drift path to attach seen-line provenance
     /// to the exact text the model read, and to disambiguate two texts that
     /// collide on a 16-bit tag.
+    ///
+    /// `full_text` is normalized to the store contract (LF, no BOM) before
+    /// comparison, so callers may pass raw file bytes.
     fn by_content(&self, path: &str, full_text: &str) -> Option<Snapshot>;
 
-    /// Record the full normalized text of `path` and return its content tag.
+    /// All retained versions for `path`, most-recently-recorded first.
+    ///
+    /// The patcher uses this to attempt stale-anchor recovery against each
+    /// snapshot a producer may have anchored to — not just the head. The
+    /// default returns an empty list, which is correct for stores that keep
+    /// no history; consumers that want multi-version recovery should
+    /// override it.
+    fn versions(&self, _path: &str) -> Vec<Snapshot> {
+        Vec::new()
+    }
+
+    /// Record the full text of `path` and return its content tag.
+    /// `full_text` is normalized to the store contract (LF, no BOM) before
+    /// hashing and storing — callers may pass raw file bytes.
     /// `seen_lines` (optional) are the 1-indexed lines the producer displayed;
     /// they merge into [`Snapshot::seen_lines`] across reads of identical text.
     fn record(&mut self, path: &str, full_text: &str, seen_lines: Option<&[usize]>) -> String;
@@ -118,12 +136,57 @@ const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Current timestamp as milliseconds since the Unix epoch.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+/// Lexically canonicalize a path key so aliases map to one store entry.
+///
+/// Collapses `\` to `/`, removes `.` segments and empty segments, and
+/// resolves `..` by popping the previous segment. This is deliberately
+/// *lexical* — it never touches the filesystem, so it works for paths that
+/// do not exist yet and cannot fail. Two spellings of the same file
+/// (`./a.txt`, `dir/../a.txt`, `a\b.txt` vs `a/b.txt`) share one history.
+fn canonical_key(path: &str) -> String {
+    let unified = path.replace('\\', "/");
+    let absolute = unified.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in unified.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    let joined = parts.join("/");
+    if absolute && !joined.is_empty() {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// Normalize text to the store's contract: LF line endings, no BOM.
+///
+/// [`Snapshot::text`] and the recorded hash always describe this form, so
+/// raw file bytes (which may be CRLF) are normalized on the way in. Returns
+/// a borrow when the text already satisfies the contract.
+fn normalize_contract(text: &str) -> Cow<'_, str> {
+    if text.contains('\r') || text.starts_with('\u{FEFF}') {
+        let lf = crate::normalize::normalize_to_lf(text);
+        Cow::Owned(crate::normalize::strip_bom(&lf).text)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Bytes attributable to one snapshot: the text plus the capacity of its
+/// `seen_lines` set. The seen-lines set is bounded by the file's line count
+/// but was previously untracked, letting a consumer reading many large
+/// files grow memory without limit despite `max_total_bytes`.
+fn snapshot_bytes(s: &Snapshot) -> usize {
+    s.text.len()
+        + s.seen_lines
+            .as_ref()
+            .map_or(0, |set| set.capacity() * std::mem::size_of::<usize>())
 }
 
 /// Union `lines` into `snapshot.seen_lines`, lazily creating the set.
@@ -136,6 +199,14 @@ fn merge_seen_lines(snapshot: &mut Snapshot, lines: Option<&[usize]>) {
     for &line in lines {
         set.insert(line);
     }
+}
+
+/// Current timestamp as milliseconds since the Unix epoch.
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +230,11 @@ pub struct InMemorySnapshotStore {
     max_paths: usize,
     /// Maximum full-file versions retained per path (default 4).
     max_versions_per_path: usize,
-    /// Global ceiling on retained snapshot text across all paths (default 64 MiB).
+    /// Global ceiling on retained snapshot bytes across all paths
+    /// (default 64 MiB). Counts snapshot text *and* `seen_lines` set
+    /// capacity — see [`snapshot_bytes`].
     max_total_bytes: usize,
-    /// Sum of `text.len()` across all retained snapshots.
+    /// Sum of [`snapshot_bytes`] across all retained snapshots.
     total_bytes: usize,
 }
 
@@ -201,18 +274,24 @@ impl InMemorySnapshotStore {
         };
         if let Some(history) = self.versions.remove(&path) {
             for s in &history {
-                self.total_bytes = self.total_bytes.saturating_sub(s.text.len());
+                self.total_bytes = self.total_bytes.saturating_sub(snapshot_bytes(s));
             }
         }
     }
 
     /// Ensure limits are satisfied. Evicts oldest paths until both
     /// `max_paths` and `max_total_bytes` are respected.
+    ///
+    /// The byte-limit loop always keeps the most-recently-used path: a
+    /// single snapshot larger than `max_total_bytes` (a huge file, or a
+    /// huge `seen_lines` set) must not evict *itself* and leave the store
+    /// empty — it is retained, exceeding the cap, until a newer record
+    /// for another path pushes it out via the normal LRU order.
     fn enforce_limits(&mut self) {
         while self.access_order.len() > self.max_paths {
             self.evict_one();
         }
-        while self.total_bytes > self.max_total_bytes && !self.access_order.is_empty() {
+        while self.total_bytes > self.max_total_bytes && self.access_order.len() > 1 {
             self.evict_one();
         }
     }
@@ -223,7 +302,8 @@ impl InMemorySnapshotStore {
         self.versions.len()
     }
 
-    /// The total byte count of all retained snapshot text.
+    /// The total byte count of all retained snapshots, including
+    /// `seen_lines` set capacity (see [`snapshot_bytes`]).
     #[allow(dead_code)]
     pub fn total_byte_count(&self) -> usize {
         self.total_bytes
@@ -238,7 +318,7 @@ impl Default for InMemorySnapshotStore {
 
 impl SnapshotStore for InMemorySnapshotStore {
     fn head(&self, path: &str) -> Option<Snapshot> {
-        self.versions.get(path)?.first().cloned()
+        self.versions.get(&canonical_key(path))?.first().cloned()
     }
 
     fn by_hash(&self, path: &str, hash: &str) -> Option<Snapshot> {
@@ -248,26 +328,39 @@ impl SnapshotStore for InMemorySnapshotStore {
         // behavior; recovery still requires the anchors/context to remap
         // unambiguously, so a stale collision fails closed downstream.
         self.versions
-            .get(path)?
+            .get(&canonical_key(path))?
             .iter()
             .find(|s| s.hash == hash)
             .cloned()
     }
 
     fn by_content(&self, path: &str, full_text: &str) -> Option<Snapshot> {
+        let normalized = normalize_contract(full_text);
         self.versions
-            .get(path)?
+            .get(&canonical_key(path))?
             .iter()
-            .find(|s| s.text == full_text)
+            .find(|s| s.text.as_str() == normalized.as_ref())
             .cloned()
     }
 
+    fn versions(&self, path: &str) -> Vec<Snapshot> {
+        self.versions
+            .get(&canonical_key(path))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn record(&mut self, path: &str, full_text: &str, seen_lines: Option<&[usize]>) -> String {
-        let hash = crate::hash::compute_file_hash(full_text);
-        let text_len = full_text.len();
+        // Store contract: LF-normalized, BOM-stripped text. Callers may pass
+        // raw file bytes (e.g. CRLF restored on write-back); the hash and
+        // stored text always describe the normalized form.
+        let normalized = normalize_contract(full_text);
+        let hash = crate::hash::compute_file_hash(&normalized);
+        let key = canonical_key(path);
+        let path = key.as_str();
 
         // Scope the mutable borrow of self.versions so we can touch
-        // self.access_order afterwards.
+        // self.access_order and self.total_bytes afterwards.
         {
             let history = self.versions.entry(path.to_owned()).or_default();
 
@@ -279,11 +372,14 @@ impl SnapshotStore for InMemorySnapshotStore {
             // seen-line validation (oh-my-pi issue #4075 analog).
             if let Some(pos) = history
                 .iter()
-                .position(|s| s.hash == hash && s.text == full_text)
+                .position(|s| s.hash == hash && s.text.as_str() == normalized.as_ref())
             {
                 let snapshot = &mut history[pos];
                 snapshot.recorded_at = now();
+                let bytes_before = snapshot_bytes(snapshot);
                 merge_seen_lines(snapshot, seen_lines);
+                // seen_lines growth is charged against max_total_bytes too.
+                self.total_bytes = self.total_bytes + (snapshot_bytes(snapshot) - bytes_before);
 
                 // Promote to front (most recent).
                 if pos != 0 {
@@ -294,26 +390,26 @@ impl SnapshotStore for InMemorySnapshotStore {
                 // New snapshot.
                 let snapshot = Snapshot {
                     path: path.to_owned(),
-                    text: full_text.to_owned(),
+                    text: normalized.into_owned(),
                     hash: hash.clone(),
                     recorded_at: now(),
                     seen_lines: seen_lines.map(|lines| lines.iter().copied().collect()),
                 };
+                self.total_bytes += snapshot_bytes(&snapshot);
 
                 history.insert(0, snapshot);
-                self.total_bytes += text_len;
 
                 // Trim per-path history to max_versions_per_path (oldest
                 // dropped first).
                 while history.len() > self.max_versions_per_path {
                     let removed = history.pop().unwrap();
-                    self.total_bytes = self.total_bytes.saturating_sub(removed.text.len());
+                    self.total_bytes = self.total_bytes.saturating_sub(snapshot_bytes(&removed));
                 }
             }
         }
 
         // Bring path to the back of the access order (most recently used).
-        if let Some(pos) = self.access_order.iter().position(|p| p == path) {
+        if let Some(pos) = self.access_order.iter().position(|p| p.as_str() == path) {
             self.access_order.remove(pos);
         }
         self.access_order.push_back(path.to_owned());
@@ -328,7 +424,7 @@ impl SnapshotStore for InMemorySnapshotStore {
         if lines.is_empty() {
             return;
         }
-        let Some(history) = self.versions.get_mut(path) else {
+        let Some(history) = self.versions.get_mut(&canonical_key(path)) else {
             return;
         };
         // Only the most-recently-recorded version with this tag may receive
@@ -338,19 +434,22 @@ impl SnapshotStore for InMemorySnapshotStore {
         let Some(snapshot) = history.iter_mut().find(|s| s.hash == hash) else {
             return;
         };
+        let bytes_before = snapshot_bytes(snapshot);
         let set = snapshot.seen_lines.get_or_insert_with(HashSet::new);
         for &line in lines {
             set.insert(line);
         }
+        self.total_bytes = self.total_bytes + (snapshot_bytes(snapshot) - bytes_before);
     }
 
     fn invalidate(&mut self, path: &str) {
-        if let Some(history) = self.versions.remove(path) {
+        let key = canonical_key(path);
+        if let Some(history) = self.versions.remove(&key) {
             for s in &history {
-                self.total_bytes = self.total_bytes.saturating_sub(s.text.len());
+                self.total_bytes = self.total_bytes.saturating_sub(snapshot_bytes(s));
             }
         }
-        self.access_order.retain(|p| p != path);
+        self.access_order.retain(|p| p != &key);
     }
 
     fn clear(&mut self) {
@@ -611,6 +710,124 @@ mod tests {
         assert_eq!(a.text, text_a);
         let b = store.by_content("/tmp/collide.txt", &text_b).unwrap();
         assert_eq!(b.text, text_b);
+    }
+
+    // =====================================================================
+    // bd-snapshot-store-z8l: bounds accounting, oversized snapshots,
+    // path canonicalization, LF/BOM normalization contract
+    // =====================================================================
+
+    #[test]
+    fn test_seen_lines_count_toward_total_bytes() {
+        let mut store = InMemorySnapshotStore::with_options(30, 4, 1024 * 1024);
+        store.record("/tmp/seen.txt", "data", None);
+        let before = store.total_byte_count();
+
+        // ~8k distinct line numbers → the HashSet capacity alone is tens of
+        // KiB, which must be charged against max_total_bytes.
+        let lines: Vec<usize> = (1..=8192).collect();
+        store.record_seen_lines(
+            "/tmp/seen.txt",
+            &store.head("/tmp/seen.txt").unwrap().hash,
+            &lines,
+        );
+
+        let after = store.total_byte_count();
+        assert!(
+            after > before + 8192 * std::mem::size_of::<usize>() / 2,
+            "seen_lines capacity must be counted: before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn test_seen_lines_pressure_evicts_oldest_path() {
+        // Tiny byte budget. Each snapshot carries a large seen_lines set, so
+        // only ~1 path fits; recording a second must evict the first — the
+        // sets can no longer grow the store past the cap unbounded.
+        let mut store = InMemorySnapshotStore::with_options(30, 4, 4096);
+        let lines: Vec<usize> = (1..=2048).collect();
+
+        store.record("/tmp/old.txt", "old", Some(&lines));
+        store.record("/tmp/new.txt", "new", Some(&lines));
+
+        assert!(
+            store.head("/tmp/old.txt").is_none(),
+            "oldest path must be evicted once seen_lines bytes exceed the cap"
+        );
+        assert!(store.head("/tmp/new.txt").is_some());
+    }
+
+    #[test]
+    fn test_oversized_snapshot_does_not_evict_itself() {
+        // A single snapshot bigger than max_total_bytes must not wipe the
+        // whole store (including itself).
+        let mut store = InMemorySnapshotStore::with_options(30, 4, 10);
+
+        store.record("/tmp/small.txt", "aaaa", None);
+        store.record("/tmp/huge.txt", &"x".repeat(1024), None);
+
+        assert!(store.head("/tmp/small.txt").is_none());
+        let huge = store.head("/tmp/huge.txt");
+        assert!(huge.is_some(), "oversized snapshot must be retained");
+        assert_eq!(huge.unwrap().text.len(), 1024);
+    }
+
+    #[test]
+    fn test_path_keys_are_canonicalized() {
+        let mut store = InMemorySnapshotStore::new();
+        store.record("./dir/../a.txt", "v1", None);
+        store.record("a\\b.txt", "v2", None);
+
+        // Aliases resolve to the same history.
+        assert!(store.head("a.txt").is_some());
+        assert_eq!(store.head("./a.txt").unwrap().text, "v1");
+        assert!(store.head("a/b.txt").is_some());
+        assert_eq!(store.head("a\\b.txt").unwrap().text, "v2");
+        assert!(store.head("a\\.\\b.txt").is_some());
+
+        // invalidate via an alias drops the canonical entry.
+        store.invalidate("./a.txt");
+        assert!(store.head("a.txt").is_none());
+        assert!(store.head("a/b.txt").is_some());
+    }
+
+    #[test]
+    fn test_record_normalizes_crlf_and_bom() {
+        let mut store = InMemorySnapshotStore::new();
+        let tag = store.record("/tmp/crlf.txt", "a\r\nb\r\n", None);
+
+        let snap = store.head("/tmp/crlf.txt").unwrap();
+        assert_eq!(snap.text, "a\nb\n", "stored text must be LF-normalized");
+        assert_eq!(
+            snap.hash,
+            crate::hash::compute_file_hash("a\nb\n"),
+            "hash must be over normalized text"
+        );
+        assert_eq!(tag, snap.hash);
+
+        // by_content accepts raw CRLF bytes too.
+        assert!(store.by_content("/tmp/crlf.txt", "a\r\nb\r\n").is_some());
+    }
+
+    #[test]
+    fn test_record_normalizes_bom() {
+        let mut store = InMemorySnapshotStore::new();
+        store.record("/tmp/bom.txt", "\u{FEFF}hello\n", None);
+        assert_eq!(store.head("/tmp/bom.txt").unwrap().text, "hello\n");
+    }
+
+    #[test]
+    fn test_versions_returns_history_newest_first() {
+        let mut store = InMemorySnapshotStore::new();
+        store.record("/tmp/hist.txt", "v1", None);
+        store.record("/tmp/hist.txt", "v2", None);
+        store.record("/tmp/hist.txt", "v3", None);
+
+        let versions = store.versions("/tmp/hist.txt");
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[0].text, "v3");
+        assert_eq!(versions[2].text, "v1");
+        assert!(store.versions("/tmp/nope.txt").is_empty());
     }
 
     #[test]

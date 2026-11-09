@@ -16,6 +16,23 @@ pub struct MergeResult {
 /// * `base`    — the original text (expected-old)
 /// * `target`  — the intended new text (what the user wants)
 /// * `current` — the actual text on disk (may have diverged from base)
+///
+/// # Known limitation: intent-overlap merges
+///
+/// This merge aligns *textual* diffs, not *semantic intent*. When `target`
+/// and `current` change the same logical region in ways the line diff
+/// aligns as non-overlapping (e.g. both sides insert different lines at
+/// nearby-but-distinct positions, or one side's replace is absorbed into a
+/// larger equal run), the merge can produce `conflict_count == 0` with a
+/// result that is syntactically conflict-free but semantically wrong —
+/// e.g. both intents applied where only one should have won.
+///
+/// Callers (stale-anchor recovery) treat a zero-conflict merge as success,
+/// so this is a deliberate fail-open on ambiguity: the alternative —
+/// rejecting every possibly-overlapping merge — would refuse most
+/// legitimate recoveries. When in doubt, consumers should diff the merged
+/// result against both inputs. A proper fix needs intent-level conflict
+/// detection (operation-aware merging), which is tracked separately.
 pub fn merge_texts(base: &str, target: &str, current: &str) -> MergeResult {
     let base_lines: Vec<&str> = base.split('\n').collect();
     let target_lines: Vec<&str> = target.split('\n').collect();
