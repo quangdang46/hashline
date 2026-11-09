@@ -423,6 +423,9 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
             if suffix.malformed {
                 return None;
             }
+            if suffix.next < end && bytes[suffix.next] == CHAR_DOT {
+                return None; // `..M` ranges are meaningless on insert ops
+            }
             return Some(TargetScan {
                 target: BlockTarget::InsertBefore(Anchor { line: anchor.line }, suffix.hash),
                 next_index: suffix.next,
@@ -438,6 +441,9 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
             let suffix = consume_with_hash(bytes, anchor.next_index, end);
             if suffix.malformed {
                 return None;
+            }
+            if suffix.next < end && bytes[suffix.next] == CHAR_DOT {
+                return None; // `..M` ranges are meaningless on insert ops
             }
             return Some(TargetScan {
                 target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, suffix.hash),
@@ -480,6 +486,9 @@ fn scan_insert_target(bytes: &[u8], index: usize, end: usize) -> Option<TargetSc
     let suffix = consume_with_hash(bytes, anchor.next_index, end);
     if suffix.malformed {
         return None;
+    }
+    if suffix.next < end && bytes[suffix.next] == CHAR_DOT {
+        return None; // `..M` ranges are meaningless on insert ops
     }
     Some(TargetScan {
         target: BlockTarget::InsertAfter(Anchor { line: anchor.line }, suffix.hash),

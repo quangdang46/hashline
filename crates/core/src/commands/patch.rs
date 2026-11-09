@@ -46,6 +46,10 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: PatchCmd,
 ) -> Result<(), HashlineError> {
+    // Reject device/reserved paths before any filesystem probe —
+    // `metadata`/`read` on a DOS device name (CON, AUX, ...) can block.
+    crate::commands::common::reject_special_write_path(&cmd.file)?;
+
     // Resolve patch content: `-` reads stdin, `@path` reads file, otherwise use literal.
     let patch_content = resolve_patch_content(&cmd.patch)?;
 

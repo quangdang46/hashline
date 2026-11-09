@@ -10,6 +10,11 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: WriteCmd,
 ) -> Result<(), HashlineError> {
+    // 0. Reject device/reserved paths BEFORE any filesystem probe —
+    //    `exists()`/`metadata()` on a DOS device name (CON, AUX, ...) can
+    //    block forever opening the device.
+    crate::commands::common::reject_special_write_path(&cmd.file)?;
+
     // 1. Check file exists — refuse unless --force
     if cmd.file.exists() && !cmd.force {
         return Err(HashlineError::TargetExists {

@@ -101,9 +101,10 @@ fn normalized_path_string(path: &Path) -> String {
 #[cfg(windows)]
 pub fn is_reserved_device_name(name: &str) -> bool {
     let base = name.split('.').next().unwrap_or(name);
-    const NAMES: [&str; 22] = [
+    const NAMES: [&str; 24] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "CONIN$",
+        "CONOUT$",
     ];
     NAMES
         .iter()
@@ -115,7 +116,7 @@ pub fn is_reserved_device_name(name: &str) -> bool {
 /// `\\.\` / `\\?\`-style device-namespace prefixes. Writing to these
 /// "succeeds" but lands nowhere (or worse), while still reporting OK.
 #[cfg(windows)]
-fn reject_special_write_path(path: &Path) -> Result<(), HashlineError> {
+pub(crate) fn reject_special_write_path(path: &Path) -> Result<(), HashlineError> {
     use std::path::{Component, Prefix};
 
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -140,7 +141,7 @@ fn reject_special_write_path(path: &Path) -> Result<(), HashlineError> {
 }
 
 #[cfg(not(windows))]
-fn reject_special_write_path(_path: &Path) -> Result<(), HashlineError> {
+pub(crate) fn reject_special_write_path(_path: &Path) -> Result<(), HashlineError> {
     Ok(())
 }
 

@@ -8,6 +8,10 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: RenameCmd,
 ) -> Result<(), HashlineError> {
+    // 0. Reject device/reserved names before `exists()` can block on them.
+    crate::commands::common::reject_special_write_path(&cmd.src)?;
+    crate::commands::common::reject_special_write_path(&cmd.dst)?;
+
     // 1. Check source exists
     if !cmd.src.exists() {
         return Err(HashlineError::FileNotFound {
