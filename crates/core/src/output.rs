@@ -24,6 +24,35 @@ impl JsonStyle {
     }
 }
 
+/// Escape a value interpolated into hashline's compact text formats
+/// (`OK path#hash`, `[path#hash]`, `N:hh|content`, `file=... key=value`).
+///
+/// Paths or content containing `#`, `|`, `>`, or control characters
+/// (including newlines) would otherwise corrupt the output structure —
+/// e.g. a file named `a#b.txt` makes `[a#b.txt#1a2b]` ambiguous, and a
+/// newline in a path splits one record into two lines. The metacharacters
+/// are backslash-escaped so the output stays one parseable record per
+/// line. A literal backslash is left alone: it is not a metacharacter in
+/// these formats, and escaping it would mangle every Windows path.
+pub fn escape_compact_field(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '#' => out.push_str("\\#"),
+            '|' => out.push_str("\\|"),
+            '>' => out.push_str("\\>"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Serialize `value` to `writer` followed by a single newline, using the
 /// requested JSON style (compact by default, pretty when explicitly opted in).
 pub fn serialize_json<W: Write, T: Serialize + ?Sized>(
@@ -53,11 +82,109 @@ struct ErrorPayload<'a> {
     /// Machine-readable error kind (`STALE_ANCHOR`, `NOOP_LOOP`, ...).
     kind: &'a str,
     error: String,
+    /// Optional fields are omitted entirely when absent — emitting them as
+    /// `null` gave consumers dead keys to check on every error.
+    #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<&'a str>,
+    /// Structured variant fields (path, line, expected/actual hashes, ...)
+    /// so agents can key on data instead of parsing the prose `error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
     /// Bug-report URL, present only for errors that suggest a hashline defect
     /// (see [`HashlineError::report_url`]). Absent for routine errors.
+    #[serde(skip_serializing_if = "Option::is_none")]
     report_url: Option<&'a str>,
+}
+
+/// Extract the structured fields of common [`HashlineError`] variants into a
+/// JSON object. Routine variants without interesting fields return `None`.
+pub(crate) fn error_details(error: &HashlineError) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let details = match error {
+        HashlineError::StaleAnchor {
+            path,
+            line,
+            expected,
+            actual,
+            ..
+        } => json!({
+            "path": path,
+            "line": line,
+            "expected": expected,
+            "actual": actual,
+        }),
+        HashlineError::StaleHash {
+            path,
+            expected,
+            actual,
+        } => json!({"path": path, "expected": expected, "actual": actual}),
+        HashlineError::StaleFile { path } => json!({"path": path}),
+        HashlineError::FileNotFound { path } => json!({"path": path}),
+        HashlineError::TargetExists { path } => json!({"path": path}),
+        HashlineError::HashNotFound { hash, path } => {
+            json!({"hash": hash, "path": path})
+        }
+        HashlineError::AmbiguousHash {
+            hash,
+            count,
+            lines,
+            path,
+        } => json!({
+            "hash": hash,
+            "count": count,
+            "lines": lines,
+            "path": path,
+        }),
+        HashlineError::InvalidAnchor { anchor } => json!({"anchor": anchor}),
+        HashlineError::InvalidRange { range } => json!({"range": range}),
+        HashlineError::UnbalancedBlock { line_no } => json!({"line": line_no}),
+        HashlineError::AmbiguousBlockLanguage { line_no } => json!({"line": line_no}),
+        HashlineError::BlockUnresolved { line, message } => {
+            json!({"line": line, "message": message})
+        }
+        HashlineError::EmptyPatchWithReason { reason } => json!({"reason": reason}),
+        HashlineError::PatchRejected { reason } => json!({"reason": reason}),
+        HashlineError::NoopLoop { path, attempts } => {
+            json!({"path": path, "attempts": attempts})
+        }
+        HashlineError::PatchFailed { op_index, reason } => {
+            json!({"op_index": op_index, "reason": reason})
+        }
+        HashlineError::UpdateFailed { message } => json!({"reason": message}),
+        HashlineError::ClipboardMissingRegister { register } => {
+            json!({"register": register})
+        }
+        HashlineError::QueryNotFound { query, path } => {
+            json!({"query": query, "path": path})
+        }
+        HashlineError::AmbiguousQuery {
+            query,
+            count,
+            lines,
+            path,
+        } => json!({
+            "query": query,
+            "count": count,
+            "lines": lines,
+            "path": path,
+        }),
+        HashlineError::QueryRangeTooLarge { count, max } => {
+            json!({"count": count, "max": max})
+        }
+        HashlineError::InvalidPattern { pattern, message } => {
+            json!({"pattern": pattern, "message": message})
+        }
+        HashlineError::BinaryFile { path } | HashlineError::InvalidUtf8 { path } => {
+            json!({"path": path})
+        }
+        HashlineError::MixedNewlines { path } => json!({"path": path}),
+        HashlineError::MissingSnapshotTag { path } => json!({"path": path}),
+        HashlineError::CannotRecover { path } => json!({"path": path}),
+        _ => return None,
+    };
+    Some(details)
 }
 
 pub fn write_error<W: Write, E: Write>(
@@ -165,6 +292,7 @@ pub fn write_error<W: Write, E: Write>(
                 error: error.to_string(),
                 hint: error.hint(),
                 command: error.command(),
+                details: error_details(error),
                 report_url: error.report_url(),
             };
             let style = if matches!(ctx.output_mode(), OutputMode::Json) && ctx.json_pretty() {

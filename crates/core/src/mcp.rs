@@ -46,15 +46,49 @@ fn join_lines(lines: &[String], trailing_newline: bool) -> String {
 // JSON-RPC types
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct JsonRpcRequest {
     #[serde(default)]
     pub jsonrpc: String,
     pub method: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+    /// `None` = notification (no `id` member — no response). `Some(Value)`
+    /// = request to answer, including `Some(Value::Null)` for an explicit
+    /// `"id": null`, which JSON-RPC requires be echoed back as `"id": null`.
     #[serde(default)]
     pub id: Option<Value>,
+}
+
+impl<'de> Deserialize<'de> for JsonRpcRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("JSON-RPC request must be an object"))?;
+        let method = obj
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("missing 'method' member"))?;
+        // `Option<Value>` field deserialization cannot distinguish an absent
+        // `id` (notification) from `"id": null` (a request that must be
+        // answered) — both collapse to `None`, which silently dropped every
+        // null-id request. Inspect the object directly instead.
+        let id = obj.get("id").cloned();
+        Ok(JsonRpcRequest {
+            jsonrpc: obj
+                .get("jsonrpc")
+                .and_then(Value::as_str)
+                .unwrap_or("2.0")
+                .to_string(),
+            method: method.to_string(),
+            params: obj.get("params").cloned(),
+            id,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -177,8 +211,9 @@ fn tool_list() -> ToolList {
                     "properties": {
                         "file": {"type": "string", "description": "Existing UTF-8 text file to patch; use anchors from the latest read of this file"},
                         "patch": {"type": "string", "description": MCP_PATCH_FORMAT},
-                        "dry_run": {"type": "boolean", "description": "Default false. Validate/apply in memory without writing. Parser warnings, when present, appear before a blank line and Dry-run result:; everything after that marker is the full proposed file text. Without warnings, the response starts with Dry-run result:. Not a diff; no fresh anchor listing, even if return_updated_anchors is true."},
-                        "return_updated_anchors": {"type": "boolean", "description": "Default false. After a successful non-dry-run write, append the complete [path#HASH] and N:hh|content listing for follow-up edits. Otherwise only changed rows are returned, unless the server enables HASHLINE_RETURN_ANCHORS."}
+                        "dry_run": {"type": "boolean", "description": "Default false. Validate/apply in memory without writing. Returns a bounded unified-diff-style change list (same @@/+/− rows as `patch --dry-run`), never the whole file. Parser and apply-time warnings, when present, appear before the diff. Not a diff of context; no fresh anchor listing, even if return_updated_anchors is true."},
+                        "return_updated_anchors": {"type": "boolean", "description": "Default false. After a successful non-dry-run write, append the complete [path#HASH] and N:hh|content listing for follow-up edits. Otherwise only changed rows are returned, unless the server enables HASHLINE_RETURN_ANCHORS."},
+                        "json": {"type": "boolean", "description": "Return the result as a JSON object (success, file, hash, edits_applied, changed, warnings, updated_anchors when requested) instead of compact text; default false. structuredContent carries the same object either way."}
                     },
                     "required": ["file", "patch"]
                 })),
@@ -205,7 +240,8 @@ fn tool_list() -> ToolList {
                     "type": "object",
                     "properties": {
                         "file": {"type": "string", "description": "Existing UTF-8 text file whose block boundaries should be inspected"},
-                        "anchor": {"type": "string", "description": "N:hh anchor copied from read near the desired block (1-based line number and hash)"}
+                        "anchor": {"type": "string", "description": "N:hh anchor copied from read near the desired block (1-based line number and hash)"},
+                        "json": {"type": "boolean", "description": "Return the block payload as a JSON object (file, line_count, language, block_lines) instead of compact text; default false. structuredContent carries the same object either way."}
                     },
                     "required": ["file", "anchor"]
                 })),
@@ -216,7 +252,8 @@ fn tool_list() -> ToolList {
                 input_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file": {"type": "string", "description": "Path to the existing file to permanently delete"}
+                        "file": {"type": "string", "description": "Path to the existing file to permanently delete"},
+                        "json": {"type": "boolean", "description": "Return a JSON object instead of compact text; default false"}
                     },
                     "required": ["file"]
                 })),
@@ -228,7 +265,8 @@ fn tool_list() -> ToolList {
                     "type": "object",
                     "properties": {
                         "src": {"type": "string", "description": "Path to the existing file to move"},
-                        "dst": {"type": "string", "description": "New file path; must not already exist"}
+                        "dst": {"type": "string", "description": "New file path; must not already exist"},
+                        "json": {"type": "boolean", "description": "Return a JSON object instead of compact text; default false"}
                     },
                     "required": ["src", "dst"]
                 })),
@@ -237,344 +275,272 @@ fn tool_list() -> ToolList {
     }
 }
 
-fn handle_read(file: &str, json: bool) -> String {
-    let path = Path::new(file);
-    let fc = match FileContent::load(path) {
-        Ok(fc) => fc,
-        Err(e) => return format!("Error: {e}"),
-    };
-    let entries = fc.lines_with_hashes();
-
-    if json {
-        let lines: Vec<Value> = entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                serde_json::json!({
-                    "n": i + 1,
-                    "hash": hash::format_short_hash(entry.short_hash),
-                    "content": entry.content,
-                })
-            })
-            .collect();
-        let output = serde_json::json!({
-            "path": fc.path.display().to_string(),
-            "hash": fc.hash,
-            "lines": lines,
-        });
-        serde_json::to_string(&output).unwrap_or_default()
-    } else {
-        let mut out = format!("[{}#{}]\n", fc.path.display(), fc.hash);
-        let mut hash_buf = [0u8; 2];
-        for (i, entry) in entries.iter().enumerate() {
-            hash::write_short_hash_bytes(&mut hash_buf, entry.short_hash);
-            let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
-            out.push_str(&format!("{}:{}|{}\n", i + 1, hash_str, entry.content));
-        }
-        out
-    }
+/// A tool handler's result: the text payload for `content[0].text` plus a
+/// structured object for `structuredContent` (which also backs `json: true`
+/// text output, so both channels always agree).
+struct ToolOutput {
+    text: String,
+    structured: Value,
 }
 
-fn handle_find_block(file: &str, anchor_str: &str) -> String {
+fn ok_output(text: String, structured: Value) -> ToolOutput {
+    ToolOutput { text, structured }
+}
+
+/// Convert a [`HashlineError`] into a failed tool result. The text keeps the
+/// `Error: ` prefix (the daemon/CLI error heuristic keys on it) and adds
+/// `kind:`/`hint:` lines; the structured payload carries the same fields —
+/// plus the variant's structured `details` — so MCP clients get the error
+/// kind and recovery hint instead of a bare prose string.
+fn err_output(error: &HashlineError) -> ToolOutput {
+    let mut text = format!("Error: {error}");
+    text.push_str(&format!("\nkind: {}", error.kind()));
+    if let Some(hint) = error.hint() {
+        text.push_str(&format!("\nhint: {hint}"));
+    }
+    if let Some(url) = error.report_url() {
+        text.push_str(&format!("\nreport: {url}"));
+    }
+    let mut structured = serde_json::json!({
+        "success": false,
+        "kind": error.kind(),
+        "error": error.to_string(),
+    });
+    if let Some(hint) = error.hint() {
+        structured["hint"] = Value::String(hint.to_string());
+    }
+    if let Some(command) = error.command() {
+        structured["command"] = Value::String(command.to_string());
+    }
+    if let Some(details) = crate::output::error_details(error) {
+        structured["details"] = details;
+    }
+    if let Some(url) = error.report_url() {
+        structured["report_url"] = Value::String(url.to_string());
+    }
+    ToolOutput { text, structured }
+}
+
+fn io_err(context: &str, error: std::io::Error) -> ToolOutput {
+    err_output(&HashlineError::Io(std::io::Error::new(
+        error.kind(),
+        format!("{context}: {error}"),
+    )))
+}
+
+/// Line entries visible to callers. `lines_with_hashes` includes the
+/// trailing empty segment `split('\n')` produces when the file ends with a
+/// newline — that segment is not a real line, and emitting it produced a
+/// phantom `N:hh|` anchor that `patch` then rejected as out of bounds.
+fn visible_entries(fc: &FileContent) -> Vec<crate::document::LineEntry> {
+    let mut entries = fc.lines_with_hashes();
+    if fc.trailing_newline && entries.last().is_some_and(|e| e.content.is_empty()) {
+        entries.pop();
+    }
+    entries
+}
+
+/// JSON line entries in the canonical `read --json` shape ({n, hash,
+/// content}) — shared by read/write/find_block results.
+fn lines_json(entries: &[crate::document::LineEntry]) -> Vec<Value> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            serde_json::json!({
+                "n": i + 1,
+                "hash": hash::format_short_hash(entry.short_hash),
+                "content": entry.content,
+            })
+        })
+        .collect()
+}
+
+fn handle_read(file: &str, json: bool) -> ToolOutput {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
         Ok(fc) => fc,
-        Err(e) => return format!("Error: {e}"),
+        Err(e) => return err_output(&e),
     };
+    let entries = visible_entries(&fc);
+    let structured = serde_json::json!({
+        "path": fc.path.display().to_string(),
+        "hash": fc.hash,
+        "lines": lines_json(&entries),
+    });
+    if json {
+        return ok_output(
+            serde_json::to_string(&structured).unwrap_or_default(),
+            structured,
+        );
+    }
+    // Agent-native compact: [path#hash] header + N:hh|content rows.
+    // The path is escaped so `#`/newline in filenames cannot corrupt the
+    // anchor header.
+    let mut out = format!(
+        "[{}#{}]\n",
+        crate::output::escape_compact_field(&fc.path.display().to_string()),
+        fc.hash
+    );
+    for (i, entry) in entries.iter().enumerate() {
+        out.push_str(&format!(
+            "{}:{}|{}\n",
+            i + 1,
+            hash::format_short_hash(entry.short_hash),
+            entry.content
+        ));
+    }
+    ok_output(out, structured)
+}
+
+fn handle_find_block(file: &str, anchor_str: &str, json: bool) -> ToolOutput {
+    let path = Path::new(file);
+    let fc = match FileContent::load(path) {
+        Ok(fc) => fc,
+        Err(e) => return err_output(&e),
+    };
+    // Resolve through the shared CLI implementation so MCP and
+    // `hashline find-block` agree on boundaries *and* on failure: the old
+    // MCP-only reimplementation silently fell back to the anchor line where
+    // the CLI reports BLOCK_UNRESOLVED.
     let entries = fc.lines_with_hashes();
-
-    let parsed = match crate::anchor::parse_anchor(anchor_str) {
-        Ok(a) => a,
-        Err(e) => return format!("Error: {e}"),
-    };
-    let resolved = match crate::anchor::resolve(&parsed, &fc) {
-        Ok(r) => r,
-        Err(e) => return format!("Error: {e}"),
-    };
-
-    let anchor_index = resolved.index;
-    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let language = match extension {
-        "rs" => "Rust",
-        "py" => "Python",
-        "js" => "JavaScript",
-        "ts" => "TypeScript",
-        "go" => "Go",
-        "rb" => "Ruby",
-        _ => "Unknown",
-    };
-
-    // Find block boundaries
-    let block_result: Option<(usize, usize)> = match extension {
-        "rs" | "js" | "ts" | "go" | "java" | "c" | "cpp" | "h" | "cs" => {
-            find_brace_block(&entries, anchor_index, extension).ok()
-        }
-        "py" => find_indent_block(&entries, anchor_index).ok(),
-        "rb" => find_ruby_block(&entries, anchor_index).ok(),
-        _ => find_brace_block(&entries, anchor_index, extension)
-            .ok()
-            .or_else(|| find_indent_block(&entries, anchor_index).ok()),
-    };
-
-    let (start, end) = block_result.unwrap_or((anchor_index, anchor_index));
-
-    // Agent-native compact header + block lines
+    let mut payload =
+        match crate::commands::find_block::find_block_payload(&fc, &entries, anchor_str) {
+            Ok(p) => p,
+            Err(e) => return err_output(&e),
+        };
+    // `lines_with_hashes` includes the phantom trailing empty segment for
+    // newline-terminated files; it is not a real line and its anchor is
+    // rejected by `patch`. Drop it from the emitted block (the CLI
+    // find-block has the same defect — tracked separately).
+    payload
+        .block_lines
+        .retain(|l| !(l.content.is_empty() && l.n > fc.len()));
+    let structured = serde_json::to_value(&payload).unwrap_or_default();
+    if json {
+        return ok_output(
+            serde_json::to_string(&structured).unwrap_or_default(),
+            structured,
+        );
+    }
+    let lang = payload.language.as_deref().unwrap_or("Unknown");
     let mut out = format!(
         "OK file={} lang={} lines={}\n",
-        fc.path.display(),
-        language,
-        fc.len()
+        crate::output::escape_compact_field(&payload.file),
+        lang,
+        payload.line_count
     );
-    for i in start..=end {
-        let entry = &entries[i];
-        let h = hash::format_short_hash(entry.short_hash);
-        out.push_str(&format!("{}:{}|{}\n", i + 1, h, entry.content));
+    for line in &payload.block_lines {
+        out.push_str(&format!("{}:{}|{}\n", line.n, line.hash, line.content));
     }
-    out
+    ok_output(out, structured)
 }
 
-fn find_brace_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-    ext: &str,
-) -> Result<(usize, usize), ()> {
-    let pairs = find_brace_pairs(entries, ext);
-    for (s, e) in pairs.iter().rev() {
-        if *s <= anchor_index && *e >= anchor_index {
-            return Ok((*s, *e));
-        }
-    }
-    Err(())
-}
-
-fn find_brace_pairs(entries: &[crate::document::LineEntry], _ext: &str) -> Vec<(usize, usize)> {
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-    let line_comment: &[u8] = b"//";
-    let mut in_block_comment = false;
-
-    for (line_idx, entry) in entries.iter().enumerate() {
-        let bytes = entry.content.as_bytes();
-        let mut i = 0;
-        let mut in_sq = false;
-        let mut in_dq = false;
-        let mut esc = false;
-
-        while i < bytes.len() {
-            if esc {
-                esc = false;
-                i += 1;
-                continue;
-            }
-            if (in_sq || in_dq) && bytes[i] == b'\\' {
-                esc = true;
-                i += 1;
-                continue;
-            }
-            if in_block_comment {
-                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    in_block_comment = false;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && bytes[i..].starts_with(line_comment) {
-                break;
-            }
-            if !in_sq && !in_dq && i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true;
-                i += 2;
-                continue;
-            }
-            if in_sq && bytes[i] == b'\'' {
-                in_sq = false;
-                i += 1;
-                continue;
-            }
-            if in_dq && bytes[i] == b'"' {
-                in_dq = false;
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && bytes[i] == b'\'' {
-                in_sq = true;
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && bytes[i] == b'"' {
-                in_dq = true;
-                i += 1;
-                continue;
-            }
-            if !in_sq && !in_dq && !in_block_comment {
-                if bytes[i] == b'{' {
-                    stack.push(line_idx);
-                } else if bytes[i] == b'}' {
-                    if let Some(s) = stack.pop() {
-                        pairs.push((s, line_idx));
-                    }
-                }
-            }
-            i += 1;
-        }
-    }
-    pairs
-}
-
-fn find_indent_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), ()> {
-    let anchor_indent = leading_ws(&entries[anchor_index].content);
-
-    // If anchor is at indent 0 (e.g. a `def` statement), it IS the block header.
-    if anchor_indent == 0 {
-        let mut end = entries.len() - 1;
-        for i in (anchor_index + 1)..entries.len() {
-            let t = entries[i].content.trim();
-            if t.is_empty() || t.starts_with('#') {
-                continue;
-            }
-            if leading_ws(&entries[i].content) <= anchor_indent {
-                end = i.saturating_sub(1);
-                break;
-            }
-        }
-        return Ok((anchor_index, end));
-    }
-
-    // Indented anchor: scan backward for the block header (less-indented line)
-    let mut start = None;
-    for i in (0..anchor_index).rev() {
-        if entries[i].content.trim().is_empty() {
-            continue;
-        }
-        if leading_ws(&entries[i].content) < anchor_indent {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = match start {
-        Some(s) => s,
-        None => return Err(()),
-    };
-    let si = leading_ws(&entries[start].content);
-    let mut end = entries.len() - 1;
-    for i in (start + 1)..entries.len() {
-        let t = entries[i].content.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        if leading_ws(&entries[i].content) <= si {
-            end = i.saturating_sub(1);
-            break;
-        }
-    }
-    Ok((start, end))
-}
-
-fn find_ruby_block(
-    entries: &[crate::document::LineEntry],
-    anchor_index: usize,
-) -> Result<(usize, usize), ()> {
-    let mut depth: isize = 0;
-    let mut start = None;
-    for i in (0..=anchor_index).rev() {
-        let t = entries[i].content.trim();
-        let ec = if t == "end" { 1 } else { 0 };
-        let oc = if t.starts_with("def ")
-            || t.starts_with("class ")
-            || t.starts_with("module ")
-            || t.starts_with("do ")
-            || t.starts_with("if ")
-            || t.starts_with("unless ")
-        {
-            1
-        } else {
-            0
-        };
-        depth += ec as isize;
-        depth -= oc as isize;
-        if oc > 0 && depth <= 0 {
-            start = Some(i);
-            break;
-        }
-    }
-    let start = match start {
-        Some(s) => s,
-        None => return Err(()),
-    };
-    depth = 0;
-    for i in start..entries.len() {
-        let t = entries[i].content.trim();
-        let oc = if t.starts_with("def ")
-            || t.starts_with("class ")
-            || t.starts_with("module ")
-            || t.starts_with("do ")
-            || t.starts_with("if ")
-            || t.starts_with("unless ")
-        {
-            1
-        } else {
-            0
-        };
-        let ec = if t == "end" { 1 } else { 0 };
-        depth += oc as isize;
-        depth -= ec as isize;
-        if i > start && depth <= 0 && t == "end" {
-            return Ok((start, i));
-        }
-    }
-    Err(())
-}
-
-fn leading_ws(s: &str) -> usize {
-    s.len() - s.trim_start().len()
-}
-
-fn handle_remove_file(file: &str, json: bool) -> String {
+fn handle_remove_file(file: &str, json: bool) -> ToolOutput {
     let path = std::path::Path::new(file);
     if !path.exists() {
-        return format!("Error: file not found: {file}");
+        return err_output(&HashlineError::FileNotFound {
+            path: file.to_string(),
+        });
     }
     match std::fs::remove_file(path) {
         Ok(_) => {
+            let structured = serde_json::json!({"success": true, "file": file});
             if json {
-                serde_json::json!({"success": true, "file": file}).to_string()
+                ok_output(
+                    serde_json::to_string(&structured).unwrap_or_default(),
+                    structured,
+                )
             } else {
                 // Agent-native compact
-                format!("OK {file}")
+                ok_output(
+                    format!("OK {}", crate::output::escape_compact_field(file)),
+                    structured,
+                )
             }
         }
-        Err(e) => format!("Error: {e}"),
+        Err(e) => io_err("failed to remove file", e),
     }
 }
 
-fn handle_rename_file(src: &str, dst: &str, json: bool) -> String {
+fn handle_rename_file(src: &str, dst: &str, json: bool) -> ToolOutput {
     let src_path = std::path::Path::new(src);
     let dst_path = std::path::Path::new(dst);
     if !src_path.exists() {
-        return format!("Error: source not found: {src}");
+        return err_output(&HashlineError::FileNotFound {
+            path: src.to_string(),
+        });
     }
     if dst_path.exists() {
-        return format!("Error: destination already exists: {dst}");
+        return err_output(&HashlineError::TargetExists {
+            path: dst.to_string(),
+        });
     }
     if let Some(parent) = dst_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return io_err("failed to create destination parent directories", e);
+        }
     }
     match std::fs::rename(src_path, dst_path) {
         Ok(_) => {
+            let structured = serde_json::json!({"success": true, "src": src, "dst": dst});
             if json {
-                serde_json::json!({"success": true, "src": src, "dst": dst}).to_string()
+                ok_output(
+                    serde_json::to_string(&structured).unwrap_or_default(),
+                    structured,
+                )
             } else {
                 // Agent-native compact
-                format!("OK {src}>{dst}")
+                ok_output(
+                    format!(
+                        "OK {}>{}",
+                        crate::output::escape_compact_field(src),
+                        crate::output::escape_compact_field(dst)
+                    ),
+                    structured,
+                )
             }
         }
-        Err(e) => format!("Error: {e}"),
+        Err(e) => io_err("failed to rename file", e),
     }
+}
+
+/// Build the `changed` array shared by compact-adjacent JSON output and
+/// `structuredContent` — same shape as `patch --json`.
+fn changed_json(changeset: &crate::types::ChangeSet) -> Value {
+    let mut changed: Vec<Value> = Vec::new();
+    for l in &changeset.modified {
+        changed.push(serde_json::json!({
+            "type": "modified", "line": l.line, "hash": l.hash, "content": l.content,
+        }));
+    }
+    for l in &changeset.inserted {
+        changed.push(serde_json::json!({
+            "type": "inserted", "line": l.line, "hash": l.hash, "content": l.content,
+        }));
+    }
+    for &n in &changeset.deleted {
+        changed.push(serde_json::json!({"type": "deleted", "line": n}));
+    }
+    Value::Array(changed)
+}
+
+/// `updated_anchors` entries in the canonical `read --json` line shape
+/// ({n, hash, content}) — identical to `patch --json --emit-anchors`.
+fn updated_anchors_json(changeset: &crate::types::ChangeSet) -> Value {
+    Value::Array(
+        changeset
+            .updated_anchors
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "n": l.line,
+                    "hash": l.hash,
+                    "content": l.content,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn handle_patch(
@@ -582,42 +548,54 @@ fn handle_patch(
     patch_str: &str,
     dry_run: bool,
     return_updated_anchors: bool,
-) -> String {
+    json: bool,
+) -> ToolOutput {
     let path = Path::new(file);
     let fc = match FileContent::load(path) {
         Ok(fc) => fc,
-        Err(e) => return format!("Error: {e}"),
+        Err(e) => return err_output(&e),
     };
-    let (edits, warnings, _file_op, _aborted) = parse_patch(patch_str);
+    let (edits, warnings, file_op, aborted) = parse_patch(patch_str);
 
-    // Surface warnings in the tool result so MCP clients see them
-    // (Issue #93 — warnings are not just debug info for the terminal).
-    let mut warning_line = String::new();
-    if !warnings.is_empty() {
-        warning_line = format!(
-            "\n  warnings:\n{}",
-            warnings
-                .iter()
-                .map(|w| format!("    - {w}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+    // File-level ops (REM/MV) parse successfully but have no effect here —
+    // reporting OK would claim an edit that never happened. The dedicated
+    // remove_file/rename_file tools cover them.
+    if file_op.is_some() {
+        return err_output(&HashlineError::PatchRejected {
+            reason: "patch contains a file-level operation (REM/MV) which the patch tool does not \
+                     support; use remove_file or rename_file instead"
+                .into(),
+        });
     }
-
+    if aborted {
+        // Mirror the CLI: a rejected patch is a failure, not an empty edit.
+        let reason = warnings
+            .first()
+            .map(|w| w.lines().next().unwrap_or(w).to_string())
+            .unwrap_or_else(|| "the patch was rejected before any edits were applied".to_string());
+        return err_output(&HashlineError::PatchRejected {
+            reason: reason.into_boxed_str(),
+        });
+    }
     if edits.is_empty() {
-        let base = if warnings.is_empty() {
-            "Error: patch produced no edits — input was empty or all operations were rejected"
-                .to_string()
+        let error = if warnings.is_empty() {
+            HashlineError::EmptyPatch
         } else {
-            let reason = &warnings[0];
-            format!("Error: patch produced no edits — {reason}")
+            HashlineError::EmptyPatchWithReason {
+                reason: warnings[0].clone().into_boxed_str(),
+            }
         };
-        return format!("{base}{warning_line}");
+        return err_output(&error);
     }
 
     let (mut lines, _) = split_text(&fc.normalized);
 
     let entries = fc.lines_with_hashes();
+    // Drain stale apply warnings from any earlier failed apply, then collect
+    // the ones this apply emits (boundary-echo repairs, delimiter warnings).
+    // They change file content and must reach the client — stderr is
+    // invisible to MCP clients.
+    let _ = crate::commands::patch::take_apply_warnings();
     let changeset = match crate::commands::patch::apply_edits_tracked(
         &mut lines,
         &entries,
@@ -626,72 +604,139 @@ fn handle_patch(
         crate::commands::patch::count_operations(&edits),
     ) {
         Ok(cs) => cs,
-        Err(e) => return format!("Error: {e}"),
+        Err(e) => return err_output(&e),
     };
+    let mut all_warnings = warnings.clone();
+    for w in crate::commands::patch::take_apply_warnings() {
+        if !all_warnings.contains(&w) {
+            all_warnings.push(w);
+        }
+    }
 
     let result = join_lines(&lines, fc.trailing_newline);
     let line_ending = detect_line_ending(&fc.raw);
+    // `result` (LF) is kept for the dry-run diff; `final_text` restores CRLF
+    // for the on-disk write. Clone only on the non-CRLF path is avoided by
+    // borrowing where possible — the clone cost is one memcpy, far below the
+    // patch apply itself.
     let final_text = if line_ending == LineEnding::Crlf {
         restore_line_endings(&result, line_ending)
     } else {
-        result
+        result.clone()
     };
 
+    let emit_anchors = return_updated_anchors || crate::commands::patch::emit_anchors_from_env();
+
     if dry_run {
-        if warning_line.is_empty() {
-            format!("Dry-run result:\n{final_text}")
+        // Bounded output: a unified-diff-style change list (same rows as
+        // `patch --dry-run`), never the entire proposed file — dumping the
+        // file cost ~33KB per call where the CLI diff is ~62B.
+        let diff_text = if line_ending == LineEnding::Crlf {
+            &result
         } else {
-            format!(
-                "{}\n\nDry-run result:\n{final_text}",
-                warning_line.trim_start()
-            )
+            &final_text
+        };
+        let diff_lines = crate::commands::patch::format_diff(&fc.normalized, diff_text);
+        let structured = serde_json::json!({
+            "success": true,
+            "dry_run": true,
+            "file": file,
+            "hash": changeset.file_hash,
+            "edits_applied": changeset.edits_applied,
+            "changed": changed_json(&changeset),
+            "diff": diff_lines,
+            "warnings": all_warnings,
+        });
+        if json {
+            return ok_output(
+                serde_json::to_string(&structured).unwrap_or_default(),
+                structured,
+            );
         }
-    } else {
-        match crate::commands::common::fast_write(path, final_text.as_bytes()) {
-            Ok(_) => {
-                // Agent-native compact output: OK header + changed lines only
-                let changed_count =
-                    changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
-                let mut out = format!(
-                    "OK {}#{} edits={} changed={}",
-                    file, changeset.file_hash, changeset.edits_applied, changed_count,
-                );
-                for line in &changeset.modified {
-                    out.push_str(&format!("\n~{}:{}|{}", line.line, line.hash, line.content));
-                }
-                for line in &changeset.inserted {
-                    out.push_str(&format!("\n+{}:{}|{}", line.line, line.hash, line.content));
-                }
-                for &line_num in &changeset.deleted {
-                    out.push_str(&format!("\n-{}", line_num));
-                }
-                if !warning_line.is_empty() {
-                    out.push_str(&warning_line);
-                }
-                // Opt-in (issue #119): full fresh anchor listing in `read`
-                // format so the caller can chain edits without re-reading.
-                if return_updated_anchors || crate::commands::patch::emit_anchors_from_env() {
-                    out.push_str(&format!("\n[{}#{}]", file, changeset.file_hash));
-                    for line in &changeset.updated_anchors {
-                        out.push_str(&format!("\n{}:{}|{}", line.line, line.hash, line.content));
-                    }
-                }
-                out
+        let mut out = String::new();
+        if !all_warnings.is_empty() {
+            out.push_str("warnings:\n");
+            for w in &all_warnings {
+                out.push_str(&format!("  - {w}\n"));
             }
-            Err(e) => format!("Error writing file: {e}"),
         }
+        for dl in &diff_lines {
+            out.push_str(dl);
+            out.push('\n');
+        }
+        return ok_output(out, structured);
+    }
+
+    match crate::commands::common::fast_write(path, final_text.as_bytes()) {
+        Ok(_) => {
+            let changed_count =
+                changeset.modified.len() + changeset.inserted.len() + changeset.deleted.len();
+            let mut structured = serde_json::json!({
+                "success": true,
+                "file": file,
+                "hash": changeset.file_hash,
+                "edits_applied": changeset.edits_applied,
+                "changed": changed_json(&changeset),
+                "warnings": all_warnings,
+            });
+            if emit_anchors {
+                structured["updated_anchors"] = updated_anchors_json(&changeset);
+            }
+            if json {
+                return ok_output(
+                    serde_json::to_string(&structured).unwrap_or_default(),
+                    structured,
+                );
+            }
+            // Agent-native compact output: OK header + changed lines only.
+            let mut out = format!(
+                "OK {}#{} edits={} changed={}",
+                crate::output::escape_compact_field(file),
+                changeset.file_hash,
+                changeset.edits_applied,
+                changed_count,
+            );
+            for line in &changeset.modified {
+                out.push_str(&format!("\n~{}:{}|{}", line.line, line.hash, line.content));
+            }
+            for line in &changeset.inserted {
+                out.push_str(&format!("\n+{}:{}|{}", line.line, line.hash, line.content));
+            }
+            for &line_num in &changeset.deleted {
+                out.push_str(&format!("\n-{}", line_num));
+            }
+            if !all_warnings.is_empty() {
+                out.push_str("\nwarnings:");
+                for w in &all_warnings {
+                    out.push_str(&format!("\n  - {w}"));
+                }
+            }
+            // Opt-in (issue #119): full fresh anchor listing in `read`
+            // format so the caller can chain edits without re-reading.
+            if emit_anchors {
+                out.push_str(&format!(
+                    "\n[{}#{}]",
+                    crate::output::escape_compact_field(file),
+                    changeset.file_hash
+                ));
+                for line in &changeset.updated_anchors {
+                    out.push_str(&format!("\n{}:{}|{}", line.line, line.hash, line.content));
+                }
+            }
+            ok_output(out, structured)
+        }
+        Err(e) => err_output(&e),
     }
 }
 
-fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
+fn handle_write(file: &str, content: &str, force: bool, json: bool) -> ToolOutput {
     let path = Path::new(file);
 
-    // Check file exists — refuse unless --force
+    // Check file exists — refuse unless force=true
     if path.exists() && !force {
-        return format!(
-            "Error: target '{}' already exists — use force=true to overwrite",
-            file
-        );
+        return err_output(&HashlineError::TargetExists {
+            path: file.to_string(),
+        });
     }
 
     let normalized = crate::normalize::normalize_to_lf(content);
@@ -699,7 +744,7 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
     let write_content = bom_result.text;
 
     if let Err(e) = crate::commands::common::fast_write(path, write_content.as_bytes()) {
-        return format!("Error: {e}");
+        return err_output(&e);
     }
 
     // Compute hash and line count from the written content (canonical path).
@@ -707,34 +752,44 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
     let line_count = write_content.lines().count();
 
     if json {
-        // JSON: re-read for full line data (backward compatible)
+        // Re-read for the full line listing. A write that cannot be verified
+        // is a *partial* failure — report it as an error, not "Written
+        // successfully" text that the isError heuristic misses.
         match FileContent::load(path) {
             Ok(fc) => {
-                let entries = fc.lines_with_hashes();
-                let lines: Vec<Value> = entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, entry)| {
-                        serde_json::json!({
-                            "n": i + 1,
-                            "hash": hash::format_short_hash(entry.short_hash),
-                            "content": entry.content,
-                        })
-                    })
-                    .collect();
-                serde_json::to_string(&serde_json::json!({
+                let entries = visible_entries(&fc);
+                let structured = serde_json::json!({
                     "success": true,
                     "path": fc.path.display().to_string(),
                     "hash": fc.hash,
-                    "lines": lines,
-                }))
-                .unwrap_or_default()
+                    "lines": lines_json(&entries),
+                });
+                ok_output(
+                    serde_json::to_string(&structured).unwrap_or_default(),
+                    structured,
+                )
             }
-            Err(e) => format!("Written successfully.\nError re-reading file: {e}"),
+            Err(e) => err_output(&HashlineError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("file written but re-read for verification failed: {e}"),
+            ))),
         }
     } else {
         // Agent-native compact: status line only, no re-read
-        format!("OK {}#{} lines={}", file, file_hash, line_count)
+        ok_output(
+            format!(
+                "OK {}#{} lines={}",
+                crate::output::escape_compact_field(file),
+                file_hash,
+                line_count
+            ),
+            serde_json::json!({
+                "success": true,
+                "file": file,
+                "hash": file_hash,
+                "lines": line_count,
+            }),
+        )
     }
 }
 
@@ -742,100 +797,79 @@ fn handle_write(file: &str, content: &str, force: bool, json: bool) -> String {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
-/// Build an MCP `CallToolResult` from a tool handler's text output.
+/// Build an MCP `CallToolResult` from a tool handler's output.
 ///
-/// Handlers report failures as text beginning with `Error: `. The MCP spec's
-/// `isError` flag marks those results as failures, so a client — including
-/// the CLI's daemon routing — can tell "the tool failed" from "the tool
-/// succeeded and produced this text" without sniffing the payload.
-fn tool_result(text: String) -> Value {
-    if text.starts_with("Error: ") {
-        serde_json::json!({"content": [{"type": "text", "text": text}], "isError": true})
-    } else {
-        serde_json::json!({"content": [{"type": "text", "text": text}]})
+/// Handlers report failures either as text beginning with `Error: ` or as a
+/// structured payload with `"success": false`. The MCP spec's `isError`
+/// flag marks those results as failures, so a client — including the CLI's
+/// daemon routing — can tell "the tool failed" from "the tool succeeded and
+/// produced this text" without sniffing the payload. `structuredContent`
+/// carries the handler's structured object on both success and failure.
+fn tool_result(output: ToolOutput) -> Value {
+    let is_error = output.text.starts_with("Error: ")
+        || output.structured.get("success").and_then(Value::as_bool) == Some(false);
+    let mut result = serde_json::json!({
+        "content": [{"type": "text", "text": output.text}],
+        "structuredContent": output.structured,
+    });
+    if is_error {
+        result["isError"] = serde_json::json!(true);
     }
+    result
 }
 
-fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
-    match name {
-        "read" | "hashline_read" => {
-            let file = args
-                .get("file")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'file'")?;
-            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(tool_result(handle_read(file, json)))
+/// Extract a required string parameter, or fail with JSON-RPC `-32602`
+/// (Invalid params) — parameter problems are not "method not found".
+fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| JsonRpcError {
+            code: -32602,
+            message: format!("missing or invalid '{key}' parameter"),
+            data: None,
+        })
+}
+
+fn opt_bool(args: &Value, key: &str) -> bool {
+    args.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn call_tool(name: &str, args: &Value) -> Result<Value, JsonRpcError> {
+    let output = match name {
+        "read" | "hashline_read" => handle_read(require_str(args, "file")?, opt_bool(args, "json")),
+        "patch" | "hashline_patch" => handle_patch(
+            require_str(args, "file")?,
+            require_str(args, "patch")?,
+            opt_bool(args, "dry_run"),
+            opt_bool(args, "return_updated_anchors"),
+            opt_bool(args, "json"),
+        ),
+        "write" | "hashline_write" => handle_write(
+            require_str(args, "file")?,
+            require_str(args, "content")?,
+            opt_bool(args, "force"),
+            opt_bool(args, "json"),
+        ),
+        "find_block" | "hashline_find_block" => handle_find_block(
+            require_str(args, "file")?,
+            require_str(args, "anchor")?,
+            opt_bool(args, "json"),
+        ),
+        "remove_file" => handle_remove_file(require_str(args, "file")?, opt_bool(args, "json")),
+        "rename_file" => handle_rename_file(
+            require_str(args, "src")?,
+            require_str(args, "dst")?,
+            opt_bool(args, "json"),
+        ),
+        _ => {
+            return Err(JsonRpcError {
+                code: -32602,
+                message: format!("unknown tool: {name}"),
+                data: None,
+            });
         }
-        "patch" | "hashline_patch" => {
-            let file = args
-                .get("file")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'file'")?;
-            let patch = args
-                .get("patch")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'patch'")?;
-            let dry_run = args
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let return_updated_anchors = args
-                .get("return_updated_anchors")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            Ok(tool_result(handle_patch(
-                file,
-                patch,
-                dry_run,
-                return_updated_anchors,
-            )))
-        }
-        "write" | "hashline_write" => {
-            let file = args
-                .get("file")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'file'")?;
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'content'")?;
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(tool_result(handle_write(file, content, force, json)))
-        }
-        "find_block" | "hashline_find_block" => {
-            let file = args
-                .get("file")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'file'")?;
-            let anchor = args
-                .get("anchor")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'anchor'")?;
-            Ok(tool_result(handle_find_block(file, anchor)))
-        }
-        "remove_file" => {
-            let file = args
-                .get("file")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'file'")?;
-            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(tool_result(handle_remove_file(file, json)))
-        }
-        "rename_file" => {
-            let src = args
-                .get("src")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'src'")?;
-            let dst = args
-                .get("dst")
-                .and_then(|v| v.as_str())
-                .ok_or("missing 'dst'")?;
-            let json = args.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(tool_result(handle_rename_file(src, dst, json)))
-        }
-        _ => Err(format!("unknown tool: {name}")),
-    }
+    };
+    Ok(tool_result(output))
 }
 
 // ---------------------------------------------------------------------------
@@ -864,7 +898,7 @@ impl Session {
 
 pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRpcResponse {
     let id = request.id.clone();
-    let result = match request.method.as_str() {
+    let result: Result<Value, JsonRpcError> = match request.method.as_str() {
         "initialize" => {
             let info = serde_json::json!({
                 "protocolVersion": "2024-11-05",
@@ -886,15 +920,31 @@ pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRp
                 .and_then(|p| p.as_object())
                 .cloned()
                 .unwrap_or_default();
-            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            call_tool(tool_name, &arguments)
+            let tool_name = params.get("name").and_then(|v| v.as_str());
+            match tool_name {
+                Some(name) => {
+                    let arguments = params
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+                    call_tool(name, &arguments)
+                }
+                // A missing tool name is an invalid-params error (-32602),
+                // not "method not found" (-32601).
+                None => Err(JsonRpcError {
+                    code: -32602,
+                    message: "missing 'name' parameter for tools/call".to_string(),
+                    data: None,
+                }),
+            }
         }
         "ping" => Ok(serde_json::json!({})),
-        _ => Err(format!("unknown method: {}", request.method)),
+        // -32601 Method not found — reserved for unknown JSON-RPC methods.
+        _ => Err(JsonRpcError {
+            code: -32601,
+            message: format!("unknown method: {}", request.method),
+            data: None,
+        }),
     };
 
     match result {
@@ -904,34 +954,33 @@ pub fn handle_request(request: &JsonRpcRequest, session: &mut Session) -> JsonRp
             result: Some(data),
             error: None,
         },
-        Err(msg) => JsonRpcResponse {
+        Err(error) => JsonRpcResponse {
             jsonrpc: "2.0".into(),
             id,
             result: None,
-            error: Some(JsonRpcError {
-                code: -32601,
-                message: msg,
-                data: None,
-            }),
+            error: Some(error),
         },
     }
 }
 
 pub fn write_error<W: Write>(
     writer: &mut W,
-    _id: Option<Value>,
+    id: Option<Value>,
     code: i32,
     message: &str,
-    _data: Option<Value>,
+    data: Option<Value>,
 ) -> io::Result<()> {
     let response = JsonRpcResponse {
         jsonrpc: "2.0".into(),
-        id: None,
+        // JSON-RPC requires `"id": null` on errors where the request id
+        // could not be determined (e.g. parse errors) — omitting the member
+        // is a spec violation that strict clients reject.
+        id: Some(id.unwrap_or(Value::Null)),
         result: None,
         error: Some(JsonRpcError {
             code,
             message: message.to_string(),
-            data: None,
+            data,
         }),
     };
     serde_json::to_writer(&mut *writer, &response)?;
@@ -949,11 +998,9 @@ pub fn dispatch_tool(
         .and_then(|o| o.get("arguments"))
         .cloned()
         .unwrap_or(serde_json::json!({}));
-    call_tool(tool_name, &args).map_err(|msg| JsonRpcError {
-        code: -32601,
-        message: msg,
-        data: None,
-    })
+    // Propagate the JSON-RPC error code: -32602 for parameter problems,
+    // never the -32601 that was previously applied to everything.
+    call_tool(tool_name, &args)
 }
 
 /// Run the MCP server (CLI entry point).
@@ -987,6 +1034,9 @@ pub fn run(_cmd: McpCmd) -> Result<(), HashlineError> {
                     None,
                 )
                 .map_err(HashlineError::Io)?;
+                // The writer is buffered — without a flush the parse-error
+                // response never reaches the client and the request hangs.
+                writer.flush().map_err(HashlineError::Io)?;
                 continue;
             }
         };
@@ -1020,14 +1070,37 @@ mod tests {
 
     #[test]
     fn tool_result_flags_failures_with_is_error() {
-        let failed = tool_result("Error: file not found: missing.txt".to_string());
-        assert_eq!(failed["isError"], json!(true));
+        let failed = tool_result(err_output(&HashlineError::FileNotFound {
+            path: "missing.txt".into(),
+        }));
+        assert_eq!(failed["isError"], json!(true), "{failed}");
+        // The structured error must carry kind/hint, not just prose.
+        let sc = &failed["structuredContent"];
+        assert_eq!(sc["success"], json!(false), "{sc}");
+        assert_eq!(sc["kind"], json!("FILE_NOT_FOUND"), "{sc}");
+        assert!(sc["hint"].is_string(), "{sc}");
+        assert!(sc["details"]["path"].is_string(), "{sc}");
 
-        let ok = tool_result("OK file.txt#abcd lines=1".to_string());
+        let ok = tool_result(ok_output(
+            "OK file.txt#abcd lines=1".to_string(),
+            json!({"success": true}),
+        ));
         assert!(
             ok.get("isError").is_none(),
             "success must not be flagged: {ok}"
         );
+        assert!(ok["structuredContent"].is_object(), "{ok}");
+    }
+
+    #[test]
+    fn tool_result_flags_structured_failure_without_error_prefix() {
+        // A handler that reports failure only via `"success": false` (e.g. a
+        // JSON-mode error payload) must still set isError.
+        let result = tool_result(ok_output(
+            "{\"success\":false,\"kind\":\"IO\"}".to_string(),
+            json!({"success": false, "kind": "IO"}),
+        ));
+        assert_eq!(result["isError"], json!(true), "{result}");
     }
 
     #[test]
@@ -1102,7 +1175,7 @@ mod tests {
             ),
             (
                 "patch",
-                json!({"file": "string", "patch": "string", "dry_run": "boolean", "return_updated_anchors": "boolean"}),
+                json!({"file": "string", "patch": "string", "dry_run": "boolean", "return_updated_anchors": "boolean", "json": "boolean"}),
                 json!(["file", "patch"]),
             ),
             (
@@ -1112,13 +1185,17 @@ mod tests {
             ),
             (
                 "find_block",
-                json!({"file": "string", "anchor": "string"}),
+                json!({"file": "string", "anchor": "string", "json": "boolean"}),
                 json!(["file", "anchor"]),
             ),
-            ("remove_file", json!({"file": "string"}), json!(["file"])),
+            (
+                "remove_file",
+                json!({"file": "string", "json": "boolean"}),
+                json!(["file"]),
+            ),
             (
                 "rename_file",
-                json!({"src": "string", "dst": "string"}),
+                json!({"src": "string", "dst": "string", "json": "boolean"}),
                 json!(["src", "dst"]),
             ),
         ];
@@ -1153,7 +1230,7 @@ mod tests {
         let original = "first\nsecond\nthird\n";
         std::fs::write(&path, original).unwrap();
         let file = path.to_str().unwrap();
-        let read: Value = serde_json::from_str(&handle_read(file, true)).unwrap();
+        let read: Value = serde_json::from_str(&handle_read(file, true).text).unwrap();
         let first_hash = read["lines"][0]["hash"].as_str().unwrap();
         let second_hash = read["lines"][1]["hash"].as_str().unwrap();
         let stale_hash = if second_hash == "00" { "01" } else { "00" };
@@ -1171,7 +1248,7 @@ mod tests {
                 format!("{valid}\nINS.POST 2:{stale_hash}:\n+added"),
                 "changed since last read",
             ),
-            (format!("{valid}\nSWAP"), "patch produced no edits"),
+            (format!("{valid}\nSWAP"), "malformed operation"),
         ] {
             let request = JsonRpcRequest {
                 jsonrpc: "2.0".into(),
@@ -1215,7 +1292,7 @@ mod tests {
         for (example, expected_text) in examples.iter().zip(expected) {
             std::fs::write(&path, original).unwrap();
             let read: Value =
-                serde_json::from_str(&handle_read(path.to_str().unwrap(), true)).unwrap();
+                serde_json::from_str(&handle_read(path.to_str().unwrap(), true).text).unwrap();
             let mut args = example["arguments"].clone();
             args["file"] = json!(path.to_str().unwrap());
             // The examples deliberately use placeholders, not fabricated real hashes.
@@ -1246,7 +1323,7 @@ mod tests {
         for original in ["alpha\nbeta\n", "alpha\r\nbeta\r\n"] {
             std::fs::write(&path, original).unwrap();
             let original_bytes = std::fs::read(&path).unwrap();
-            let read: Value = serde_json::from_str(&handle_read(file, true)).unwrap();
+            let read: Value = serde_json::from_str(&handle_read(file, true).text).unwrap();
             let anchor = format!("2:{}", read["lines"][1]["hash"].as_str().unwrap());
             let patch = format!("SWAP {anchor}:\n-beta\n+added");
             let preview = call_tool(
@@ -1256,18 +1333,20 @@ mod tests {
             .unwrap();
             assert!(preview.get("isError").is_none(), "{preview}");
             let preview_text = preview["content"][0]["text"].as_str().unwrap();
-            let (warnings, proposed) = preview_text.split_once("\n\nDry-run result:\n").unwrap();
-            assert!(warnings.starts_with("warnings:\n"), "{warnings}");
+            // Bounded diff output: parser warnings first, then diff rows —
+            // never the entire proposed file.
+            assert!(preview_text.starts_with("warnings:\n"), "{preview_text}");
             assert!(
-                warnings.contains(crate::messages::MINUS_ROW_REJECTED),
-                "{warnings}"
+                preview_text.contains(crate::messages::MINUS_ROW_REJECTED),
+                "{preview_text}"
             );
+            assert!(preview_text.contains("@@ -- ++ @@"), "{preview_text}");
             let expected = if original.contains("\r\n") {
                 "alpha\r\n-beta\r\nadded\r\n"
             } else {
                 "alpha\n-beta\nadded\n"
             };
-            assert_eq!(proposed, expected);
+            assert_ne!(preview_text.trim(), expected, "{preview_text}");
             assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
 
             let applied = call_tool(
@@ -1278,8 +1357,11 @@ mod tests {
             assert!(applied.get("isError").is_none(), "{applied}");
             let applied_text = applied["content"][0]["text"].as_str().unwrap();
             assert!(applied_text.starts_with("OK "), "{applied_text}");
-            assert!(applied_text.contains(warnings), "{applied_text}");
-            assert_eq!(std::fs::read(&path).unwrap(), proposed.as_bytes());
+            assert!(
+                applied_text.contains(crate::messages::MINUS_ROW_REJECTED),
+                "{applied_text}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
         }
     }
 
@@ -1290,26 +1372,35 @@ mod tests {
         std::fs::write(&path, "old\n").unwrap();
         let file = path.to_str().unwrap();
         let patch = "INS.TAIL:\n+new";
-        let preview = handle_patch(file, patch, true, true);
-        assert_eq!(preview, "Dry-run result:\nold\nnew\n");
+        let preview = handle_patch(file, patch, true, true, false);
+        // Bounded unified-diff output, not the whole proposed file.
+        assert_eq!(preview.text, "@@ -- ++ @@\n+new\n", "{}", preview.text);
+        assert_eq!(preview.structured["dry_run"], json!(true));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
 
-        let result = handle_patch(file, patch, false, false);
-        assert!(result.starts_with("OK "), "{result}");
+        let result = handle_patch(file, patch, false, false, false);
+        assert!(result.text.starts_with("OK "), "{}", result.text);
         if !crate::commands::patch::emit_anchors_from_env() {
-            assert!(!result.contains(&format!("\n[{file}#")), "{result}");
+            assert!(
+                !result.text.contains(&format!("\n[{file}#")),
+                "{}",
+                result.text
+            );
         }
-        let result = handle_patch(file, "INS.HEAD:\n+first", false, true);
-        let fresh_read = handle_read(file, false);
-        // read currently includes an extra empty segment for a trailing newline.
+        let result = handle_patch(file, "INS.HEAD:\n+first", false, true, false);
+        let fresh_read = handle_read(file, false).text;
         let fresh_rows = fresh_read
             .lines()
             .skip(1)
             .take(3)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(result.contains(&format!("\n[{file}#")), "{result}");
-        assert!(result.ends_with(&fresh_rows), "{result}");
+        assert!(
+            result.text.contains(&format!("\n[{file}#")),
+            "{}",
+            result.text
+        );
+        assert!(result.text.ends_with(&fresh_rows), "{}", result.text);
     }
 
     #[test]
@@ -1326,5 +1417,244 @@ mod tests {
         assert_eq!(result["serverInfo"]["name"], "hashline");
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert!(result["capabilities"]["tools"].is_object());
+    }
+
+    // ---- bd-mcp-surface-2tv regressions ----------------------------------
+
+    #[test]
+    fn json_rpc_null_id_is_answered_with_null() {
+        // `"id": null` is a request, not a notification — it must be
+        // answered with `"id": null` echoed back.
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping","id":null}"#).unwrap();
+        assert_eq!(req.id, Some(Value::Null));
+        let resp = handle_request(&req, &mut Session::new());
+        assert!(resp.error.is_none(), "{resp:?}");
+        assert_eq!(resp.id, Some(Value::Null));
+        let wire = serde_json::to_string(&resp).unwrap();
+        assert!(wire.contains("\"id\":null"), "{wire}");
+
+        // An absent `id` member is a notification: no response.
+        let notif: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"ping"}"#).unwrap();
+        assert!(notif.id.is_none());
+    }
+
+    #[test]
+    fn json_rpc_error_codes_distinguish_params_from_method() {
+        let mut session = Session::new();
+        // Missing required tool argument → -32602 Invalid params.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "tools/call".into(),
+            params: Some(json!({"name": "read", "arguments": {}})),
+            id: Some(json!(7)),
+        };
+        let resp = handle_request(&req, &mut session);
+        assert_eq!(resp.error.as_ref().unwrap().code, -32602, "{resp:?}");
+        assert_eq!(resp.id, Some(json!(7)));
+
+        // Unknown tool name → -32602 (it is a params problem).
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "tools/call".into(),
+            params: Some(json!({"name": "nope", "arguments": {}})),
+            id: Some(json!(8)),
+        };
+        let resp = handle_request(&req, &mut session);
+        assert_eq!(resp.error.as_ref().unwrap().code, -32602, "{resp:?}");
+
+        // Unknown JSON-RPC method → -32601 Method not found.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            method: "bogus/method".into(),
+            params: None,
+            id: Some(json!(9)),
+        };
+        let resp = handle_request(&req, &mut session);
+        assert_eq!(resp.error.as_ref().unwrap().code, -32601, "{resp:?}");
+    }
+
+    #[test]
+    fn read_omits_phantom_trailing_empty_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let file = path.to_str().unwrap();
+
+        let compact = handle_read(file, false).text;
+        let rows: Vec<&str> = compact.lines().skip(1).collect();
+        assert_eq!(rows.len(), 2, "{compact}");
+
+        let read: Value = serde_json::from_str(&handle_read(file, true).text).unwrap();
+        assert_eq!(read["lines"].as_array().unwrap().len(), 2, "{read}");
+    }
+
+    #[test]
+    fn find_block_uses_cli_semantics_and_errors_like_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        // A .rs file with no braces: the CLI reports BLOCK_UNRESOLVED; the
+        // old MCP reimplementation silently fell back to the anchor line.
+        let path = dir.path().join("plain.rs");
+        std::fs::write(&path, "let x = 1;\nlet y = 2;\n").unwrap();
+        let file = path.to_str().unwrap();
+        let read: Value = serde_json::from_str(&handle_read(file, true).text).unwrap();
+        let anchor = format!("1:{}", read["lines"][0]["hash"].as_str().unwrap());
+        let result = call_tool("find_block", &json!({"file": file, "anchor": anchor})).unwrap();
+        assert_eq!(result["isError"], json!(true), "{result}");
+        assert_eq!(
+            result["structuredContent"]["kind"],
+            json!("BLOCK_UNRESOLVED"),
+            "{result}"
+        );
+
+        // Positive case: an indent-structured Python block resolves and does
+        // not emit the phantom trailing empty line.
+        let py = dir.path().join("m.py");
+        std::fs::write(&py, "def f():\n    x = 1\n    return x\n\ny = 2\n").unwrap();
+        let py_file = py.to_str().unwrap();
+        let read: Value = serde_json::from_str(&handle_read(py_file, true).text).unwrap();
+        let anchor = format!("2:{}", read["lines"][1]["hash"].as_str().unwrap());
+        let result = call_tool("find_block", &json!({"file": py_file, "anchor": anchor})).unwrap();
+        assert!(result.get("isError").is_none(), "{result}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("OK file="), "{text}");
+        assert!(text.contains("lang=Python"), "{text}");
+        let block = &result["structuredContent"]["block_lines"];
+        assert!(
+            block
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| { !(l["content"].as_str() == Some("") && l["n"].as_u64().unwrap() > 4) }),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn patch_surfaces_apply_time_warnings() {
+        // A boundary-echo payload is *repaired* during apply — the repair
+        // changes file content, so its warning must reach the MCP client
+        // (previously it went only to the server's stderr and was lost).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "aaa\nbbb\nccc\n").unwrap();
+        let file = path.to_str().unwrap();
+        let read: Value = serde_json::from_str(&handle_read(file, true).text).unwrap();
+        let anchor = format!("2:{}", read["lines"][1]["hash"].as_str().unwrap());
+        // Payload restates the surviving lines above/below the range —
+        // repair_boundary_echo drops both echoes.
+        let patch = format!("SWAP {anchor}:\n+aaa\n+NEW\n+ccc");
+        let result = call_tool(
+            "patch",
+            &json!({"file": file, "patch": patch, "json": true}),
+        )
+        .unwrap();
+        assert!(result.get("isError").is_none(), "{result}");
+        let payload: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let warnings = payload["warnings"].as_array().unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap().contains("Auto-repaired")),
+            "{payload}"
+        );
+        assert_eq!(payload["changed"][0]["content"], json!("NEW"), "{payload}");
+        // The repair actually happened on disk.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "aaa\nNEW\nccc\n");
+    }
+
+    #[test]
+    fn patch_dry_run_is_bounded_and_json_has_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        let content: String = (0..300).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, &content).unwrap();
+        let file = path.to_str().unwrap();
+        let read: Value = serde_json::from_str(&handle_read(file, true).text).unwrap();
+        let anchor = format!("150:{}", read["lines"][149]["hash"].as_str().unwrap());
+        let patch = format!("SWAP {anchor}:\n+replaced line");
+
+        // Compact dry-run: diff rows only — must not contain untouched lines.
+        let preview = call_tool(
+            "patch",
+            &json!({"file": file, "patch": patch, "dry_run": true}),
+        )
+        .unwrap();
+        let text = preview["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("+replaced line"), "{text}");
+        assert!(
+            !text.contains("line 0\n"),
+            "dry-run dumped the file: {text}"
+        );
+        assert!(
+            text.len() < 500,
+            "dry-run output too large: {} bytes",
+            text.len()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+        // JSON dry-run: warnings array is always present.
+        let preview = call_tool(
+            "patch",
+            &json!({"file": file, "patch": patch, "dry_run": true, "json": true}),
+        )
+        .unwrap();
+        let payload: Value =
+            serde_json::from_str(preview["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["dry_run"], json!(true), "{payload}");
+        assert_eq!(payload["edits_applied"], json!(1), "{payload}");
+        assert!(payload["warnings"].is_array(), "{payload}");
+        assert!(payload["diff"].is_array(), "{payload}");
+    }
+
+    #[test]
+    fn patch_json_updated_anchors_use_read_line_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let file = path.to_str().unwrap();
+        let result = call_tool(
+            "patch",
+            &json!({
+                "file": file,
+                "patch": "INS.TAIL:\n+three",
+                "return_updated_anchors": true,
+                "json": true,
+            }),
+        )
+        .unwrap();
+        assert!(result.get("isError").is_none(), "{result}");
+        let payload: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let anchors = payload["updated_anchors"].as_array().unwrap();
+        assert_eq!(anchors.len(), 3, "{payload}");
+        // Same {n, hash, content} shape as `read --json` — not {line, text}.
+        assert_eq!(anchors[0]["n"], json!(1), "{anchors:?}");
+        assert_eq!(anchors[0]["content"], json!("one"), "{anchors:?}");
+        assert!(anchors[0]["hash"].is_string(), "{anchors:?}");
+        assert!(anchors[0].get("line").is_none(), "{anchors:?}");
+        assert!(anchors[0].get("text").is_none(), "{anchors:?}");
+    }
+
+    #[test]
+    fn patch_rejects_file_ops_instead_of_silent_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "content\n").unwrap();
+        let file = path.to_str().unwrap();
+        // `REM`/`MV` file ops were parsed then silently discarded — the
+        // client saw OK while nothing happened.
+        for patch in ["REM", "MV other.txt"] {
+            let result = call_tool("patch", &json!({"file": file, "patch": patch})).unwrap();
+            assert_eq!(result["isError"], json!(true), "{patch}: {result}");
+            assert_eq!(
+                result["structuredContent"]["kind"],
+                json!("PATCH_REJECTED"),
+                "{patch}: {result}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "content\n");
+        }
     }
 }

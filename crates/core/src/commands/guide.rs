@@ -6,7 +6,7 @@ use crate::error::HashlineError;
 
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
-    _cmd: GuideCmd,
+    cmd: GuideCmd,
 ) -> Result<(), HashlineError> {
     let guide = r#"
 ╔══════════════════════════════════════════════════════════════╗
@@ -327,6 +327,16 @@ pub fn run<W: Write, E: Write>(
   • Patch output prefix convention: ~modified +inserted -deleted
 "#;
 
-    writeln!(ctx.stdout(), "{}", guide.trim())?;
+    if cmd.json {
+        // `--json` was previously accepted but ignored — the flag produced
+        // the same plain-text guide. Emit a structured payload instead.
+        let payload = serde_json::json!({
+            "success": true,
+            "guide": guide.trim(),
+        });
+        writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
+    } else {
+        writeln!(ctx.stdout(), "{}", guide.trim())?;
+    }
     Ok(())
 }

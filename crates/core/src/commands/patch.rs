@@ -9,6 +9,31 @@ use crate::normalize::{LineEnding, detect_line_ending, restore_line_endings};
 use crate::parser::parse_patch;
 use crate::types::{BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, InsertMode};
 
+thread_local! {
+    /// Warnings emitted while *applying* edits (boundary-echo repairs,
+    /// delimiter warnings). The CLI prints them to stderr at emit time via
+    /// [`emit_apply_warning`]; embedders that cannot see stderr (the MCP
+    /// server, whose stdout is the JSON-RPC channel) drain them with
+    /// [`take_apply_warnings`] and surface them in the tool result.
+    static APPLY_WARNINGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record an apply-time warning: echo it to stderr for CLI users and queue
+/// it for embedders that drain [`take_apply_warnings`].
+fn emit_apply_warning(warning: &str) {
+    eprintln!("warning: {warning}");
+    APPLY_WARNINGS.with(|sink| sink.borrow_mut().push(warning.to_string()));
+}
+
+/// Drain warnings emitted during patch application since the last call.
+/// Callers that surface apply results to a non-stderr channel (MCP) should
+/// drain once *before* applying (to drop stale entries from a failed apply)
+/// and once after.
+pub fn take_apply_warnings() -> Vec<String> {
+    APPLY_WARNINGS.with(|sink| std::mem::take(&mut *sink.borrow_mut()))
+}
+
 pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: PatchCmd,
@@ -91,7 +116,7 @@ pub fn run<W: Write, E: Write>(
                 "success": true,
                 "file": cmd.file.display().to_string(),
                 "dry_run": true,
-                "edits_applied": edits.len(),
+                "edits_applied": count_operations(&edits),
                 "diff": diff_lines,
             });
             writeln!(ctx.stdout(), "{}", serde_json::to_string(&payload)?)?;
@@ -168,9 +193,6 @@ pub fn run<W: Write, E: Write>(
             use crate::hash::write_short_hash_bytes;
             let mut hash_buf = [0u8; 2];
             for (i, content) in lines.iter().enumerate() {
-                if content.is_empty() && i == lines.len() - 1 && had_trailing_newline {
-                    continue;
-                }
                 let short = crate::hash::short_hash_value_indexed(content, i + 1);
                 write_short_hash_bytes(&mut hash_buf, short);
                 let hash_str = unsafe { std::str::from_utf8_unchecked(&hash_buf) };
@@ -207,16 +229,19 @@ pub fn run<W: Write, E: Write>(
                 .collect();
             let payload = if emit_anchors {
                 // `updated_anchors`: full fresh anchor listing in `read`
-                // JSON shape ({line, hash, text}) so agents can chain edits
+                // JSON shape ({n, hash, content}) so agents can chain edits
                 // without an extra `read` call (issue #119).
                 let updated_anchors: Vec<serde_json::Value> = changeset
                     .updated_anchors
                     .iter()
                     .map(|l| {
+                        // Same shape as `read --json` / `write --json` line
+                        // entries ({n, hash, content}) so agents can consume
+                        // either listing interchangeably.
                         serde_json::json!({
-                            "line": l.line,
+                            "n": l.line,
                             "hash": l.hash,
-                            "text": l.content,
+                            "content": l.content,
                         })
                     })
                     .collect();
@@ -338,7 +363,7 @@ fn resolve_patch_content(patch: &str) -> Result<String, HashlineError> {
 /// path that correctly handles insertions and deletions that shift
 /// subsequent line indices. Loosely follows `diff -u` style but omits
 /// the timestamp header.
-fn format_diff(original: &str, final_text: &str) -> Vec<String> {
+pub(crate) fn format_diff(original: &str, final_text: &str) -> Vec<String> {
     let left: Vec<&str> = if original.is_empty() {
         vec![]
     } else {
@@ -790,7 +815,7 @@ pub fn apply_edits_with_clipboard(
                         end_l,
                         entries,
                     ) {
-                        eprintln!("warning: {warning}");
+                        emit_apply_warning(&warning);
                         replacement_texts = repaired;
                     } else {
                         let issues = crate::apply::detect_boundary_issues(
@@ -800,7 +825,7 @@ pub fn apply_edits_with_clipboard(
                             entries,
                         );
                         for issue in &issues {
-                            eprintln!("warning: {issue}");
+                            emit_apply_warning(issue);
                         }
                     }
                 }
@@ -2707,8 +2732,8 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         let anchors = v.get("updated_anchors").expect("{v}");
         assert_eq!(anchors.as_array().unwrap().len(), 2, "{v}");
-        assert_eq!(anchors[1]["line"], 2);
-        assert_eq!(anchors[1]["text"], "replaced");
+        assert_eq!(anchors[1]["n"], 2);
+        assert_eq!(anchors[1]["content"], "replaced");
         assert!(anchors[1]["hash"].as_str().unwrap().len() == 2);
     }
 
