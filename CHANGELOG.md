@@ -12,6 +12,22 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 > path fails with `ERR TARGET_EXISTS`). The dedicated `hashline remove` /
 > `hashline rename` commands remain available.
 
+## [v0.9.24] - 2026-11-10
+
+Follow-up hardening batch on top of the v0.9.23 audit remediation.
+
+### Security & daemon
+- **`hashline serve --http` now requires bearer-token authentication** and hardens HTTP request handling.
+- MCP/serve parity fixes: CLI guard parity, `--pid-file` handling, Unix socket unlink on shutdown, and signal-safe atomics.
+
+### Write safety
+- File writes hardened: permissions, symlink handling, drift detection, and EOL preservation.
+- `--safe` temp-file sweep now only removes hashline-owned `.hashline.tmp.*` files, leaving foreign temp files untouched.
+- `write` accepts `-` for stdin content; final-line newline and related cleanup-batch fixes.
+
+### Anchor integrity
+- Malformed double-anchor operations are rejected, and hashless anchors produce a warning.
+
 ## [v0.9.23] - 2026-11-09
 
 Comprehensive audit remediation (~50-agent audit → 30 tracked fixes → independent verification swarm). Highlights below; full audit report in repo history.
