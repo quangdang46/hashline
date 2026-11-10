@@ -2,19 +2,22 @@ use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::time::Duration;
 
 use serde_json::json;
 
-// Mutable statics used by the SIGINT/SIGTERM/SIGHUP cleanup handler.
-// They are only written once during daemon startup and read by async
-// signal handlers, so plain globals are sufficient.
+// Paths the SIGINT/SIGTERM/SIGHUP cleanup handler unlinks. Written once
+// during daemon startup as leaked CStrings (the handler cannot borrow the
+// stack) and read via atomic loads — signal-safe and free of `static mut`
+// (bd-mcp-serve-parity-batch-nh8w).
 #[cfg(unix)]
-static mut CLEANUP_SOCKET: *const libc::c_char = std::ptr::null();
+static CLEANUP_SOCKET: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg(unix)]
-static mut CLEANUP_PID: *const libc::c_char = std::ptr::null();
+static CLEANUP_PID: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
 
 use crate::cli::ServeCmd;
 use crate::context::CommandContext;
@@ -46,6 +49,46 @@ pub fn default_daemon_socket() -> PathBuf {
 // the header automatically. Requiring `Content-Type: application/json`
 // forces browsers into a CORS preflight they cannot satisfy, and any
 // non-empty `Origin` header is rejected outright.
+
+/// Remove `path` only when it is actually a socket — i.e. a stale daemon
+/// socket left by a killed process. A regular file or symlink squatting on
+/// the socket path is NOT ours to delete (bd-mcp-serve-parity-batch-nh8w;
+/// the old `exists() → remove_file` would unlink any file there).
+fn remove_stale_socket(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let is_socket = std::fs::symlink_metadata(path)
+            .map(|m| m.file_type().is_socket())
+            .unwrap_or(false);
+        if is_socket {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // No socket file type to probe off-Unix; existence is the best
+        // signal available (the platform has no Unix sockets anyway).
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Write the daemon PID to `path` — best-effort (a failure warns but does
+/// not stop the daemon). Called in EVERY serve mode, not just `--detach`:
+/// the pid file is how operators find and signal the running daemon, and
+/// the signal handler removes it again on shutdown
+/// (bd-mcp-serve-parity-batch-nh8w).
+fn write_pid_file(path: Option<&PathBuf>) {
+    let Some(pid_path) = path else { return };
+    if let Err(e) = std::fs::write(pid_path, std::process::id().to_string()) {
+        eprintln!(
+            "warning: failed to write PID file {}: {e}",
+            pid_path.display()
+        );
+    }
+}
 
 /// Persisted bearer-token path under the hashline home dir.
 pub fn http_token_path() -> PathBuf {
@@ -387,10 +430,9 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
-    // Clean up old socket file if it exists
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path).ok();
-    }
+    // Clean up a stale socket file if one exists — only when it is
+    // actually a socket; never unlink an unrelated file at that path.
+    remove_stale_socket(&socket_path);
 
     // --detach: fork to background (Unix only)
     if detach {
@@ -422,10 +464,8 @@ pub fn run<W: Write, E: Write>(
         }
     }
 
-    // Remove old socket file again after potential fork
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path).ok();
-    }
+    // Remove a stale socket file again after potential fork.
+    remove_stale_socket(&socket_path);
 
     // Install signal handlers so SIGINT/SIGTERM/SIGHUP clean up the
     // lock + pid + socket files. Without this, an aborted daemon
@@ -438,12 +478,15 @@ pub fn run<W: Write, E: Write>(
             // We are in a signal handler: only async-signal-safe operations.
             // `_exit` is safe and prevents destructors; the lock file is
             // released by the kernel when the process exits, so we only
-            // need to remove the explicit pid and socket files. We use
-            // unlink via a fixed path that the helper sets below.
+            // need to remove the explicit pid and socket files.
             unsafe {
-                libc::unlink(CLEANUP_SOCKET);
-                if !CLEANUP_PID.is_null() {
-                    libc::unlink(CLEANUP_PID);
+                let sock = CLEANUP_SOCKET.load(Ordering::Relaxed);
+                if !sock.is_null() {
+                    libc::unlink(sock);
+                }
+                let pid = CLEANUP_PID.load(Ordering::Relaxed);
+                if !pid.is_null() {
+                    libc::unlink(pid);
                 }
                 libc::_exit(0);
             }
@@ -456,25 +499,24 @@ pub fn run<W: Write, E: Write>(
         let pid_c = pid_file
             .as_ref()
             .and_then(|p| std::ffi::CString::new(p.to_string_lossy().as_bytes()).ok());
+        CLEANUP_SOCKET.store(sock_c.into_raw(), Ordering::Relaxed);
+        CLEANUP_PID.store(
+            pid_c.map_or(std::ptr::null_mut(), |c| c.into_raw()),
+            Ordering::Relaxed,
+        );
         unsafe {
-            CLEANUP_SOCKET = sock_c.into_raw();
-            CLEANUP_PID = pid_c
-                .map(|c| c.into_raw() as *const _)
-                .unwrap_or(std::ptr::null());
-            {
-                libc::signal(
-                    libc::SIGINT,
-                    cleanup_signal as *const () as libc::sighandler_t,
-                );
-                libc::signal(
-                    libc::SIGTERM,
-                    cleanup_signal as *const () as libc::sighandler_t,
-                );
-                libc::signal(
-                    libc::SIGHUP,
-                    cleanup_signal as *const () as libc::sighandler_t,
-                );
-            }
+            libc::signal(
+                libc::SIGINT,
+                cleanup_signal as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGTERM,
+                cleanup_signal as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGHUP,
+                cleanup_signal as *const () as libc::sighandler_t,
+            );
         }
     }
 
@@ -507,6 +549,10 @@ pub fn run<W: Write, E: Write>(
         })?;
 
         writeln!(ctx.stderr(), "hashline daemon listening on http://{addr}")?;
+        // Record the PID in every serve mode (not just --detach) so
+        // operators/agents can find and signal the daemon; the signal
+        // handler removes the file again on shutdown.
+        write_pid_file(pid_file.as_ref());
 
         for stream in listener.incoming() {
             match stream {
@@ -545,6 +591,8 @@ pub fn run<W: Write, E: Write>(
                 "hashline daemon listening on {}",
                 socket_path.display()
             )?;
+            // Record the PID in every serve mode (not just --detach).
+            write_pid_file(pid_file.as_ref());
 
             for stream in listener.incoming() {
                 match stream {

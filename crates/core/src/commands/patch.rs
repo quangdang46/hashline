@@ -730,14 +730,25 @@ pub fn apply_edits_pure(
     path: &Path,
 ) -> Result<crate::types::ApplyResult, HashlineError> {
     let mut lines: Vec<String> = split_normalized(text);
-    let entries: Vec<crate::document::LineEntry> = lines
-        .iter()
-        .enumerate()
-        .map(|(i, s)| crate::document::LineEntry {
-            content: s.clone(),
-            short_hash: crate::hash::short_hash_value_indexed(s, i + 1),
-        })
-        .collect();
+    // Build entries exactly like `FileContent::lines_with_hashes`: keep the
+    // phantom trailing empty segment (`text.split('\n')` without the
+    // `split_normalized` drop). The applier derives `visible_lines` by
+    // trimming ONE trailing empty entry — with the phantom kept, `a\n\n`
+    // yields 2 visible lines here exactly as it does on the read/patch
+    // path. Without it the pure path saw 1 visible line, rejected anchors
+    // the real path accepts, and recovery replay silently returned `None`
+    // (bd-mcp-serve-parity-batch-nh8w).
+    let entries: Vec<crate::document::LineEntry> = if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split('\n')
+            .enumerate()
+            .map(|(i, s)| crate::document::LineEntry {
+                content: s.to_string(),
+                short_hash: crate::hash::short_hash_value_indexed(s, i + 1),
+            })
+            .collect()
+    };
 
     apply_edits(&mut lines, &entries, path, edits)?;
 
@@ -749,12 +760,32 @@ pub fn apply_edits_pure(
         lines.join("\n")
     };
 
+    // Surface apply-time warnings (boundary-echo repairs, delimiter notes)
+    // and the first changed line instead of dropping them — recovery
+    // consumes both fields. `block_resolutions` stays empty: no producer
+    // populates it on any apply path today.
     Ok(crate::types::ApplyResult {
+        first_changed_line: first_changed_line_between(text, &result),
         text: result,
-        first_changed_line: None,
-        warnings: Vec::new(),
+        warnings: take_apply_warnings(),
         block_resolutions: Vec::new(),
     })
+}
+
+/// First 1-indexed line at which `before` and `after` diverge, or `None`
+/// when they are identical. Mirrors `recovery::find_first_changed_line`.
+fn first_changed_line_between(before: &str, after: &str) -> Option<usize> {
+    if before == after {
+        return None;
+    }
+    let a: Vec<&str> = before.split('\n').collect();
+    let b: Vec<&str> = after.split('\n').collect();
+    for i in 0..a.len().max(b.len()) {
+        if a.get(i) != b.get(i) {
+            return Some(i + 1);
+        }
+    }
+    None
 }
 
 /// True when any edit in the patch carries a hash-qualified anchor
@@ -4031,5 +4062,32 @@ mod tests {
             assert!(out.contains(&format!("#{}", fc.hash)), "{name}: {out}");
             assert_eq!(fc.hash, crate::hash::compute_file_hash(expected_norm));
         }
+    }
+
+    // ---- apply_edits_pure: phantom trailing line (bd-mcp-serve-parity) ----
+
+    #[test]
+    fn apply_pure_trailing_blank_line_is_addressable() {
+        // `a\n\n` has TWO visible lines — line 2 is a real empty line. The
+        // pure path used to build entries without the phantom trailing
+        // segment, saw only 1 visible line, and rejected the anchor that
+        // the read/patch path accepts — recovery replay then silently
+        // returned None.
+        let (edits, _w, _f, _a) = parse_patch("DEL 2");
+        let r = super::apply_edits_pure("a\n\n", &edits, std::path::Path::new("t.txt"))
+            .expect("line 2 must be addressable");
+        assert_eq!(r.text, "a\n");
+        // The raw-split diff reports the divergence at the phantom third
+        // segment; what matters is that a change is reported at all.
+        assert!(r.first_changed_line.is_some());
+    }
+
+    #[test]
+    fn apply_pure_reports_first_changed_line() {
+        let (edits, _w, _f, _a) = parse_patch("SWAP 2:\n+x");
+        let r =
+            super::apply_edits_pure("a\nb\nc\n", &edits, std::path::Path::new("t.txt")).unwrap();
+        assert_eq!(r.text, "a\nx\nc\n");
+        assert_eq!(r.first_changed_line, Some(2));
     }
 }

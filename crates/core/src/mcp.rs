@@ -457,10 +457,10 @@ fn handle_find_block(file: &str, anchor_str: &str, json: bool) -> ToolOutput {
 
 fn handle_remove_file(file: &str, json: bool) -> ToolOutput {
     let path = std::path::Path::new(file);
-    if !path.exists() {
-        return err_output(&HashlineError::FileNotFound {
-            path: file.to_string(),
-        });
+    // Same guards as CLI `remove` (bd-mcp-serve-parity-batch-nh8w):
+    // device/reserved paths, existence, directory rejection.
+    if let Err(e) = crate::commands::common::validate_remove_path(path) {
+        return err_output(&e);
     }
     match std::fs::remove_file(path) {
         Ok(_) => {
@@ -485,15 +485,12 @@ fn handle_remove_file(file: &str, json: bool) -> ToolOutput {
 fn handle_rename_file(src: &str, dst: &str, json: bool) -> ToolOutput {
     let src_path = std::path::Path::new(src);
     let dst_path = std::path::Path::new(dst);
-    if !src_path.exists() {
-        return err_output(&HashlineError::FileNotFound {
-            path: src.to_string(),
-        });
-    }
-    if dst_path.exists() {
-        return err_output(&HashlineError::TargetExists {
-            path: dst.to_string(),
-        });
+    // Same guards as CLI `rename` without --force (bd-mcp-serve-parity-
+    // batch-nh8w): device/reserved paths, source must be a regular file
+    // (directories rejected — fs::rename would move whole trees on Unix),
+    // src/dst must not alias, destination must not exist.
+    if let Err(e) = crate::commands::common::validate_rename_paths(src_path, dst_path, false) {
+        return err_output(&e);
     }
     if let Some(parent) = dst_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -1711,5 +1708,58 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "content\n");
         }
+    }
+
+    // ---- remove_file/rename_file CLI guard parity (bd-mcp-serve-parity) --
+
+    #[test]
+    fn remove_file_rejects_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("adir");
+        std::fs::create_dir(&target).unwrap();
+        let out = handle_remove_file(target.to_str().unwrap(), true);
+        assert!(out.text.starts_with("Error:"), "{}", out.text);
+        assert!(target.is_dir(), "directory must survive");
+    }
+
+    #[test]
+    fn rename_file_applies_cli_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        // Directory source: fs::rename would move the whole tree on Unix.
+        let src_dir = dir.path().join("srcdir");
+        std::fs::create_dir(&src_dir).unwrap();
+        let out = handle_rename_file(
+            src_dir.to_str().unwrap(),
+            dir.path().join("dst").to_str().unwrap(),
+            true,
+        );
+        assert!(out.text.starts_with("Error:"), "{}", out.text);
+        assert!(src_dir.is_dir());
+
+        // Existing destination: refused (no --force on the MCP tool).
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        std::fs::write(&src, "a").unwrap();
+        std::fs::write(&dst, "b").unwrap();
+        let out = handle_rename_file(src.to_str().unwrap(), dst.to_str().unwrap(), true);
+        assert!(out.text.starts_with("Error:"), "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "b");
+
+        // src == dst alias: refused before anything destructive.
+        let out = handle_rename_file(
+            src.to_str().unwrap(),
+            dir.path().join(".").join("a.txt").to_str().unwrap(),
+            true,
+        );
+        assert!(out.text.starts_with("Error:"), "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "a");
+
+        // Happy path still works, including parent creation.
+        let dst2 = dir.path().join("sub").join("dir").join("c.txt");
+        let out = handle_rename_file(src.to_str().unwrap(), dst2.to_str().unwrap(), false);
+        assert!(out.text.starts_with("OK"), "{}", out.text);
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst2).unwrap(), "a");
     }
 }

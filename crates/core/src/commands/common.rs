@@ -223,6 +223,89 @@ fn sweep_stale_temp_files(dir: &Path) {
     }
 }
 
+/// Pre-flight validation shared by CLI `remove` and MCP `remove_file`
+/// (bd-mcp-serve-parity-batch-nh8w): reject device/reserved paths, require
+/// the path to exist, and refuse directories — the MCP tool must not be a
+/// back door around the CLI's guards.
+pub fn validate_remove_path(path: &Path) -> Result<(), HashlineError> {
+    reject_special_write_path(path)?;
+    // `symlink_metadata`, not `metadata`: a symlink is removable even when
+    // it points at a directory — only a real directory is refused.
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Err(HashlineError::IsDirectory {
+            path: path.display().to_string(),
+        }),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(HashlineError::FileNotFound {
+            path: path.display().to_string(),
+        }),
+        Err(e) => Err(HashlineError::Io(e)),
+    }
+}
+
+/// Pre-flight validation shared by CLI `rename` and MCP `rename_file`
+/// (bd-mcp-serve-parity-batch-nh8w): device/reserved paths, source must be
+/// an existing regular file (never a directory — `rename` must not move a
+/// tree), src/dst must not resolve to the same file, and the destination
+/// must not exist unless `overwrite_ok` (CLI `--force`). The caller still
+/// performs parent creation and the actual `fs::rename`; on Unix `--force`
+/// needs no pre-remove because `rename(2)` replaces atomically.
+pub fn validate_rename_paths(
+    src: &Path,
+    dst: &Path,
+    overwrite_ok: bool,
+) -> Result<(), HashlineError> {
+    reject_special_write_path(src)?;
+    reject_special_write_path(dst)?;
+
+    if !src.exists() {
+        return Err(HashlineError::FileNotFound {
+            path: src.display().to_string(),
+        });
+    }
+    // `metadata` follows symlinks, so a symlink to a regular file is still
+    // allowed while directories and junctions (which report as dirs) are
+    // refused.
+    let src_meta = fs::metadata(src)?;
+    if src_meta.is_dir() {
+        return Err(HashlineError::IsDirectory {
+            path: src.display().to_string(),
+        });
+    }
+    if !src_meta.is_file() {
+        return Err(HashlineError::InvalidPath {
+            path: src.display().to_string(),
+            reason: "source is not a regular file".into(),
+        });
+    }
+
+    // Guard against src == dst BEFORE any destructive step. Aliases like
+    // `./f`, `dir/../f`, case variants, and Windows trailing dot/space
+    // names all resolve to the same file; without this check `--force`
+    // would delete the source and then fail the rename.
+    if paths_refer_to_same_file(src, dst) {
+        return Err(HashlineError::SameFile {
+            path: src.display().to_string(),
+        });
+    }
+
+    if dst.exists() {
+        // A directory destination can never be replaced by rename; fail
+        // cleanly instead of surfacing a remove_file I/O error.
+        if fs::metadata(dst).map(|m| m.is_dir()).unwrap_or(false) {
+            return Err(HashlineError::IsDirectory {
+                path: dst.display().to_string(),
+            });
+        }
+        if !overwrite_ok {
+            return Err(HashlineError::TargetExists {
+                path: dst.display().to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }

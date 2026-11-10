@@ -8,15 +8,9 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: RemoveCmd,
 ) -> Result<(), HashlineError> {
-    // 0. Reject device/reserved names before `exists()` can block on them.
-    crate::commands::common::reject_special_write_path(&cmd.file)?;
-
-    // 1. Check file exists
-    if !cmd.file.exists() {
-        return Err(HashlineError::FileNotFound {
-            path: cmd.file.display().to_string(),
-        });
-    }
+    // Shared pre-flight guards (also used by MCP `remove_file`):
+    // device/reserved paths, existence, directory rejection.
+    crate::commands::common::validate_remove_path(&cmd.file)?;
 
     // 2. Remove the file
     std::fs::remove_file(&cmd.file)?;

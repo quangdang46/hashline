@@ -8,63 +8,19 @@ pub fn run<W: Write, E: Write>(
     ctx: &mut CommandContext<'_, W, E>,
     cmd: RenameCmd,
 ) -> Result<(), HashlineError> {
-    // 0. Reject device/reserved names before `exists()` can block on them.
-    crate::commands::common::reject_special_write_path(&cmd.src)?;
-    crate::commands::common::reject_special_write_path(&cmd.dst)?;
+    // 0-4. Shared pre-flight guards (also used by MCP `rename_file`):
+    //     device/reserved paths, source must be an existing regular file,
+    //     src/dst must not alias, destination handling per --force.
+    crate::commands::common::validate_rename_paths(&cmd.src, &cmd.dst, cmd.force)?;
 
-    // 1. Check source exists
-    if !cmd.src.exists() {
-        return Err(HashlineError::FileNotFound {
-            path: cmd.src.display().to_string(),
-        });
-    }
-
-    // 2. Reject directories and other non-regular files up front.
-    //    `std::fs::metadata` follows symlinks, so a symlink to a regular
-    //    file is still allowed while directories and junctions (which
-    //    report as dirs) are refused — `rename` must never move a tree.
-    let src_meta = std::fs::metadata(&cmd.src)?;
-    if src_meta.is_dir() {
-        return Err(HashlineError::IsDirectory {
-            path: cmd.src.display().to_string(),
-        });
-    }
-    if !src_meta.is_file() {
-        return Err(HashlineError::InvalidPath {
-            path: cmd.src.display().to_string(),
-            reason: "source is not a regular file".into(),
-        });
-    }
-
-    // 3. Guard against src == dst BEFORE any destructive step. Aliases
-    //    like `./f`, `dir/../f`, case variants, and Windows trailing
-    //    dot/space names all resolve to the same file; without this check
-    //    `--force` would delete the source and then fail the rename.
-    if crate::commands::common::paths_refer_to_same_file(&cmd.src, &cmd.dst) {
-        return Err(HashlineError::SameFile {
-            path: cmd.src.display().to_string(),
-        });
-    }
-
-    // 4. Check destination does not already exist (unless --force)
-    if cmd.dst.exists() {
-        // A directory destination can never be replaced by rename;
-        // fail cleanly instead of surfacing a remove_file I/O error.
-        if std::fs::metadata(&cmd.dst)
-            .map(|m| m.is_dir())
-            .unwrap_or(false)
-        {
-            return Err(HashlineError::IsDirectory {
-                path: cmd.dst.display().to_string(),
-            });
-        }
-        if cmd.force {
-            std::fs::remove_file(&cmd.dst)?;
-        } else {
-            return Err(HashlineError::TargetExists {
-                path: cmd.dst.display().to_string(),
-            });
-        }
+    // 4b. --force with an existing destination. On Unix, rename(2) already
+    //     replaces the destination atomically — a pre-remove would only
+    //     widen the crash window where BOTH files are gone
+    //     (bd-mcp-serve-parity-batch-nh8w). Windows still needs the
+    //     remove-first dance because MoveFile refuses existing targets.
+    #[cfg(not(unix))]
+    if cmd.force && cmd.dst.exists() {
+        std::fs::remove_file(&cmd.dst)?;
     }
 
     // 5. Create parent directories for destination if needed
