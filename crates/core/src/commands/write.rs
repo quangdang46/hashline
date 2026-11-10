@@ -15,6 +15,20 @@ pub fn run<W: Write, E: Write>(
     //    block forever opening the device.
     crate::commands::common::reject_special_write_path(&cmd.file)?;
 
+    // 0b. `write <file> -` reads content from stdin — same convention as
+    //     `patch <file> -` (bd-hashline-cleanup-batch-uv54). Previously a
+    //     literal "-" was written as the file's content.
+    let content = if cmd.content == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(HashlineError::Io)?;
+        buf
+    } else {
+        cmd.content
+    };
+
     // 1. Check file exists — refuse unless --force
     if cmd.file.exists() && !cmd.force {
         return Err(HashlineError::TargetExists {
@@ -23,7 +37,7 @@ pub fn run<W: Write, E: Write>(
     }
 
     // 2. Normalize content (LF line endings, strip BOM)
-    let normalized = normalize::normalize_to_lf(&cmd.content);
+    let normalized = normalize::normalize_to_lf(&content);
     let bom_result = normalize::strip_bom(&normalized);
     let write_content = bom_result.text;
 

@@ -948,9 +948,7 @@ mod tests {
             pid_file: None,
             token: None,
         })));
-        assert!(!notice_eligible(&Commands::Mcp(McpCmd {
-            proxy_to_daemon: false,
-        })));
+        assert!(!notice_eligible(&Commands::Mcp(McpCmd {})));
         assert!(!notice_eligible(&Commands::Update(UpdateCmd {
             check: false,
             version: None,

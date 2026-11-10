@@ -605,6 +605,7 @@ fn handle_patch(
     }
 
     let (mut lines, _) = split_text(&fc.normalized);
+    let orig_line_count = lines.len();
 
     let entries = fc.lines_with_hashes();
     // Drain stale apply warnings from any earlier failed apply, then collect
@@ -647,7 +648,13 @@ fn handle_patch(
         }
     }
 
-    let result = join_lines(&lines, fc.trailing_newline);
+    let trailing_newline = crate::commands::patch::effective_trailing_newline(
+        &edits,
+        orig_line_count,
+        fc.trailing_newline,
+        !lines.is_empty(),
+    );
+    let result = join_lines(&lines, trailing_newline);
     let line_ending = detect_line_ending(&fc.raw);
     // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach the
     // BOM `FileContent::load` stripped — same write-back contract as the

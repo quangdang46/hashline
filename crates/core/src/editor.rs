@@ -322,9 +322,13 @@ impl Editor {
         // unavailable or ambiguous, the original StaleAnchor error is
         // surfaced.
         let mut lines: Vec<String> = split_normalized(text);
+        let orig_line_count = lines.len();
         let entries = fc.lines_with_hashes();
         let had_trailing_newline = fc.trailing_newline;
         let mut all_warnings = warnings;
+        // Set when snapshot recovery supplies the post-edit text — its own
+        // trailing-newline state wins over the live file's flag.
+        let mut recovered_trailing: Option<bool> = None;
 
         let apply_result =
             crate::commands::patch::apply_edits(&mut lines, &entries, path, &resolved);
@@ -372,6 +376,7 @@ impl Editor {
                         // library consumers never saw the stderr copy.
                         all_warnings.extend(recovered.warnings);
                         // Rejoin the recovered text (LF-normalized already).
+                        recovered_trailing = Some(recovered.text.ends_with('\n'));
                         recovered_lines = Some(split_normalized(&recovered.text));
                         break;
                     }
@@ -388,8 +393,19 @@ impl Editor {
             apply_result?;
         }
 
-        // Rejoin (LF-normalized)
-        let result = if had_trailing_newline && !lines.is_empty() {
+        // Rejoin (LF-normalized). Deleting the final unterminated line
+        // promotes the new last line to terminated — same rule as the
+        // CLI/MCP patch paths (bd-hashline-cleanup-batch-uv54).
+        let trailing_newline = match recovered_trailing {
+            Some(t) => t,
+            None => crate::commands::patch::effective_trailing_newline(
+                &resolved,
+                orig_line_count,
+                had_trailing_newline,
+                !lines.is_empty(),
+            ),
+        };
+        let result = if trailing_newline && !lines.is_empty() {
             lines.join("\n") + "\n"
         } else if lines.is_empty() {
             String::new()
@@ -519,11 +535,18 @@ impl Editor {
             .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
         let mut lines: Vec<String> = split_normalized(&work);
+        let orig_line_count = lines.len();
         let path_obj = std::path::Path::new(path);
 
         crate::commands::patch::apply_edits(&mut lines, &entries, path_obj, &resolved)?;
 
-        let result = join_lines(&lines, had_trailing_newline);
+        let trailing_newline = crate::commands::patch::effective_trailing_newline(
+            &resolved,
+            orig_line_count,
+            had_trailing_newline,
+            !lines.is_empty(),
+        );
+        let result = join_lines(&lines, trailing_newline);
         // Hash over the LF-normalized text — the same contract
         // `FileContent::load` uses — then restore the caller's dominant
         // line ending (LF/CRLF/CR) and BOM so the input's encoding
@@ -565,11 +588,18 @@ impl Editor {
             .map_err(|err| block_resolve_error(err, Path::new(path)))?;
 
         let mut lines: Vec<String> = split_normalized(&work);
+        let orig_line_count = lines.len();
         let path_obj = std::path::Path::new(path);
 
         crate::commands::patch::apply_edits(&mut lines, &entries, path_obj, &resolved)?;
 
-        let result = join_lines(&lines, had_trailing_newline);
+        let trailing_newline = crate::commands::patch::effective_trailing_newline(
+            &resolved,
+            orig_line_count,
+            had_trailing_newline,
+            !lines.is_empty(),
+        );
+        let result = join_lines(&lines, trailing_newline);
         let new_hash = hash::compute_file_hash(&result);
         let mut result = restore_dominant_ending(&result, line_ending);
         if !bom.is_empty() {

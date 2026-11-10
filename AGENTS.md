@@ -86,9 +86,9 @@ hashline rename old.txt new.txt
 | `hashline read <file> --json` | Machine-readable JSON output |
 | `hashline patch <file> <patch>` | Apply patch operations (see below) |
 | `hashline find-block <file> <anchor>` | Find enclosing brace/indent block around anchor |
-| `hashline write <file> <content>` | Create file (overwrite with `--force`) |
-| `hashline remove <file>` | Delete a file |
-| `hashline rename <old> <new>` | Rename/move a file (`--force` overwrites destination) |
+| `hashline write <file> <content>` | Create file (overwrite with `--force`); `<content>` of `-` reads stdin |
+| `hashline remove <file>` | Delete a regular file (refuses directories) |
+| `hashline rename <old> <new>` | Rename/move a file (`--force` overwrites destination; creates missing parent dirs — `write` does not) |
 | `hashline guide` | Interactive user guide (`--json` flag accepted) |
 | `hashline serve` | Daemon mode over Unix socket or HTTP |
 | `hashline mcp` | MCP server over stdio (6 tools) |
@@ -182,7 +182,6 @@ PUT @tmp <12
 | `--pid-file` | `serve` | Write PID to file |
 | `--socket` | `serve` | Unix socket path (default ~/.hashline/daemon.sock) |
 | `--http` | `serve` | HTTP port instead of Unix socket |
-| `--proxy-to-daemon` | `mcp` | Proxy MCP requests to running daemon |
 | `--check` | `update` | Only compare installed vs latest release; do not install |
 | `--version <v>` | `update` | Install a specific release version instead of the latest |
 
@@ -190,7 +189,7 @@ PUT @tmp <12
 
 ### Self-Update
 
-- `hashline update` fetches the latest GitHub Release for the platform, verifies the `.sha256` checksum, and atomically replaces the running binary.
+- `hashline update` fetches the latest GitHub Release for the platform, verifies the `.sha256` checksum when the release publishes one (a missing checksum asset is not fatal — the download itself is TLS-authenticated), and atomically replaces the running binary.
 - **Update notice:** once per 24h (cached in `~/.hashline/update-check.json`), successful interactive commands print `NOTE update available: latest=<v> installed=<v> (run \`hashline update\`)` to stderr — only when stderr is a terminal, so piped/agent output stays byte-identical.
 - **Disable the notice:** set `HASHLINE_NO_UPDATE_CHECK=1`. **Mirror/test override:** set `HASHLINE_RELEASES_BASE_URL` to redirect all release lookups.
 
@@ -297,7 +296,7 @@ Note the two line-entry shapes: `changed[]` entries use `{"type","line","hash","
 
 ### MCP Server
 
-`hashline mcp` runs a stdio JSON-RPC MCP server exposing exactly 6 tools: `read`, `patch`, `write`, `find_block`, `remove_file`, `rename_file`. The `initialize` handshake returns `instructions` with the authoritative usage rules (read→patch→verify, `return_updated_anchors` for chaining). `hashline mcp --proxy-to-daemon` forwards requests to a running `hashline serve` daemon. There are no other MCP tools — do not call `ensure_project`, `send_message`, or similar; they do not exist here.
+`hashline mcp` runs a stdio JSON-RPC MCP server exposing exactly 6 tools: `read`, `patch`, `write`, `find_block`, `remove_file`, `rename_file`. The `initialize` handshake returns `instructions` with the authoritative usage rules (read→patch→verify, `return_updated_anchors` for chaining). There are no other MCP tools — do not call `ensure_project`, `send_message`, or similar; they do not exist here. (There is no `--proxy-to-daemon` flag; CLI commands reach a daemon via `HASHLINE_URL`/`HASHLINE_SOCKET` instead.)
 
 ### Rules for Agents (MANDATORY)
 
@@ -506,7 +505,7 @@ cass robot-docs guide
 - Filter by agent with `--agent`
 - Use `--days N` to limit to recent history
 
-stdout is data-only, stderr is diagnostics; exit code 0 means success.
+stdout is data-only, stderr is diagnostics; exit code 0 means success, 1 a command error (including `*** Abort` → `ERR PATCH_REJECTED`), 2 a usage/argument error (clap).
 
 Treat cass as a way to avoid re-solving problems other agents already handled.
 

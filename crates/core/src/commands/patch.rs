@@ -110,6 +110,7 @@ pub fn run<W: Write, E: Write>(
     // produces when a file ends with '\n' — we add it back on join.
     let mut lines: Vec<String> = split_normalized(text);
     let had_trailing_newline = fc.trailing_newline;
+    let orig_line_count = lines.len();
 
     // Per-line short hashes are only read when an edit carries an
     // `expected_hash` (`N:hh` anchors); bare `N` anchors never consult them.
@@ -145,7 +146,16 @@ pub fn run<W: Write, E: Write>(
         )?)
     };
 
-    let result = if had_trailing_newline && !lines.is_empty() {
+    // Deleting the final unterminated line leaves the previous line
+    // terminated — recompute the flag for BOTH the changeset hash (inside
+    // apply_edits_tracked) and this join so they stay consistent.
+    let trailing_newline = effective_trailing_newline(
+        &edits,
+        orig_line_count,
+        had_trailing_newline,
+        !lines.is_empty(),
+    );
+    let result = if trailing_newline && !lines.is_empty() {
         lines.join("\n") + "\n"
     } else if lines.is_empty() {
         String::new()
@@ -703,6 +713,38 @@ pub(crate) fn format_diff(original: &str, final_text: &str) -> Vec<String> {
     out
 }
 
+/// Effective trailing-newline flag for the post-edit join. Deleting the
+/// final UNTERMINATED line promotes the new last line to terminated:
+/// `x\ny` + `DEL 2` must yield `x\n` (line 1 kept its `\n` separator),
+/// not `x` — bd-hashline-cleanup-batch-uv54. Any op that writes new
+/// content at the tail (insert/paste/block) keeps the file unterminated.
+pub fn effective_trailing_newline(
+    edits: &[Edit],
+    orig_line_count: usize,
+    had_trailing_newline: bool,
+    result_nonempty: bool,
+) -> bool {
+    if had_trailing_newline || !result_nonempty {
+        return had_trailing_newline;
+    }
+    let last_deleted = edits.iter().any(|e| match e {
+        Edit::Delete { anchor, .. } => anchor.line == orig_line_count,
+        Edit::Cut { anchor, end, .. } => {
+            anchor.line == orig_line_count || end.line == orig_line_count
+        }
+        _ => false,
+    });
+    if !last_deleted {
+        return false;
+    }
+    !edits.iter().any(|e| {
+        matches!(
+            e,
+            Edit::Insert { .. } | Edit::Paste { .. } | Edit::Block { .. }
+        )
+    })
+}
+
 fn split_normalized(text: &str) -> Vec<String> {
     if text.is_empty() {
         return Vec::new();
@@ -730,6 +772,7 @@ pub fn apply_edits_pure(
     path: &Path,
 ) -> Result<crate::types::ApplyResult, HashlineError> {
     let mut lines: Vec<String> = split_normalized(text);
+    let orig_line_count = lines.len();
     // Build entries exactly like `FileContent::lines_with_hashes`: keep the
     // phantom trailing empty segment (`text.split('\n')` without the
     // `split_normalized` drop). The applier derives `visible_lines` by
@@ -752,7 +795,13 @@ pub fn apply_edits_pure(
 
     apply_edits(&mut lines, &entries, path, edits)?;
 
-    let result = if text.ends_with('\n') && !lines.is_empty() {
+    let trailing_newline = effective_trailing_newline(
+        edits,
+        orig_line_count,
+        text.ends_with('\n'),
+        !lines.is_empty(),
+    );
+    let result = if trailing_newline && !lines.is_empty() {
         lines.join("\n") + "\n"
     } else if lines.is_empty() {
         String::new()
@@ -856,7 +905,12 @@ pub fn apply_edits_tracked(
     trailing_newline: bool,
     want_anchors: bool,
 ) -> Result<ChangeSet, HashlineError> {
+    let orig_line_count = lines.len();
     apply_edits(lines, entries, path, edits)?;
+    // Same trailing-newline promotion the caller's join uses — the
+    // changeset's result-file hash must match what lands on disk.
+    let trailing_newline =
+        effective_trailing_newline(edits, orig_line_count, trailing_newline, !lines.is_empty());
     let changeset = compute_changeset(
         entries,
         lines,
@@ -4089,5 +4143,32 @@ mod tests {
             super::apply_edits_pure("a\nb\nc\n", &edits, std::path::Path::new("t.txt")).unwrap();
         assert_eq!(r.text, "a\nx\nc\n");
         assert_eq!(r.first_changed_line, Some(2));
+    }
+
+    // -- bd-hashline-cleanup-batch-uv54: DEL of final unterminated line ----
+
+    #[test]
+    fn patch_delete_final_unterminated_line_keeps_preceding_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        // `x\ny` has no trailing newline; line 1's `\n` was a terminator,
+        // not a separator — deleting line 2 must leave `x\n`, not `x`.
+        run_patch_on(dir.path(), "nonl.txt", "x\ny", "DEL 2");
+        assert_eq!(std::fs::read(dir.path().join("nonl.txt")).unwrap(), b"x\n");
+    }
+
+    #[test]
+    fn patch_delete_final_unterminated_line_via_pure_path() {
+        let (edits, _w, _f, _a) = parse_patch("DEL 2");
+        let r = super::apply_edits_pure("x\ny", &edits, std::path::Path::new("t.txt")).unwrap();
+        assert_eq!(r.text, "x\n");
+    }
+
+    #[test]
+    fn patch_swap_on_final_unterminated_line_stays_unterminated() {
+        let dir = tempfile::tempdir().unwrap();
+        // A SWAP writes new content at the tail — the file stays
+        // unterminated (only pure deletions promote the terminator).
+        run_patch_on(dir.path(), "swap.txt", "x\ny", "SWAP 2:\n+z");
+        assert_eq!(std::fs::read(dir.path().join("swap.txt")).unwrap(), b"x\nz");
     }
 }

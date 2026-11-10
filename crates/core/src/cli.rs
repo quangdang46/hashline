@@ -125,12 +125,7 @@ pub struct ServeCmd {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(about = "Run as an MCP server over stdio")]
-pub struct McpCmd {
-    /// Unwired flag: the MCP server does not proxy to a running daemon.
-    /// Kept (skipped by clap) for struct-literal callers.
-    #[arg(skip)]
-    pub proxy_to_daemon: bool,
-}
+pub struct McpCmd {}
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
 #[command(about = "Delete a file")]
