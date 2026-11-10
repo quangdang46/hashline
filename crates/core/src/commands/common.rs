@@ -170,15 +170,25 @@ pub fn verify_written_file(path: &Path, expected_len: usize) -> Result<(), Hashl
     Ok(())
 }
 
-/// Temp files created by [`atomic_write_with`] via `NamedTempFile` use a
-/// `.tmp` prefix in the target directory. If the process is killed
-/// (SIGKILL, power loss) they leak. Sweep entries older than
+/// Filename prefix for temp files created by [`atomic_write_with`]. The
+/// prefix is hashline-specific (`.hashline.tmp.`) so the stale-temp sweep
+/// can never mistake another tool's `.tmp*` files for ours — the old
+/// generic `.tmp` prefix deleted unrelated files older than
+/// [`STALE_TEMP_AGE`] in the target directory (bd-temp-sweep-foreign-files-
+/// ihp0).
+const TEMP_PREFIX: &str = ".hashline.tmp.";
+
+/// Temp files created by [`atomic_write_with`] via `NamedTempFile` use the
+/// [`TEMP_PREFIX`] prefix in the target directory. If the process is
+/// killed (SIGKILL, power loss) they leak. Sweep entries older than
 /// [`STALE_TEMP_AGE`] so in-flight writes from concurrent processes —
 /// whose temp files are always fresh — are never touched.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(600);
 
-/// Best-effort removal of stale `.tmp*` files in `dir`. All errors are
-/// ignored: a failed sweep must never fail the write it precedes.
+/// Best-effort removal of stale [`TEMP_PREFIX`]* files in `dir`. Only
+/// files carrying the hashline-specific prefix are candidates — foreign
+/// `.tmp*` files belonging to other tools are never touched. All errors
+/// are ignored: a failed sweep must never fail the write it precedes.
 fn sweep_stale_temp_files(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -191,7 +201,7 @@ fn sweep_stale_temp_files(dir: &Path) {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !name.starts_with(".tmp") {
+        if !name.starts_with(TEMP_PREFIX) {
             continue;
         }
         let Ok(meta) = entry.metadata() else {
@@ -306,11 +316,13 @@ where
     };
     let existing_permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
 
-    // Reclaim `.tmp*` files leaked by previously killed atomic writes
-    // before creating our own temp file in the same directory.
+    // Reclaim stale `.hashline.tmp.*` files leaked by previously killed
+    // atomic writes before creating our own temp file in the same dir.
     sweep_stale_temp_files(parent);
 
-    let mut temp = NamedTempFile::new_in(parent)?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(TEMP_PREFIX)
+        .tempfile_in(parent)?;
     if let Some(permissions) = existing_permissions {
         temp.as_file().set_permissions(permissions)?;
     }
@@ -531,11 +543,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target.txt");
 
-        // A fresh `.tmp*` file simulates an in-flight write: must survive.
-        let fresh = dir.path().join(".tmpfresh123");
+        // A fresh temp file simulates an in-flight write: must survive.
+        let fresh = dir.path().join(".hashline.tmp.fresh123");
         fs::write(&fresh, "in-flight").unwrap();
-        // A `.tmp*` file with an old mtime simulates a SIGKILL leftover.
-        let stale = dir.path().join(".tmpstale456");
+        // A temp file with an old mtime simulates a SIGKILL leftover.
+        let stale = dir.path().join(".hashline.tmp.stale456");
         fs::write(&stale, "leftover").unwrap();
         let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
         fs::File::options()
@@ -544,6 +556,13 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
+        // A foreign `.tmp*` file from another tool must NEVER be swept,
+        // even when old (bd-temp-sweep-foreign-files-ihp0).
+        let foreign = dir.path().join(".tmpforeign789");
+        fs::write(&foreign, "other-tool").unwrap();
+        let foreign_handle = fs::File::options().write(true).open(&foreign).unwrap();
+        foreign_handle.set_modified(old).unwrap();
+        drop(foreign_handle);
         // Non-temp files must never be touched.
         let keep = dir.path().join("keep.tmp.txt");
         fs::write(&keep, "keep").unwrap();
@@ -555,7 +574,8 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "data");
         assert!(fresh.exists(), "fresh temp file must be preserved");
         assert!(!stale.exists(), "stale temp file must be swept");
-        assert!(keep.exists(), "non-.tmp-prefixed file must be preserved");
+        assert!(foreign.exists(), "foreign .tmp* file must never be swept");
+        assert!(keep.exists(), "non-temp file must be preserved");
     }
 
     #[cfg(windows)]
