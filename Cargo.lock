@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "hashline"
-version = "0.9.23"
+version = "0.9.24"
 dependencies = [
  "assert_cmd",
  "clap",
