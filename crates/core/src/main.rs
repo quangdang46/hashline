@@ -824,8 +824,16 @@ fn route_via_http(tool_name: &str, arguments: &Value, url: &str) -> Result<i32, 
     let body = serde_json::to_string(&request)
         .map_err(|e| RouteError::Fatal(format!("json error: {e}")))?;
 
+    // `serve --http` requires a bearer token (bd-serve-http-unauthenticated-
+    // 06tw): send it when the client can resolve one — HASHLINE_TOKEN env
+    // or the persisted ~/.hashline/http.token. A daemon that predates auth
+    // ignores the header.
+    let auth_header = hashline::commands::serve::read_http_token()
+        .map(|t| format!("Authorization: Bearer {t}\r\n"))
+        .unwrap_or_default();
+
     let http_request = format!(
-        "POST /rpc HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /rpc HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\n{auth_header}Content-Length: {}\r\n\r\n{}",
         body.len(),
         body,
     );

@@ -483,6 +483,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "criterion",
+ "fastrand",
  "insta",
  "libc",
  "memchr",

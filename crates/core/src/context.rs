@@ -156,6 +156,7 @@ mod tests {
             http: None,
             detach: false,
             pid_file: None,
+            token: None,
         });
 
         assert_eq!(output_mode_for(&command), OutputMode::Verbose);

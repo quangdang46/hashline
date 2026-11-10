@@ -116,6 +116,11 @@ pub struct ServeCmd {
     pub detach: bool,
     #[arg(long)]
     pub pid_file: Option<PathBuf>,
+    /// Bearer token required on `serve --http` requests. When omitted the
+    /// `HASHLINE_TOKEN` env var is used, then the persisted token at
+    /// `~/.hashline/http.token` (generated once on first HTTP serve).
+    #[arg(long)]
+    pub token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Parser)]
