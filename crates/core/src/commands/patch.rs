@@ -153,6 +153,16 @@ pub fn run<W: Write, E: Write>(
         lines.join("\n")
     };
     let line_ending = detect_line_ending(&fc.raw);
+    // A mixed-EOL file is rewritten with the dominant ending throughout —
+    // per-line endings are not preserved. Warn loudly instead of silently
+    // canonicalizing (bd-write-safety-batch-sz62).
+    if crate::normalize::has_mixed_line_endings(&fc.raw) {
+        eprintln!(
+            "warning: file has mixed line endings; write-back uses the dominant \
+             {:?} ending for every line",
+            line_ending
+        );
+    }
     // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach the
     // BOM that `FileContent::load` stripped, so a patch round-trips the
     // file's encoding conventions instead of silently rewriting them.
@@ -424,7 +434,13 @@ pub(crate) fn reject_if_source_drifted(
     loaded: &FileContent,
 ) -> Result<(), HashlineError> {
     let fresh = FileContent::load(path)?;
-    if fresh.normalized != loaded.normalized {
+    // Compare the RAW on-disk text, not the normalized form: `normalized`
+    // is LF/BOM-stripped, so a BOM add/remove, an EOL-style flip, or a
+    // trailing-newline change produced identical normalized text and the
+    // drift went unnoticed — the patch then rewrote the file with its own
+    // conventions, silently discarding the other writer's encoding change
+    // (bd-write-safety-batch-sz62).
+    if fresh.raw != loaded.raw {
         return Err(HashlineError::StaleFile {
             path: path.display().to_string(),
         });
@@ -3566,6 +3582,32 @@ mod tests {
         super::reject_if_source_drifted(&path, &loaded).unwrap();
 
         std::fs::write(&path, "changed\n").unwrap();
+        let err = super::reject_if_source_drifted(&path, &loaded).unwrap_err();
+        assert_eq!(err.kind(), "STALE_FILE", "{err}");
+    }
+
+    #[test]
+    fn encoding_only_drift_is_rejected() {
+        // An encoding-only change (BOM added, EOL style flipped, trailing
+        // newline added) produces IDENTICAL normalized text — the drift
+        // check must compare raw bytes or it silently lets the patch
+        // clobber the other writer's encoding change
+        // (bd-write-safety-batch-sz62).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "line1\nline2\n").unwrap();
+        let loaded = FileContent::load(&path).unwrap();
+
+        // Same visible text, but CRLF endings — normalized text is
+        // unchanged, raw bytes differ.
+        std::fs::write(&path, "line1\r\nline2\r\n").unwrap();
+        let err = super::reject_if_source_drifted(&path, &loaded).unwrap_err();
+        assert_eq!(err.kind(), "STALE_FILE", "{err}");
+
+        // Restore, then add a BOM — again normalized-identical.
+        std::fs::write(&path, "line1\nline2\n").unwrap();
+        let loaded = FileContent::load(&path).unwrap();
+        std::fs::write(&path, "\u{feff}line1\nline2\n").unwrap();
         let err = super::reject_if_source_drifted(&path, &loaded).unwrap_err();
         assert_eq!(err.kind(), "STALE_FILE", "{err}");
     }

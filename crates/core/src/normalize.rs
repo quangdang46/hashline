@@ -95,6 +95,39 @@ pub fn detect_line_ending(content: &str) -> LineEnding {
     best
 }
 
+/// `true` when `content` uses more than one line-ending style (`\n`,
+/// `\r\n`, bare `\r`) with at least one terminator of each. Write-back
+/// paths canonicalize to the *dominant* ending ([`detect_line_ending`]),
+/// so a mixed-EOL file loses its per-line endings on rewrite — callers
+/// surface this as a warning rather than silently rewriting
+/// (bd-write-safety-batch-sz62). Per-line EOL provenance is not tracked
+/// through the edit engine; preserving it would require a line-level map
+/// the patcher does not maintain.
+pub fn has_mixed_line_endings(content: &str) -> bool {
+    let bytes = content.as_bytes();
+    let (mut lf, mut crlf, mut cr) = (false, false, false);
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    crlf = true;
+                    i += 2;
+                } else {
+                    cr = true;
+                    i += 1;
+                }
+            }
+            b'\n' => {
+                lf = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    [lf, crlf, cr].iter().filter(|&&b| b).count() > 1
+}
+
 /// Probe raw file content for its BOM marker and dominant line-ending
 /// style. Overwrite paths (`write --force`, `Editor::write`) use this to
 /// avoid silently changing an existing file's encoding conventions.

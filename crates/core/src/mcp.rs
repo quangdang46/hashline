@@ -631,7 +631,19 @@ fn handle_patch(
         Ok(cs) => cs,
         Err(e) => return err_output(&e),
     };
+    // Mixed-EOL files are canonicalized to the dominant ending on
+    // write-back — surface it in-band since MCP clients cannot see the
+    // CLI's stderr warning (bd-write-safety-batch-sz62).
+    let mixed_eol_warning = crate::normalize::has_mixed_line_endings(&fc.raw).then(|| {
+        format!(
+            "file has mixed line endings; write-back uses the dominant {:?} ending for every line",
+            detect_line_ending(&fc.raw)
+        )
+    });
     let mut all_warnings = warnings.clone();
+    if let Some(w) = mixed_eol_warning {
+        all_warnings.push(w);
+    }
     for w in crate::commands::patch::take_apply_warnings() {
         if !all_warnings.contains(&w) {
             all_warnings.push(w);

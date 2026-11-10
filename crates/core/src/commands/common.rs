@@ -270,8 +270,48 @@ pub fn fast_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
         .create(true)
         .open(path)?;
     file.write_all(bytes)?;
-    // No sync_all / sync_parent_directory call.
+    // Flush data to stable storage. `sync_data` (not `sync_all`) is enough:
+    // fast_write mutates the existing inode in place — there is no new
+    // directory entry to persist — and the cost is one fdatasync, far
+    // cheaper than the temp+rename+dir-fsync of `atomic_write` while still
+    // preventing silent data loss on power failure.
+    file.sync_data()?;
     Ok(())
+}
+
+/// Resolve `path` through any symlink chain so an atomic write lands on
+/// the *target* — matching `fast_write`, which follows symlinks via
+/// `OpenOptions`. Without this, `temp.persist(path)` would replace the
+/// symlink itself with a regular file, silently changing what the path
+/// names (bd-write-safety-batch-sz62).
+///
+/// Follows up to 40 links (the kernel's own ELOOP bound); a dangling
+/// final component is returned as-is so the write can create it, exactly
+/// like `OpenOptions::create` would.
+fn resolve_symlink_for_write(path: &Path) -> io::Result<PathBuf> {
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let target = fs::read_link(&current)?;
+                current = if target.is_absolute() {
+                    target
+                } else {
+                    match current.parent() {
+                        Some(parent) if !parent.as_os_str().is_empty() => parent.join(&target),
+                        _ => target,
+                    }
+                };
+            }
+            Ok(_) => return Ok(current),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(current),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other(format!(
+        "too many levels of symbolic links: {}",
+        path.display()
+    )))
 }
 
 pub fn atomic_write_with<F>(path: &Path, write_contents: F) -> Result<(), HashlineError>
@@ -305,6 +345,11 @@ where
     G: Fn() -> Result<(), HashlineError>,
 {
     reject_special_write_path(path)?;
+    // Write through symlinks to the resolved target so `--safe` has the
+    // same follow-symlink semantics as `fast_write` — otherwise persist
+    // would replace the link itself with a regular file.
+    let resolved = resolve_symlink_for_write(path)?;
+    let path = resolved.as_path();
     // For a bare relative path like "sample.js", `path.parent()` returns
     // `Some(Path::new(""))` rather than `None`, so the `unwrap_or` fallback to
     // "." never fires. The empty path then fails when we try to open it for
@@ -320,9 +365,20 @@ where
     // atomic writes before creating our own temp file in the same dir.
     sweep_stale_temp_files(parent);
 
-    let mut temp = tempfile::Builder::new()
-        .prefix(TEMP_PREFIX)
-        .tempfile_in(parent)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(TEMP_PREFIX);
+    // New files must get normal creation permissions (0666 & ~umask —
+    // typically 0644), not NamedTempFile's restrictive 0600 default, so an
+    // atomic write produces the same mode `fast_write`/`OpenOptions`
+    // would. `Builder::permissions` still passes through the process
+    // umask at open time. Existing files keep their current mode via
+    // `existing_permissions` below.
+    #[cfg(unix)]
+    if existing_permissions.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temp = builder.tempfile_in(parent)?;
     if let Some(permissions) = existing_permissions {
         temp.as_file().set_permissions(permissions)?;
     }
@@ -576,6 +632,52 @@ mod tests {
         assert!(!stale.exists(), "stale temp file must be swept");
         assert!(foreign.exists(), "foreign .tmp* file must never be swept");
         assert!(keep.exists(), "non-temp file must be preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_follows_symlink_to_target() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.txt");
+        let link = dir.path().join("link.txt");
+        fs::write(&target, "original\n").unwrap();
+        // Give the target a distinctive mode so we can also verify the
+        // symlink target's permissions are preserved, not the link's.
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        atomic_write(&link, b"through the link\n").unwrap();
+
+        // The write must land on the TARGET; the symlink must remain a
+        // symlink pointing at it (persist must not replace the link
+        // itself with a regular file).
+        assert_eq!(fs::read_to_string(&target).unwrap(), "through the link\n");
+        let meta = fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink(), "link must stay a symlink");
+        assert_eq!(
+            fs::metadata(&link).unwrap().permissions().mode() & 0o777,
+            0o640,
+            "target permissions must be preserved"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_new_file_gets_normal_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("fresh.txt");
+
+        atomic_write(&target, b"new\n").unwrap();
+
+        // A brand-new file must get 0666 & ~umask (typically 0644), NOT
+        // NamedTempFile's restrictive 0600 — parity with fast_write's
+        // OpenOptions::create semantics (bd-write-safety-batch-sz62).
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "expected 0644 under a standard umask");
     }
 
     #[cfg(windows)]
