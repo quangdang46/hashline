@@ -61,6 +61,12 @@ pub fn is_symbol_only(line: &str) -> bool {
 /// The value for a symbol line changes when its line number changes (insert/
 /// delete above), which is acceptable — such an edit already invalidates the
 /// line-number anchor anyway; patch fails closed with a stale-anchor error.
+///
+/// Neighbor-context seeding (hashing `}` together with adjacent lines) was
+/// considered and rejected: it would make the anchor hash of an *unchanged*
+/// line change whenever a neighboring line is edited — strictly worse
+/// stability than the current position seed, which only shifts on insert/
+/// delete. (bd-anchor-integrity-batch-nuzn)
 pub fn short_hash_value_indexed(line: &str, line_no: usize) -> ShortHash {
     if is_symbol_only(line) {
         let full = xxh32(line.trim_end().as_bytes(), line_no as u32);
@@ -70,6 +76,17 @@ pub fn short_hash_value_indexed(line: &str, line_no: usize) -> ShortHash {
     }
 }
 
+/// Residual risk, documented honestly (bd-anchor-integrity-batch-nuzn):
+/// anchor hashes are the LOW BYTE of the xxh32 — only 8 bits. Two *different*
+/// lines collide with probability ~1/256, so in a few hundred lines some
+/// colliding pair is likely (birthday bound). A stale `N:hh` anchor can
+/// therefore validate against the wrong line and the patch applies silently.
+/// The qualified `N:hh` form plus the ±3-line fuzzy-relocation radius keeps
+/// the practical risk low, but it is NOT zero — this is an inherent property
+/// of the 2-hex anchor format, which is kept for wire compatibility with
+/// upstream hashline / existing agent workflows. Do not "fix" this by
+/// silently widening the emitted format; any change must be a deliberate,
+/// versioned format decision.
 pub fn short_from_full(full: u32) -> ShortHash {
     (full & 0xff) as ShortHash
 }

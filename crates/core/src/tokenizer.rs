@@ -915,9 +915,37 @@ fn scan_hunk(line: &str) -> Option<(BlockTarget, usize)> {
         if first != CHAR_PAYLOAD_REPLACE && !colon_anchored {
             return None;
         }
+        // bd-anchor-integrity-batch-nuzn: a bare payload that itself begins
+        // with a `HH:` fragment (`SWAP 2:89:89:` → payload `89:`) is almost
+        // certainly a malformed double anchor, not intended content —
+        // reject instead of silently applying `89:` as a payload line.
+        // `+`-prefixed payloads are explicit and always allowed.
+        if first != CHAR_PAYLOAD_REPLACE
+            && colon_anchored
+            && bare_payload_looks_like_anchor_fragment(bytes, payload_start, end)
+        {
+            return None;
+        }
         return Some((scan.target, payload_start));
     }
     Some((scan.target, scan.next_index))
+}
+
+/// True when the bare payload starting at `start` begins with a `HH:`-shaped
+/// fragment — 1-2 hex digits immediately followed by `:`. This is the
+/// signature of a second anchor suffix glued onto the header
+/// (`SWAP 2:89:89:`), which must be rejected rather than applied as content.
+/// A payload like `89` (no colon) or `cafe:` (4+ hex digits) is left alone —
+/// it does not match the `N:HH:` anchor grammar.
+fn bare_payload_looks_like_anchor_fragment(bytes: &[u8], start: usize, end: usize) -> bool {
+    let mut i = start;
+    let mut digits = 0usize;
+    while i < end && digits < 3 && is_hex_digit_code(bytes[i]) {
+        i += 1;
+        digits += 1;
+    }
+    // Exactly 1-2 hex digits then a colon.
+    (1..=2).contains(&digits) && i < end && bytes[i] == CHAR_COLON
 }
 
 pub(crate) fn try_parse_hunk_header(line: &str) -> Option<BlockTarget> {
@@ -1703,6 +1731,27 @@ mod tests {
             "INS.TAIL:raw",
             "INS.PRE 3:67:bare",
         ] {
+            let t = classify_line(ok, 1);
+            assert!(matches!(t, Token::OpBlock { .. }), "{ok} got {t:?}");
+        }
+    }
+
+    #[test]
+    fn double_anchor_suffix_rejected() {
+        // `SWAP 2:89:89:` used to parse `89:` as a bare inline payload row —
+        // the patch then applied with `89:` inserted as content instead of
+        // rejecting the malformed op (bd-anchor-integrity-batch-nuzn).
+        for bad in [
+            "SWAP 2:89:89:",
+            "SWAP 2:5b:5b:",
+            "SWAP 2..3:67:89:",
+            "INS.PRE 3:67:89:",
+        ] {
+            let t = classify_line(bad, 1);
+            assert!(!matches!(t, Token::OpBlock { .. }), "{bad} got {t:?}");
+        }
+        // Explicit `+` payloads and non-anchor-looking bare payloads stay legal.
+        for ok in ["SWAP 2:89:+89:", "SWAP 2:67:bare", "SWAP 2:67:89"] {
             let t = classify_line(ok, 1);
             assert!(matches!(t, Token::OpBlock { .. }), "{ok} got {t:?}");
         }

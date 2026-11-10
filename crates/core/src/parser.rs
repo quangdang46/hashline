@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
-use crate::messages::{BARE_BODY_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED};
+use crate::messages::{BARE_BODY_AUTO_PIPED_WARNING, HASHLESS_ANCHOR_WARNING, MINUS_ROW_REJECTED};
 use crate::patch_format::{HL_MAX_RANGE_LINES, HL_RANGE_SEP};
 use crate::prefixes::strip_one_hashline_prefix;
 
@@ -1303,9 +1303,38 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
             warnings.clear();
             return (Vec::new(), Vec::new(), None, true);
         }
+        // bd-anchor-integrity-batch-nuzn: edits anchored to existing lines by
+        // bare line number carry no content hash — they apply by position
+        // only and lose ALL stale-anchor protection. Warn once per patch.
+        if edits.iter().any(edit_is_hashless_anchored) {
+            warnings.push(HASHLESS_ANCHOR_WARNING.to_owned());
+        }
     }
 
     (edits, warnings, file_op, aborted)
+}
+
+/// True when `edit` targets an existing line by bare line number with no
+/// `expected_hash` (`N` instead of `N:hh`). `Bof`/`Eof` cursors target no
+/// existing line; `Paste` has no hash field at all, so an anchored `PUT`
+/// counts as hashless too.
+fn edit_is_hashless_anchored(edit: &Edit) -> bool {
+    match edit {
+        Edit::Delete { expected_hash, .. }
+        | Edit::Block { expected_hash, .. }
+        | Edit::Cut { expected_hash, .. } => expected_hash.is_none(),
+        Edit::Insert {
+            cursor,
+            expected_hash,
+            ..
+        } => {
+            expected_hash.is_none()
+                && matches!(cursor, Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_))
+        }
+        Edit::Paste { cursor, .. } => {
+            matches!(cursor, Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_))
+        }
+    }
 }
 
 #[allow(clippy::items_after_test_module)]
@@ -1316,10 +1345,9 @@ mod cut_put_tests {
     #[test]
     fn cut_parses_to_cut_edit() {
         let (edits, warnings, _file_op, _aborted) = parse_patch("CUT 5..9 @fn");
-        assert!(
-            warnings.is_empty(),
-            "expected no warnings, got {warnings:?}"
-        );
+        // `CUT 5..9` is hashless — the bare-anchor warning is expected
+        // (bd-anchor-integrity-batch-nuzn), and it is the ONLY warning.
+        assert_eq!(warnings, vec![HASHLESS_ANCHOR_WARNING.to_string()]);
         assert_eq!(edits.len(), 1);
         match &edits[0] {
             Edit::Cut {
@@ -1365,10 +1393,8 @@ mod cut_put_tests {
     #[test]
     fn cut_and_put_parse_in_one_patch() {
         let (edits, warnings, _file_op, _aborted) = parse_patch("CUT 5..9 @fn\nPUT @fn <20");
-        assert!(
-            warnings.is_empty(),
-            "expected no warnings, got {warnings:?}"
-        );
+        // Both ops are hashless — one bare-anchor warning covers the patch.
+        assert_eq!(warnings, vec![HASHLESS_ANCHOR_WARNING.to_string()]);
         assert_eq!(edits.len(), 2);
         assert!(matches!(&edits[0], Edit::Cut { .. }));
         assert!(matches!(&edits[1], Edit::Paste { .. }));

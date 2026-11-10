@@ -16,6 +16,14 @@ pub const BARE_BODY_AUTO_PIPED_WARNING: &str =
     "bare body auto-piped (no `+` prefix) — model should prefix body rows with `+` to be explicit";
 pub const MINUS_ROW_REJECTED: &str = "`-` rows accepted as content but should use `+-` prefix (e.g. `+- list item`) for explicit neutral payload; bare `-` is reserved for future diff syntax";
 
+/// Edits that anchor to existing lines by bare line number (`N` instead of
+/// `N:hh`) carry no content hash, so they apply purely by position and
+/// cannot detect a stale anchor. Surfaced once per patch
+/// (bd-anchor-integrity-batch-nuzn).
+pub const HASHLESS_ANCHOR_WARNING: &str = "edit(s) use bare line-number anchors with no content hash — they apply by \
+     position only and cannot detect stale anchors; prefer `N:hh` anchors \
+     from `hashline read` output";
+
 // === Recovery warnings ===
 
 /// File was modified by an external process between the snapshot tag was minted
