@@ -13,7 +13,7 @@ use crate::cli::McpCmd;
 use crate::document::FileContent;
 use crate::error::HashlineError;
 use crate::hash;
-use crate::normalize::{detect_line_ending, restore_line_endings};
+use crate::normalize::restore_line_endings;
 use crate::parser::parse_patch;
 
 /// Split normalized text into lines, discarding the trailing empty segment
@@ -607,7 +607,13 @@ fn handle_patch(
     let (mut lines, _) = split_text(&fc.normalized);
     let orig_line_count = lines.len();
 
-    let entries = fc.lines_with_hashes();
+    // Same lazy-hashing rule as the CLI patch path: per-line short hashes
+    // are only read for hash-qualified (`N:hh`) anchors.
+    let entries = if crate::commands::patch::edits_need_hashes(&edits) {
+        fc.lines_with_hashes()
+    } else {
+        fc.lines_without_hashes()
+    };
     // Drain stale apply warnings from any earlier failed apply, then collect
     // the ones this apply emits (boundary-echo repairs, delimiter warnings).
     // They change file content and must reach the client — stderr is
@@ -635,7 +641,7 @@ fn handle_patch(
     let mixed_eol_warning = crate::normalize::has_mixed_line_endings(&fc.raw).then(|| {
         format!(
             "file has mixed line endings; write-back uses the dominant {:?} ending for every line",
-            detect_line_ending(&fc.raw)
+            fc.newline.to_line_ending()
         )
     });
     let mut all_warnings = warnings.clone();
@@ -655,7 +661,7 @@ fn handle_patch(
         !lines.is_empty(),
     );
     let result = join_lines(&lines, trailing_newline);
-    let line_ending = detect_line_ending(&fc.raw);
+    let line_ending = fc.newline.to_line_ending();
     // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach the
     // BOM `FileContent::load` stripped — same write-back contract as the
     // CLI `patch` command. `result` (LF, BOM-free) is kept for the dry-run

@@ -74,6 +74,22 @@ pub fn run<W: Write, E: Write>(
     // 4. Compute hash and line count from the written content (canonical path).
     let file_hash = hash::compute_file_hash(&write_content);
     let line_count = write_content.lines().count();
+    let write_content_ended_with_newline = write_content.ends_with('\n');
+
+    // In-memory `FileContent` over the just-written normalized text —
+    // `normalized`/`trailing_newline`/`hash` are exactly what a re-load
+    // would produce, so Verbose/Json output can render per-line entries
+    // (with the parallel hash fan-out for large files) without a third
+    // disk read. `raw` is never consulted on these paths.
+    let written_fc = crate::document::FileContent {
+        path: cmd.file.clone(),
+        raw: String::new(),
+        normalized: write_content,
+        bom: String::new(),
+        newline: crate::document::NewlineStyle::Lf,
+        trailing_newline: write_content_ended_with_newline,
+        hash: file_hash.clone(),
+    };
 
     // 5. Render output based on output mode.
     match ctx.output_mode() {
@@ -88,8 +104,8 @@ pub fn run<W: Write, E: Write>(
             )?;
         }
         crate::context::OutputMode::Verbose => {
-            // Human-readable: re-read and dump full file (old default)
-            let fc = crate::document::FileContent::load(&cmd.file)?;
+            // Human-readable: render the in-memory entries (no re-read)
+            let fc = &written_fc;
             let raw_lines = fc.lines();
             let entries = fc.lines_with_hashes();
             writeln!(ctx.stdout(), "[{}#{}]", fc.path.display(), fc.hash)?;
@@ -104,8 +120,8 @@ pub fn run<W: Write, E: Write>(
             }
         }
         crate::context::OutputMode::Json => {
-            // Structured JSON
-            let fc = crate::document::FileContent::load(&cmd.file)?;
+            // Structured JSON — same in-memory entries as Verbose
+            let fc = &written_fc;
             let raw_lines = fc.lines();
             let entries = fc.lines_with_hashes();
             let lines: Vec<serde_json::Value> = entries

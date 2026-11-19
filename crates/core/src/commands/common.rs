@@ -320,13 +320,39 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
 /// so the caller fails loudly instead of reporting a silent OK; I/O
 /// errors reading back propagate as [`HashlineError::Io`].
 pub fn verify_written_bytes(path: &Path, expected: &[u8]) -> Result<(), HashlineError> {
-    let actual = fs::read(path)?;
-    if actual == expected {
-        return Ok(());
+    // Length check first — a size mismatch can never be a byte match, and
+    // it lets us skip opening the file for the common torn-write case.
+    if fs::metadata(path)?.len() != expected.len() as u64 {
+        return Err(HashlineError::ConcurrentModification {
+            path: path.display().to_string(),
+        });
     }
-    Err(HashlineError::ConcurrentModification {
-        path: path.display().to_string(),
-    })
+    // Stream-compare in chunks instead of `fs::read`-ing the whole file:
+    // verification must not double the write's peak memory on large files.
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut offset = 0usize;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        // A file that grew past `expected` between the length check and
+        // this read can never match — bail before the slice would panic.
+        if offset + n > expected.len() || buf[..n] != expected[offset..offset + n] {
+            return Err(HashlineError::ConcurrentModification {
+                path: path.display().to_string(),
+            });
+        }
+        offset += n;
+    }
+    if offset != expected.len() {
+        return Err(HashlineError::ConcurrentModification {
+            path: path.display().to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Fast variant of atomic_write that skips fsync and uses a simple
@@ -344,22 +370,57 @@ pub fn verify_written_bytes(path: &Path, expected: &[u8]) -> Result<(), Hashline
 /// - Writes go through the existing inode, so hardlinked names all see the
 ///   new content (unlike [`atomic_write`], which replaces the directory
 ///   entry and leaves other links on the old content).
+///
+/// Failure rollback: the pre-write content is snapshotted before truncate
+/// and restored if `write_all`/`sync_data` fails, so an ENOSPC/EIO cannot
+/// leave a truncated or half-written file behind. If the file did not
+/// exist before, a failed create-write removes the partial file instead.
 pub fn fast_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     use std::io::Write;
     reject_special_write_path(path)?;
-    let mut file = std::fs::OpenOptions::new()
+    // Snapshot before truncate so a failed write can be rolled back.
+    // `fs::read` failing (missing file, permission) just means there is
+    // nothing to restore — the write attempt below reports the real error.
+    let original = fs::read(path).ok();
+    let mut file = match std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
         .create(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    // Flush data to stable storage. `sync_data` (not `sync_all`) is enough:
-    // fast_write mutates the existing inode in place — there is no new
-    // directory entry to persist — and the cost is one fdatasync, far
-    // cheaper than the temp+rename+dir-fsync of `atomic_write` while still
-    // preventing silent data loss on power failure.
-    file.sync_data()?;
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) => return Err(HashlineError::Io(e)),
+    };
+    let write_result = file.write_all(bytes).and_then(|()| file.sync_data());
+    if let Err(e) = write_result {
+        drop(file);
+        restore_after_failed_write(path, original.as_deref());
+        return Err(HashlineError::Io(e));
+    }
     Ok(())
+}
+
+/// Best-effort rollback for [`fast_write`]: rewrite the snapshotted
+/// original bytes (or remove the file when there was no original). Errors
+/// are ignored — the caller already has the primary write error to report,
+/// and a failed restore is no worse than the corruption it tried to avoid.
+fn restore_after_failed_write(path: &Path, original: Option<&[u8]>) {
+    use std::io::Write;
+    match original {
+        Some(bytes) => {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)
+            {
+                let _ = file.write_all(bytes);
+                let _ = file.sync_data();
+            }
+        }
+        None => {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// Resolve `path` through any symlink chain so an atomic write lands on
@@ -775,6 +836,35 @@ mod tests {
                 "{name} should not be reserved"
             );
         }
+    }
+
+    #[test]
+    fn restore_after_failed_write_puts_original_bytes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, b"partial garbage").unwrap();
+        restore_after_failed_write(&path, Some(b"original content"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original content");
+    }
+
+    #[test]
+    fn restore_after_failed_write_removes_file_that_did_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        std::fs::write(&path, b"partial").unwrap();
+        restore_after_failed_write(&path, None);
+        assert!(!path.exists());
+    }
+
+    /// `/dev/full` accepts opens but fails every write with ENOSPC — the
+    /// exact condition that used to leave a truncated target behind.
+    #[cfg(unix)]
+    #[test]
+    fn fast_write_enospc_returns_error() {
+        assert!(matches!(
+            fast_write(std::path::Path::new("/dev/full"), b"data"),
+            Err(HashlineError::Io(_))
+        ));
     }
 
     #[cfg(windows)]

@@ -302,6 +302,17 @@ impl NewlineStyle {
         }
     }
 
+    /// Convert to the [`crate::normalize::LineEnding`] equivalent — lets
+    /// write-back paths reuse the style `load` already detected instead of
+    /// re-scanning the raw text for line endings.
+    pub fn to_line_ending(self) -> crate::normalize::LineEnding {
+        match self {
+            NewlineStyle::Lf => crate::normalize::LineEnding::Lf,
+            NewlineStyle::Crlf => crate::normalize::LineEnding::Crlf,
+            NewlineStyle::Cr => crate::normalize::LineEnding::Cr,
+        }
+    }
+
     fn from_normalize(le: crate::normalize::LineEnding) -> Self {
         match le {
             crate::normalize::LineEnding::Lf => NewlineStyle::Lf,

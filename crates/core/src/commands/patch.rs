@@ -5,7 +5,7 @@ use crate::cli::PatchCmd;
 use crate::context::CommandContext;
 use crate::document::FileContent;
 use crate::error::HashlineError;
-use crate::normalize::{detect_line_ending, restore_line_endings};
+use crate::normalize::restore_line_endings;
 use crate::parser::parse_patch;
 use crate::types::{
     BlockMode, ChangeSet, ChangedLine, Clipboard, Cursor, Edit, FileOp, InsertMode,
@@ -162,7 +162,9 @@ pub fn run<W: Write, E: Write>(
     } else {
         lines.join("\n")
     };
-    let line_ending = detect_line_ending(&fc.raw);
+    // `fc.newline` was detected by `FileContent::load` — reuse it rather
+    // than re-scanning the whole raw text for the dominant ending.
+    let line_ending = fc.newline.to_line_ending();
     // A mixed-EOL file is rewritten with the dominant ending throughout —
     // per-line endings are not preserved. Warn loudly instead of silently
     // canonicalizing (bd-write-safety-batch-sz62).
@@ -443,14 +445,18 @@ pub(crate) fn reject_if_source_drifted(
     path: &Path,
     loaded: &FileContent,
 ) -> Result<(), HashlineError> {
-    let fresh = FileContent::load(path)?;
+    // Raw-byte comparison only — a full `FileContent::load` here would pay
+    // for mmap + UTF-8 validation + normalization + xxh3 hashing on every
+    // patch write (and again inside the `--safe` persist retry loop) just
+    // to answer "did the bytes change".
+    let fresh = std::fs::read(path)?;
     // Compare the RAW on-disk text, not the normalized form: `normalized`
     // is LF/BOM-stripped, so a BOM add/remove, an EOL-style flip, or a
     // trailing-newline change produced identical normalized text and the
     // drift went unnoticed — the patch then rewrote the file with its own
     // conventions, silently discarding the other writer's encoding change
     // (bd-write-safety-batch-sz62).
-    if fresh.raw != loaded.raw {
+    if fresh != loaded.raw.as_bytes() {
         return Err(HashlineError::StaleFile {
             path: path.display().to_string(),
         });
@@ -841,7 +847,7 @@ fn first_changed_line_between(before: &str, after: &str) -> Option<usize> {
 /// (`N:hh`). The applier validates `expected_hash` against the snapshot's
 /// per-line short hashes; when no edit has one, those hashes are never
 /// read and computing them is wasted work on large files.
-fn edits_need_hashes(edits: &[Edit]) -> bool {
+pub(crate) fn edits_need_hashes(edits: &[Edit]) -> bool {
     edits.iter().any(|e| match e {
         Edit::Insert { expected_hash, .. }
         | Edit::Delete { expected_hash, .. }
@@ -949,9 +955,10 @@ fn compute_changeset(
 ) -> ChangeSet {
     use crate::hash::{compute_file_hash, short_hash_value_indexed};
 
-    let mut modified = Vec::new();
-    let mut inserted = Vec::new();
-    let mut deleted = Vec::new();
+    // Pending change rows as (1-based line, content) — see the Insert arm.
+    let mut modified_raw: Vec<(usize, &str)> = Vec::new();
+    let mut inserted_raw: Vec<(usize, &str)> = Vec::new();
+    let mut deleted: Vec<usize> = Vec::new();
 
     // Filter entries to visible lines only (exclude trailing empty from
     // split('\n') on files with trailing newline) so lengths match
@@ -1000,20 +1007,17 @@ fn compute_changeset(
                 let paired = pending_deletes.len().min(count);
                 let _rewritten: Vec<usize> = pending_deletes.drain(..paired).collect();
                 deleted.append(&mut pending_deletes);
+                // Collect lightweight (line, content) pairs first — hashing
+                // and cloning every changed line up front wasted work on the
+                // >MAX_REPORTED_CHANGES entries the cap below discards.
+                // Materialize `ChangedLine`s only for the survivors.
                 for offset in 0..count {
                     let line_num = final_idx + offset + 1;
-                    let content = &new_lines[final_idx + offset];
-                    let hash =
-                        crate::hash::format_short_hash(short_hash_value_indexed(content, line_num));
-                    let entry = ChangedLine {
-                        line: line_num,
-                        hash,
-                        content: content.to_string(),
-                    };
+                    let content = new_lines[final_idx + offset];
                     if offset < paired {
-                        modified.push(entry);
+                        modified_raw.push((line_num, content));
                     } else {
-                        inserted.push(entry);
+                        inserted_raw.push((line_num, content));
                     }
                 }
                 final_idx += count;
@@ -1030,7 +1034,7 @@ fn compute_changeset(
     // always carries the full listing.
     const MAX_REPORTED_CHANGES: usize = 1000;
     let mut omitted = 0usize;
-    for vec in [&mut modified, &mut inserted] {
+    for vec in [&mut modified_raw, &mut inserted_raw] {
         if vec.len() > MAX_REPORTED_CHANGES {
             omitted += vec.len() - MAX_REPORTED_CHANGES;
             vec.truncate(MAX_REPORTED_CHANGES);
@@ -1046,6 +1050,22 @@ fn compute_changeset(
              (showing first {MAX_REPORTED_CHANGES} per category)"
         ));
     }
+
+    // Materialize `ChangedLine`s only for the capped survivors — hashing
+    // and cloning here (not during diff classification) is what keeps a
+    // wholesale rewrite from paying O(changed lines) allocations for rows
+    // the cap discards.
+    let materialize = |rows: Vec<(usize, &str)>| -> Vec<ChangedLine> {
+        rows.into_iter()
+            .map(|(line, content)| ChangedLine {
+                line,
+                hash: crate::hash::format_short_hash(short_hash_value_indexed(content, line)),
+                content: content.to_string(),
+            })
+            .collect()
+    };
+    let modified = materialize(modified_raw);
+    let inserted = materialize(inserted_raw);
 
     // The reported hash must match what `hashline read` computes for the
     // resulting file: the trailing newline is preserved only when the
@@ -1349,8 +1369,7 @@ pub fn apply_edits_with_clipboard(
                 }
                 if let Some(expected) = expected_hash {
                     let anchor_index = anchor_line.wrapping_sub(1);
-                    if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
-                    {
+                    if anchor_index < orig_len && *expected != entries[anchor_index].short_hash {
                         return Err(HashlineError::StaleAnchor {
                             anchor: format!(
                                 "{}:{}",
@@ -1411,7 +1430,7 @@ pub fn apply_edits_with_clipboard(
                         } if *line_num == op_line_num => {
                             if let Some(expected) = expected_hash {
                                 let anchor_index = anchor.line.wrapping_sub(1);
-                                if anchor_index < entries.len()
+                                if anchor_index < orig_len
                                     && *expected != entries[anchor_index].short_hash
                                 {
                                     return Err(HashlineError::StaleAnchor {
@@ -1523,7 +1542,7 @@ pub fn apply_edits_with_clipboard(
                         } => {
                             if let Some(expected) = expected_hash {
                                 let anchor_index = anchor.line.wrapping_sub(1);
-                                if anchor_index < entries.len()
+                                if anchor_index < orig_len
                                     && *expected != entries[anchor_index].short_hash
                                 {
                                     return Err(HashlineError::StaleAnchor {
@@ -1613,8 +1632,7 @@ pub fn apply_edits_with_clipboard(
                     (cursor, expected_hash)
                 {
                     let anchor_index = a.line.wrapping_sub(1);
-                    if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
-                    {
+                    if anchor_index < orig_len && *expected != entries[anchor_index].short_hash {
                         return Err(HashlineError::StaleAnchor {
                             anchor: format!(
                                 "{}:{}",
@@ -1667,8 +1685,7 @@ pub fn apply_edits_with_clipboard(
                 // Hash validation on the first anchor line, like DEL.
                 if let Some(expected) = expected_hash {
                     let anchor_index = start_line.wrapping_sub(1);
-                    if anchor_index < entries.len() && *expected != entries[anchor_index].short_hash
-                    {
+                    if anchor_index < orig_len && *expected != entries[anchor_index].short_hash {
                         return Err(HashlineError::StaleAnchor {
                             anchor: format!(
                                 "{}:{}",
@@ -1795,7 +1812,7 @@ pub fn apply_edits_with_clipboard(
                 // (Bug #89-2: validate block-anchor hash just like line ops)
                 if let Some(expected) = expected_hash {
                     let anchor_idx = line_no.wrapping_sub(1);
-                    if anchor_idx < entries.len() && *expected != entries[anchor_idx].short_hash {
+                    if anchor_idx < orig_len && *expected != entries[anchor_idx].short_hash {
                         return Err(HashlineError::StaleAnchor {
                             anchor: format!(
                                 "{}:{}",

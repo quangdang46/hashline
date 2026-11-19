@@ -323,7 +323,13 @@ impl Editor {
         // surfaced.
         let mut lines: Vec<String> = split_normalized(text);
         let orig_line_count = lines.len();
-        let entries = fc.lines_with_hashes();
+        // Lazy hashing, same as the CLI patch path: short hashes are only
+        // read for hash-qualified (`N:hh`) anchors.
+        let entries = if crate::commands::patch::edits_need_hashes(&resolved) {
+            fc.lines_with_hashes()
+        } else {
+            fc.lines_without_hashes()
+        };
         let had_trailing_newline = fc.trailing_newline;
         let mut all_warnings = warnings;
         // Set when snapshot recovery supplies the post-edit text — its own
@@ -436,7 +442,7 @@ impl Editor {
             }
         }
 
-        let line_ending = detect_line_ending(&fc.raw);
+        let line_ending = fc.newline.to_line_ending();
         // Restore the file's dominant line ending (LF/CRLF/CR) and re-attach
         // the BOM `FileContent::load` stripped, matching the CLI patch path.
         let mut final_text = restore_line_endings(&result, line_ending);
@@ -659,8 +665,20 @@ impl Editor {
                 .record(&path.to_string_lossy(), &write_content, None);
         }
 
-        // Re-read for hashline output
-        let fc = FileContent::load(path)?;
+        // Build the result from the just-written content in memory — a
+        // `FileContent::load` re-read here cost a third full-file pass
+        // (mmap + UTF-8 validation + normalization + hashing) for data we
+        // already hold. `normalized`/`trailing_newline`/`hash` match what
+        // a re-load would produce; `raw` is unused on this path.
+        let fc = FileContent {
+            path: path.to_path_buf(),
+            raw: String::new(),
+            trailing_newline: write_content.ends_with('\n'),
+            hash: hash::compute_file_hash(&write_content),
+            normalized: write_content,
+            bom: String::new(),
+            newline: crate::document::NewlineStyle::Lf,
+        };
         let entries = fc.lines_with_hashes();
         let raw_lines = fc.lines();
 
@@ -701,7 +719,10 @@ impl Editor {
         let entries = fc.lines_with_hashes();
 
         let parsed = crate::anchor::parse_anchor(anchor_str)?;
-        let resolved = crate::anchor::resolve(&parsed, &fc)?;
+        // Resolve against the entries already computed above —
+        // `anchor::resolve` would recompute `lines_with_hashes` (a second
+        // full-file xxh32 pass).
+        let resolved = crate::anchor::resolve_with_entries(&parsed, &entries, &fc)?;
         let anchor_index = resolved.index;
 
         // Use configured resolver, or fall back to built-in

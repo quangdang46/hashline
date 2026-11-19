@@ -723,6 +723,14 @@ fn handle_http(mut stream: TcpStream, token: &str) -> io::Result<()> {
         }
     };
 
+    // JSON-RPC notifications carry no `id` and expect no response. Mirror
+    // the Unix path (`handle_unix`): skip them entirely — otherwise a
+    // bare `tools/call`/`patch` notification would execute mutations over
+    // HTTP with no response channel to report the outcome.
+    if request.id.is_none() {
+        return Ok(());
+    }
+
     let response = if request.method == "tools/call"
         || request.method == "tools/list"
         || request.method == "initialize"

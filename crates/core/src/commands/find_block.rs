@@ -123,7 +123,7 @@ pub fn find_block_payload(
     anchor_str: &str,
 ) -> Result<FindBlockPayload, HashlineError> {
     let parsed = crate::anchor::parse_anchor(anchor_str)?;
-    let resolved = resolve_find_anchor(&parsed, anchor_str, fc)?;
+    let resolved = resolve_find_anchor(&parsed, anchor_str, entries, fc)?;
     let anchor_index = resolved.index;
     let warning = resolved.warning;
 
@@ -175,6 +175,7 @@ pub fn find_block_payload(
 fn resolve_find_anchor(
     parsed: &crate::anchor::Anchor,
     anchor_str: &str,
+    entries: &[crate::document::LineEntry],
     fc: &FileContent,
 ) -> Result<crate::anchor::ResolvedLine, HashlineError> {
     let out_of_range = |resolved: &crate::anchor::ResolvedLine| {
@@ -184,7 +185,9 @@ fn resolve_find_anchor(
         // rejects anyway.
         matches!(parsed, crate::anchor::Anchor::BlockAnchor { .. }) && resolved.index >= fc.len()
     };
-    match crate::anchor::resolve(parsed, fc) {
+    // Resolve against the caller's `entries` — `anchor::resolve` would
+    // recompute `fc.lines_with_hashes()`, a second full-file xxh32 pass.
+    match crate::anchor::resolve_with_entries(parsed, entries, fc) {
         Ok(resolved) if !out_of_range(&resolved) => Ok(resolved),
         Ok(_) | Err(_) => {
             if let crate::anchor::Anchor::BlockAnchor { line } = *parsed {
@@ -194,14 +197,18 @@ fn resolve_find_anchor(
                     && digits.bytes().all(|b| b.is_ascii_digit())
                 {
                     if let Ok(short) = u8::from_str_radix(digits, 16) {
-                        return crate::anchor::resolve(&crate::anchor::Anchor::Hash { short }, fc);
+                        return crate::anchor::resolve_with_entries(
+                            &crate::anchor::Anchor::Hash { short },
+                            entries,
+                            fc,
+                        );
                     }
                 }
             }
             // No hash fallback applies: surface the original outcome. For the
             // Ok-on-phantom case there is no stored error, so re-resolve to
             // reproduce it (it will fail the same way downstream).
-            crate::anchor::resolve(parsed, fc)
+            crate::anchor::resolve_with_entries(parsed, entries, fc)
         }
     }
 }

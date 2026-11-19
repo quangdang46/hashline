@@ -34,6 +34,15 @@ pub fn detect_boundary_issues(
     }
 
     let entries_len = entries.len();
+    // `entries` may carry a phantom trailing empty entry — the segment
+    // `split('\n')` yields after the final newline. It is not a real line,
+    // so boundary probes must not read it as "the line below the range"
+    // (a payload ending in "" would false-positive as a boundary echo).
+    let visible_len = if entries_len > 0 && entries[entries_len - 1].content.is_empty() {
+        entries_len - 1
+    } else {
+        entries_len
+    };
 
     // Check for boundary echo: payload's first line matches content just above range
     if start_line > 1 && start_line <= entries_len {
@@ -48,7 +57,7 @@ pub fn detect_boundary_issues(
     }
 
     // Check for boundary echo: payload's last line matches content just below range
-    if end_line < entries_len {
+    if end_line < visible_len {
         let line_below = &entries[end_line].content;
         if payload.last().is_some_and(|p| p == line_below) {
             warnings.push(
@@ -64,7 +73,7 @@ pub fn detect_boundary_issues(
     let payload_has_closer = payload.iter().any(|l| is_structural_closer(l.trim()));
     if !payload_has_closer {
         let mut deleted_closers = 0;
-        for i in start_line..=end_line.min(entries_len) {
+        for i in start_line..=end_line.min(visible_len) {
             if is_structural_closer(entries[i - 1].content.trim()) {
                 deleted_closers += 1;
             }
@@ -108,6 +117,12 @@ pub fn repair_boundary_echo(
         return None;
     }
     let entries_len = entries.len();
+    // Phantom trailing empty entry — see `detect_boundary_issues`.
+    let visible_len = if entries_len > 0 && entries[entries_len - 1].content.is_empty() {
+        entries_len - 1
+    } else {
+        entries_len
+    };
 
     // Detect leading edge duplicate (payload[0] == line above range).
     let leading = if start_line > 1 && start_line <= entries_len {
@@ -118,7 +133,7 @@ pub fn repair_boundary_echo(
     };
 
     // Detect trailing edge duplicate (payload.last == line below range).
-    let trailing = if end_line < entries_len {
+    let trailing = if end_line < visible_len {
         let line_below = &entries[end_line].content;
         if payload.last().is_some_and(|p| p == line_below) {
             1
