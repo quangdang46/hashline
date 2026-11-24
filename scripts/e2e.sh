@@ -930,6 +930,209 @@ b"
 }
 
 # ═════════════════════════════════════════════════════════════════════
+# Regression: hashless-anchor warning (v0.9.25)
+# ═════════════════════════════════════════════════════════════════════
+
+case_swap_qualified_no_hashless_warning() {
+    mk f.txt "a
+b"
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "SWAP $(anchor f.txt 1):
++X" 2>&1)
+    assert_exit "qualified SWAP exits 0" 0 $?
+    assert_not_contains "qualified SWAP has no bare-anchor warning" "$OUT" "bare line-number anchors"
+}
+
+case_del_bare_warns_hashless() {
+    mk f.txt "a
+b"
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "DEL 1" 2>&1)
+    assert_exit "bare DEL exits 0" 0 $?
+    assert_contains "bare DEL warns hashless" "$OUT" "bare line-number anchors"
+}
+
+case_swap_qualified_range_no_warning() {
+    mk f.txt "1
+2
+3"
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "SWAP 1:$(hash_of f.txt 1)..3:
++x" 2>&1)
+    assert_exit "qualified range SWAP exits 0" 0 $?
+    assert_not_contains "qualified range has no bare-anchor warning" "$OUT" "bare line-number anchors"
+}
+
+# ═════════════════════════════════════════════════════════════════════
+# Patch grammar: file ops, markers, alt range syntax
+# ═════════════════════════════════════════════════════════════════════
+
+case_patch_rem_file_op() {
+    mk del.txt "x"
+    OUT=$("$HASHLINE" patch "$WORK/del.txt" "[del.txt#0000]
+REM" 2>&1)
+    assert_exit "patch REM exits 0" 0 $?
+    if [ -e "$WORK/del.txt" ]; then _fail "patch REM deleted the file"; else _ok; fi
+}
+
+case_patch_mv_file_op() {
+    mk old.txt "x"
+    OUT=$("$HASHLINE" patch "$WORK/old.txt" "[old.txt#0000]
+MV moved.txt" 2>&1)
+    assert_exit "patch MV exits 0" 0 $?
+    if [ -e "$WORK/old.txt" ]; then _fail "patch MV removed source"; else _ok; fi
+    assert_file "patch MV content" "$WORK/moved.txt" "x"
+}
+
+case_patch_abort_marker() {
+    mk f.txt "a
+b"
+    local orig; orig=$(cat "$WORK/f.txt"; printf x); orig=${orig%x}
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "*** Abort
+SWAP 1:
++X" 2>&1)
+    assert_exit "Abort exits 1" 1 $?
+    assert_file "Abort leaves file untouched" "$WORK/f.txt" "$orig"
+}
+
+case_patch_envelope_markers() {
+    mk f.txt "a
+b"
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "*** Begin Patch
+[f.txt#0000]
+INS.TAIL:
++tail
+*** End Patch" 2>&1)
+    assert_exit "envelope patch exits 0" 0 $?
+    assert_file "envelope patch content" "$WORK/f.txt" "a
+b
+tail"
+}
+
+case_patch_end_of_file_marker() {
+    mk f.txt "a
+b"
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "INS.TAIL:
++tail
+*** End of File
+INS.TAIL:
++ignored" 2>&1)
+    assert_exit "End of File patch exits 0" 0 $?
+    assert_file "End of File truncates hunks" "$WORK/f.txt" "a
+b
+tail"
+}
+
+case_patch_dot_eq_range() {
+    mk f.txt "1
+2
+3
+4"
+    OUT=$("$HASHLINE" patch "$WORK/f.txt" "DEL 2.=3" 2>&1)
+    assert_exit "N.=M range exits 0" 0 $?
+    assert_file "N.=M range content" "$WORK/f.txt" "1
+4"
+}
+
+# ═════════════════════════════════════════════════════════════════════
+# write/remove/rename edge cases + update
+# ═════════════════════════════════════════════════════════════════════
+
+case_write_stdin_dash() {
+    OUT=$(printf 'line1\nline2\n' | "$HASHLINE" write "$WORK/stdin.txt" - 2>&1)
+    assert_exit "write stdin exits 0" 0 $?
+    assert_file "write stdin content" "$WORK/stdin.txt" "line1
+line2"
+}
+
+case_write_dev_full_enospc() {
+    # Regression v0.9.26: /dev/full reads as infinite NULs — the rollback
+    # snapshot must not fs::read non-regular files (hang/OOM on Linux).
+    [ -e /dev/full ] || { SKIP=$((SKIP + 1)); TOTAL=$((TOTAL + 1)); return; }
+    OUT=$("$HASHLINE" write /dev/full "data" 2>&1)
+    assert_exit "write /dev/full exits 1" 1 $?
+    assert_contains "write /dev/full errors" "$OUT" "ERR"
+}
+
+case_remove_directory_refused() {
+    mkdir -p "$WORK/adir"
+    OUT=$("$HASHLINE" remove "$WORK/adir" 2>&1)
+    assert_exit "remove dir exits 1" 1 $?
+    assert_contains "remove dir errors" "$OUT" "ERR"
+}
+
+case_rename_force_and_parents() {
+    mk src.txt "x"; mk dst.txt "y"
+    OUT=$("$HASHLINE" rename "$WORK/src.txt" "$WORK/dst.txt" --force 2>&1)
+    assert_exit "rename --force exits 0" 0 $?
+    assert_file "rename --force content" "$WORK/dst.txt" "x"
+    mk deep.txt "z"
+    OUT=$("$HASHLINE" rename "$WORK/deep.txt" "$WORK/sub/dir/deep.txt" 2>&1)
+    assert_exit "rename creates parents exits 0" 0 $?
+    assert_file "rename parent dirs content" "$WORK/sub/dir/deep.txt" "z"
+}
+
+case_update_check_json() {
+    OUT=$("$HASHLINE" update --check --json 2>&1)
+    assert_exit "update --check --json exits 0" 0 $?
+    assert_contains "update json has status" "$OUT" '"status"'
+}
+
+# ═════════════════════════════════════════════════════════════════════
+# serve daemon (unix socket)
+# ═════════════════════════════════════════════════════════════════════
+
+case_serve_unix_socket() {
+    command -v python3 >/dev/null 2>&1 || { SKIP=$((SKIP + 1)); TOTAL=$((TOTAL + 1)); return; }
+    local sock="$WORK/d.sock"
+    "$HASHLINE" serve --socket "$sock" >/dev/null 2>&1 &
+    local pid=$!
+    # Wait for the socket to appear (max ~5s).
+    local i
+    for i in $(seq 1 50); do [ -S "$sock" ] && break; sleep 0.1; done
+    if [ ! -S "$sock" ]; then kill "$pid" 2>/dev/null; _fail "serve socket never appeared"; return; fi
+    mk s.txt "daemon"
+    OUT=$(HASHLINE_SOCKET="$sock" "$HASHLINE" patch "$WORK/s.txt" "INS.TAIL:
++via-daemon" 2>&1)
+    kill "$pid" 2>/dev/null
+    for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    assert_exit "serve-routed patch exits 0" 0 $?
+    assert_file "serve-routed patch content" "$WORK/s.txt" "daemon
+via-daemon"
+}
+
+# ═════════════════════════════════════════════════════════════════════
+# MCP remaining tools + env opt-in
+# ═════════════════════════════════════════════════════════════════════
+
+case_mcp_write_tool() {
+    local req="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"write\",\"arguments\":{\"file\":\"$WORK/m.txt\",\"content\":\"mcp-write\"}}}"
+    OUT=$(mcp_call "$req")
+    assert_not_contains "MCP write no error" "$OUT" '"isError":true'
+    assert_file "MCP write content" "$WORK/m.txt" "mcp-write"
+}
+
+case_mcp_remove_rename_tools() {
+    mk rm.txt "x"; mk rn.txt "y"
+    local req="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"remove_file\",\"arguments\":{\"file\":\"$WORK/rm.txt\"}}}"
+    OUT=$(mcp_call "$req")
+    assert_not_contains "MCP remove_file no error" "$OUT" '"isError":true'
+    if [ -e "$WORK/rm.txt" ]; then _fail "MCP remove_file deleted file"; else _ok; fi
+    req="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"rename_file\",\"arguments\":{\"src\":\"$WORK/rn.txt\",\"dst\":\"$WORK/rn2.txt\"}}}"
+    OUT=$(mcp_call "$req")
+    assert_not_contains "MCP rename_file no error" "$OUT" '"isError":true'
+    assert_file "MCP rename_file content" "$WORK/rn2.txt" "y"
+}
+
+case_env_return_anchors() {
+    mk f.txt "a
+b"
+    OUT=$(HASHLINE_RETURN_ANCHORS=1 "$HASHLINE" patch "$WORK/f.txt" "INS.TAIL:
++r" 2>&1)
+    assert_exit "env anchors exits 0" 0 $?
+    assert_contains "env anchors emits listing" "$OUT" "f.txt#"
+    assert_contains "env anchors has fresh line" "$OUT" "|r"
+}
+
+# ═════════════════════════════════════════════════════════════════════
 # Registry
 # ═════════════════════════════════════════════════════════════════════
 
@@ -1018,6 +1221,27 @@ t "guide: runs"                          case_guide_runs
 t "mcp: INS stale rejected"              case_mcp_ins_stale
 t "mcp: INS valid"                       case_mcp_ins_valid
 t "mcp: read"                            case_mcp_read
+t "mcp: write tool"                      case_mcp_write_tool
+t "mcp: remove/rename tools"             case_mcp_remove_rename_tools
+
+t "anchors: qualified SWAP no warning"   case_swap_qualified_no_hashless_warning
+t "anchors: bare DEL warns"              case_del_bare_warns_hashless
+t "anchors: qualified range no warning"  case_swap_qualified_range_no_warning
+
+t "patch: REM file op"                   case_patch_rem_file_op
+t "patch: MV file op"                    case_patch_mv_file_op
+t "patch: Abort marker"                  case_patch_abort_marker
+t "patch: envelope markers"              case_patch_envelope_markers
+t "patch: End of File marker"            case_patch_end_of_file_marker
+t "patch: N.=M range syntax"             case_patch_dot_eq_range
+
+t "write: stdin dash"                    case_write_stdin_dash
+t "write: /dev/full ENOSPC"              case_write_dev_full_enospc
+t "remove: directory refused"            case_remove_directory_refused
+t "rename: --force and parent dirs"      case_rename_force_and_parents
+t "update: --check --json"               case_update_check_json
+t "serve: unix socket roundtrip"         case_serve_unix_socket
+t "env: HASHLINE_RETURN_ANCHORS"         case_env_return_anchors
 
 # ═════════════════════════════════════════════════════════════════════
 
