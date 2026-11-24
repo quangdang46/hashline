@@ -379,9 +379,15 @@ pub fn fast_write(path: &Path, bytes: &[u8]) -> Result<(), HashlineError> {
     use std::io::Write;
     reject_special_write_path(path)?;
     // Snapshot before truncate so a failed write can be rolled back.
-    // `fs::read` failing (missing file, permission) just means there is
-    // nothing to restore — the write attempt below reports the real error.
-    let original = fs::read(path).ok();
+    // Only regular files are snapshotted: `fs::read` on a device or FIFO
+    // (e.g. `/dev/full`, which reads as infinite NUL bytes) would never
+    // reach EOF. A read failure (missing file, permission) just means
+    // there is nothing to restore — the write attempt below reports the
+    // real error.
+    let original = match fs::metadata(path) {
+        Ok(meta) if meta.is_file() => fs::read(path).ok(),
+        _ => None,
+    };
     let mut file = match std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)

@@ -12,6 +12,11 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 > path fails with `ERR TARGET_EXISTS`). The dedicated `hashline remove` /
 > `hashline rename` commands remain available.
 
+## [v0.9.26] - 2026-11-24
+
+### Fixes
+- **`fast_write` no longer snapshots non-regular files** — the pre-truncate rollback read used unbounded `fs::read`, which never reaches EOF on devices/FIFOs (`/dev/full` reads as infinite NUL bytes). On Linux, `write`/`patch` targeting such a path would hang and exhaust memory; the same bug hung the `fast_write_enospc_returns_error` test on ubuntu-latest CI. Snapshots are now taken only when `metadata.is_file()`.
+
 ## [v0.9.25] - 2026-11-24
 
 ### Fixes
