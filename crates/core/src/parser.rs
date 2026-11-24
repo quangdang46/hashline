@@ -1026,23 +1026,19 @@ impl Executor {
         match target {
             BlockTarget::Replace(range, hash)
             | BlockTarget::Delete(range, hash)
-            | BlockTarget::Cut(range, hash, _) => {
-                hash.is_none() && range.end_hash.is_none()
-            }
+            | BlockTarget::Cut(range, hash, _) => hash.is_none() && range.end_hash.is_none(),
             BlockTarget::Block(_, hash)
             | BlockTarget::DeleteBlock(_, hash)
             | BlockTarget::InsertBefore(_, hash)
             | BlockTarget::InsertAfter(_, hash)
             | BlockTarget::InsertAfterBlock(_, hash)
             | BlockTarget::InsertBeforeBlock(_, hash) => hash.is_none(),
-            BlockTarget::Paste(cursor, _) => matches!(
-                cursor,
-                Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_)
-            ),
-            BlockTarget::Bof
-            | BlockTarget::Eof
-            | BlockTarget::Remove
-            | BlockTarget::MoveTo(_) => false,
+            BlockTarget::Paste(cursor, _) => {
+                matches!(cursor, Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_))
+            }
+            BlockTarget::Bof | BlockTarget::Eof | BlockTarget::Remove | BlockTarget::MoveTo(_) => {
+                false
+            }
         }
     }
 
