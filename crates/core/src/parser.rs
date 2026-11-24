@@ -257,6 +257,12 @@ pub struct Executor {
     /// Whether the "content after `*** End of File` ignored" warning was
     /// already emitted for the current ended section.
     eof_content_warned: bool,
+    /// Set when a flushed op anchored existing lines by bare line number
+    /// with no content hash anywhere in its target (`N` instead of `N:hh`).
+    /// Tracked per operation — not per emitted `Edit` — so a hash-qualified
+    /// `SWAP N:hh:` does not warn just because its replacement `Insert`s
+    /// carry `expected_hash: None` (the paired `Delete`s hold the hash).
+    hashless_anchor_op: bool,
 }
 
 impl Default for Executor {
@@ -280,6 +286,7 @@ impl Executor {
             header_warned: false,
             file_ended: false,
             eof_content_warned: false,
+            hashless_anchor_op: false,
         }
     }
 
@@ -399,6 +406,7 @@ impl Executor {
             self.header_warned = false;
             self.file_ended = false;
             self.eof_content_warned = false;
+            self.hashless_anchor_op = false;
             let aborted = true;
             self.edit_index = 0;
             self.terminated = false;
@@ -421,6 +429,7 @@ impl Executor {
             self.header_warned = false;
             self.file_ended = false;
             self.eof_content_warned = false;
+            self.hashless_anchor_op = false;
             self.edit_index = 0;
             self.terminated = false;
             self.aborted = false;
@@ -429,6 +438,17 @@ impl Executor {
         }
 
         self.validate_no_overlapping_deletes();
+
+        // bd-anchor-integrity-batch-nuzn: ops anchored to existing lines by
+        // bare line number carry no content hash — they apply by position
+        // only and lose ALL stale-anchor protection. Warn once per patch.
+        // Tracked per flushed op (see `hashless_anchor_op`) so a qualified
+        // `SWAP N:hh:` does not warn via its hashless replacement inserts.
+        if self.hashless_anchor_op && !self.edits.is_empty() {
+            self.warnings.push(HASHLESS_ANCHOR_WARNING.to_owned());
+        }
+        self.hashless_anchor_op = false;
+
         let edits = std::mem::take(&mut self.edits);
         let warnings = std::mem::take(&mut self.warnings);
         let file_op = self.file_op.take();
@@ -734,6 +754,7 @@ impl Executor {
             Some(p) => p,
             None => return,
         };
+        let edits_before = self.edits.len();
 
         let Pending {
             target,
@@ -988,6 +1009,40 @@ impl Executor {
                     self.warnings.push(e);
                 }
             }
+        }
+
+        // Only ops that actually emitted edits count — empty-payload early
+        // returns above add nothing, and file ops (REM/MV) are not
+        // line-anchored at all.
+        if self.edits.len() > edits_before && Self::target_lacks_hash(&target) {
+            self.hashless_anchor_op = true;
+        }
+    }
+
+    /// True when the op's anchor carries no content hash at all: bare `N`
+    /// for single anchors, or a range with neither `:hh` bound. `Bof`/`Eof`
+    /// and file ops target no existing line, so they never qualify.
+    fn target_lacks_hash(target: &BlockTarget) -> bool {
+        match target {
+            BlockTarget::Replace(range, hash)
+            | BlockTarget::Delete(range, hash)
+            | BlockTarget::Cut(range, hash, _) => {
+                hash.is_none() && range.end_hash.is_none()
+            }
+            BlockTarget::Block(_, hash)
+            | BlockTarget::DeleteBlock(_, hash)
+            | BlockTarget::InsertBefore(_, hash)
+            | BlockTarget::InsertAfter(_, hash)
+            | BlockTarget::InsertAfterBlock(_, hash)
+            | BlockTarget::InsertBeforeBlock(_, hash) => hash.is_none(),
+            BlockTarget::Paste(cursor, _) => matches!(
+                cursor,
+                Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_)
+            ),
+            BlockTarget::Bof
+            | BlockTarget::Eof
+            | BlockTarget::Remove
+            | BlockTarget::MoveTo(_) => false,
         }
     }
 
@@ -1303,38 +1358,9 @@ pub fn parse_patch(diff: &str) -> (Vec<Edit>, Vec<String>, Option<FileOp>, bool)
             warnings.clear();
             return (Vec::new(), Vec::new(), None, true);
         }
-        // bd-anchor-integrity-batch-nuzn: edits anchored to existing lines by
-        // bare line number carry no content hash — they apply by position
-        // only and lose ALL stale-anchor protection. Warn once per patch.
-        if edits.iter().any(edit_is_hashless_anchored) {
-            warnings.push(HASHLESS_ANCHOR_WARNING.to_owned());
-        }
     }
 
     (edits, warnings, file_op, aborted)
-}
-
-/// True when `edit` targets an existing line by bare line number with no
-/// `expected_hash` (`N` instead of `N:hh`). `Bof`/`Eof` cursors target no
-/// existing line; `Paste` has no hash field at all, so an anchored `PUT`
-/// counts as hashless too.
-fn edit_is_hashless_anchored(edit: &Edit) -> bool {
-    match edit {
-        Edit::Delete { expected_hash, .. }
-        | Edit::Block { expected_hash, .. }
-        | Edit::Cut { expected_hash, .. } => expected_hash.is_none(),
-        Edit::Insert {
-            cursor,
-            expected_hash,
-            ..
-        } => {
-            expected_hash.is_none()
-                && matches!(cursor, Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_))
-        }
-        Edit::Paste { cursor, .. } => {
-            matches!(cursor, Cursor::BeforeAnchor(_) | Cursor::AfterAnchor(_))
-        }
-    }
 }
 
 #[allow(clippy::items_after_test_module)]

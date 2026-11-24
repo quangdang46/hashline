@@ -12,6 +12,11 @@ Format: grouped by release tag (newest first). `Thanks` credits non-maintainer c
 > path fails with `ERR TARGET_EXISTS`). The dedicated `hashline remove` /
 > `hashline rename` commands remain available.
 
+## [v0.9.25] - 2026-11-24
+
+### Fixes
+- **Hashless-anchor warning no longer fires on hash-qualified `SWAP N:hh:`** — the check ran per emitted `Edit`, and a `SWAP`'s replacement `Insert`s always carry `expected_hash: None` (the paired `Delete`s hold the hash), so every qualified swap printed the bare-anchor warning. Detection is now per parsed operation: a range warns only when neither `:hh` bound is present, `INS`/`DEL`/`*.BLK`/`CUT` warn only on bare `N`, and anchored `PUT` still warns. Stale-anchor validation is unchanged.
+
 ## [v0.9.24] - 2026-11-10
 
 Follow-up hardening batch on top of the v0.9.23 audit remediation.
